@@ -1,0 +1,76 @@
+name: coverage
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: compliance_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/compliance_test
+      MIGRATION_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/compliance_test
+      SUPABASE_URL: https://stub.invalid
+      SUPABASE_ANON_KEY: stub
+      SUPABASE_SERVICE_ROLE_KEY: stub
+      SUPABASE_JWT_SECRET: stub
+      SUPABASE_STORAGE_BUCKET: call-audio
+      DEEPGRAM_API_KEY: ""
+      OPENROUTER_API_KEY: ""
+      OPENAI_API_KEY: ""
+      GEMINI_API_KEY: ""
+      ASSEMBLYAI_API_KEY: ""
+      ADMIN_KEY: test-admin
+      DEV_ALL_ADMIN: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Apply alembic migrations
+        run: alembic upgrade head
+      - name: Determine touched python files
+        id: diff
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.event.after }}"
+          fi
+          if [ "$BASE" = "0000000000000000000000000000000000000000" ] || [ -z "$BASE" ]; then
+            echo "New branch or first push — skipping coverage gate (no base to diff against)."
+            echo "touched=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          TOUCHED=$(git diff --name-only "$BASE" "$HEAD" | grep -E '^backend/app/.*\.py$' | sed 's|backend/||' | tr '\n' ',' | sed 's/,$//' || true)
+          echo "touched=$TOUCHED" >> $GITHUB_OUTPUT
+      - name: Run pytest with coverage gate
+        run: |
+          if [ -z "${{ steps.diff.outputs.touched }}" ]; then
+            echo "No backend python changes — skipping coverage gate."
+            exit 0
+          fi
+          pytest --cov=app --cov-report=term-missing --cov-fail-under=50

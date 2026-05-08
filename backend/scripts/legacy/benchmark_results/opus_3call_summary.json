@@ -1,0 +1,263 @@
+{
+  "model": "anthropic/claude-opus-4.7",
+  "batch_size": 6,
+  "runs_per_call": 3,
+  "calls": [
+    {
+      "call_id": "e9a28d20",
+      "filename": "EON__Elec_Verbal_Contract__from_1061_to_07852209642_cr_2026_Apr_08_10_50_52.mp3",
+      "supplier": "E.ON Next",
+      "checkpoints": 24,
+      "runs": [
+        {
+          "run": 1,
+          "accuracy": 95.8,
+          "time_s": 29.0,
+          "cost_usd": 0.4451,
+          "tokens_in": 18265,
+          "tokens_out": 2281,
+          "false_passes": 0,
+          "false_fails": 0,
+          "partial_disag": 1,
+          "unknown": 0,
+          "details": {
+            "accuracy": 95.8,
+            "matches": 23,
+            "mismatches": 1,
+            "missing": 0,
+            "false_fails": 0,
+            "false_passes": 0,
+            "partial_disag": 1,
+            "unknown": 0,
+            "total": 24
+          }
+        },
+        {
+          "run": 2,
+          "accuracy": 95.8,
+          "time_s": 29.3,
+          "cost_usd": 0.4496,
+          "tokens_in": 18265,
+          "tokens_out": 2342,
+          "false_passes": 0,
+          "false_fails": 0,
+          "partial_disag": 1,
+          "unknown": 0,
+          "details": {
+            "accuracy": 95.8,
+            "matches": 23,
+            "mismatches": 1,
+            "missing": 0,
+            "false_fails": 0,
+            "false_passes": 0,
+            "partial_disag": 1,
+            "unknown": 0,
+            "total": 24
+          }
+        },
+        {
+          "run": 3,
+          "accuracy": 91.7,
+          "time_s": 28.5,
+          "cost_usd": 0.4455,
+          "tokens_in": 18265,
+          "tokens_out": 2287,
+          "false_passes": 0,
+          "false_fails": 0,
+          "partial_disag": 2,
+          "unknown": 0,
+          "details": {
+            "accuracy": 91.7,
+            "matches": 22,
+            "mismatches": 2,
+            "missing": 0,
+            "false_fails": 0,
+            "false_passes": 0,
+            "partial_disag": 2,
+            "unknown": 0,
+            "total": 24
+          }
+        }
+      ]
+    },
+    {
+      "call_id": "42111d0c",
+      "filename": "British_Gas__Broker_Upgrade_Renewals_Deemed__from_07735367370_to_1004_cr_2026_Apr_07_11_39_23.mp3",
+      "supplier": "British Gas",
+      "checkpoints": 25,
+      "runs": [
+        {
+          "run": 1,
+          "accuracy": 92.0,
+          "time_s": 26.8,
+          "cost_usd": 0.5603,
+          "tokens_in": 23241,
+          "tokens_out": 2822,
+          "false_passes": 0,
+          "false_fails": 0,
+          "partial_disag": 2,
+          "unknown": 0,
+          "details": {
+            "accuracy": 92.0,
+            "matches": 23,
+            "mismatches": 2,
+            "missing": 0,
+            "false_fails": 0,
+            "false_passes": 0,
+            "partial_disag": 2,
+            "unknown": 0,
+            "total": 25
+          }
+        },
+        {
+          "run": 2,
+          "accuracy": 84.0,
+          "time_s": 29.5,
+          "cost_usd": 0.562,
+          "tokens_in": 23241,
+          "tokens_out": 2845,
+          "false_passes": 0,
+          "false_fails": 0,
+          "partial_disag": 4,
+          "unknown": 0,
+          "details": {
+            "accuracy": 84.0,
+            "matches": 21,
+            "mismatches": 4,
+            "missing": 0,
+            "false_fails": 0,
+            "false_passes": 0,
+            "partial_disag": 4,
+            "unknown": 0,
+            "total": 25
+          }
+        },
+        {
+          "run": 3,
+          "accuracy": 84.0,
+          "time_s": 26.1,
+          "cost_usd": 0.5628,
+          "tokens_in": 23241,
+          "tokens_out": 2856,
+          "false_passes": 0,
+          "false_fails": 0,
+          "partial_disag": 4,
+          "unknown": 0,
+          "details": {
+            "accuracy": 84.0,
+            "matches": 21,
+            "mismatches": 4,
+            "missing": 0,
+            "false_fails": 0,
+            "false_passes": 0,
+            "partial_disag": 4,
+            "unknown": 0,
+            "total": 25
+          }
+        }
+      ]
+    },
+    {
+      "call_id": "9adbb141",
+      "filename": "Scottish_Power__For_Business_Acquisition_TPI__from_1026_to_07815130942_cr_2026_Apr_07_11_30_50.mp3",
+      "supplier": "Scottish Power",
+      "checkpoints": 35,
+      "runs": [
+        {
+          "run": 1,
+          "accuracy": 80.0,
+          "time_s": 73.2,
+          "cost_usd": 1.199,
+          "tokens_in": 47744,
+          "tokens_out": 6438,
+          "false_passes": 0,
+          "false_fails": 0,
+          "partial_disag": 7,
+          "unknown": 0,
+          "details": {
+            "accuracy": 80.0,
+            "matches": 28,
+            "mismatches": 7,
+            "missing": 0,
+            "false_fails": 0,
+            "false_passes": 0,
+            "partial_disag": 7,
+            "unknown": 0,
+            "total": 35
+          }
+        },
+        {
+          "run": 2,
+          "accuracy": 74.3,
+          "time_s": 73.0,
+          "cost_usd": 1.2017,
+          "tokens_in": 47744,
+          "tokens_out": 6474,
+          "false_passes": 0,
+          "false_fails": 0,
+          "partial_disag": 9,
+          "unknown": 0,
+          "details": {
+            "accuracy": 74.3,
+            "matches": 26,
+            "mismatches": 9,
+            "missing": 0,
+            "false_fails": 0,
+            "false_passes": 0,
+            "partial_disag": 9,
+            "unknown": 0,
+            "total": 35
+          }
+        },
+        {
+          "run": 3,
+          "accuracy": 80.0,
+          "time_s": 69.1,
+          "cost_usd": 1.2044,
+          "tokens_in": 47744,
+          "tokens_out": 6510,
+          "false_passes": 0,
+          "false_fails": 0,
+          "partial_disag": 7,
+          "unknown": 0,
+          "details": {
+            "accuracy": 80.0,
+            "matches": 28,
+            "mismatches": 7,
+            "missing": 0,
+            "false_fails": 0,
+            "false_passes": 0,
+            "partial_disag": 7,
+            "unknown": 0,
+            "total": 35
+          }
+        }
+      ]
+    }
+  ],
+  "per_call_means": {
+    "e9a28d20": {
+      "accuracy_mean": 94.43,
+      "accuracy_min": 91.7,
+      "accuracy_max": 95.8,
+      "cost_mean": 0.4467,
+      "time_mean": 28.9
+    },
+    "42111d0c": {
+      "accuracy_mean": 86.67,
+      "accuracy_min": 84.0,
+      "accuracy_max": 92.0,
+      "cost_mean": 0.5617,
+      "time_mean": 27.5
+    },
+    "9adbb141": {
+      "accuracy_mean": 78.1,
+      "accuracy_min": 74.3,
+      "accuracy_max": 80.0,
+      "cost_mean": 1.2017,
+      "time_mean": 71.8
+    }
+  },
+  "grand_mean_accuracy": 86.4,
+  "grand_mean_cost": 0.7367
+}

@@ -1,0 +1,29 @@
+name: touched-fns-gate
+on:
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Refuse prod changes without test changes in same branch
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          DIFF=$(git diff --name-only "$BASE" "$HEAD")
+          PROD=$(echo "$DIFF" | grep -E '^(backend/app|frontend-v3/src)/.*\.(py|ts|tsx)$' | grep -vE '/(tests?|__tests__)/' || true)
+          TESTS=$(echo "$DIFF" | grep -E '/(tests?|__tests__)/.*\.(py|ts|tsx)$' || true)
+          if [ -n "$PROD" ] && [ -z "$TESTS" ]; then
+            echo "::error::Prod files changed without any test file change in same PR."
+            echo "Prod files changed:"; echo "$PROD"
+            echo "Add or update tests, or label PR 'no-tests-acceptable' (rare; e.g. config-only)."
+            if echo '${{ join(github.event.pull_request.labels.*.name, ',') }}' | grep -qE '(^|,)no-tests-acceptable(,|$)'; then
+              echo "Label 'no-tests-acceptable' set — bypassing gate."
+              exit 0
+            fi
+            exit 1
+          fi
+          echo "Prod/test parity OK."

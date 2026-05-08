@@ -1,0 +1,124 @@
+/*
+ * Design tokens — extracted faithfully from
+ *   design/handoff-bundle/project/shared.jsx (wireframe palette)
+ *   design/handoff-bundle/project/hifi/tokens-hifi.jsx (production polish)
+ *
+ * Linear-style dark monochrome (zinc elevation scale) + semantic verdict
+ * colors. Numbers match the source 1:1 — do not "round" without rebuilding
+ * the screens against the new value.
+ */
+:root {
+  /* ── Surfaces (zinc elevation scale) ─────────────────────────── */
+  --bg-canvas:  #09090b;   /* zinc-950 page bg (HF.bg) */
+  --bg-elev1:   #0e0e10;   /* base canvas (HF.bgElev1) */
+  --bg-elev2:   #161618;   /* cards (HF.bgElev2) */
+  --bg-elev3:   #1d1d20;   /* hover / popover (HF.bgElev3) */
+  --bg-elev4:   #26262a;   /* pressed (HF.bgElev4) */
+
+  /* ── Borders ─────────────────────────────────────────────────── */
+  --border-subtle: #1f1f23;
+  --border-strong: #2a2a30;
+  --border-faint:  #161619;
+
+  /* ── Text ────────────────────────────────────────────────────── */
+  --text-primary: #f4f4f5;   /* HF.text */
+  --text-default: #f4f4f5;   /* alias of --text-primary, used by tracker/* and (reviewer)/calls/[id]/* ports from main */
+  --text-muted:   #a1a1aa;   /* HF.textMuted */
+  --text-dim:     #71717a;   /* HF.textDim */
+  --text-faint:   #52525b;   /* HF.textFaint */
+
+  /* ── Surface aliases ─────────────────────────────────────────── */
+  /* Components ported from v2/main reference --surface-1 / --surface-2 instead of --bg-elev*. Map them so
+     tracker side-panels, status pills, intake L7 form, and the (reviewer) call-detail polish render with
+     the right elevation rather than transparent (which made the page look broken on dark theme). */
+  --surface-1: var(--bg-elev1);
+  --surface-2: var(--bg-elev2);
+
+  /* ── Legacy v2 transcript palette ────────────────────────────── */
+  /* TranscriptPlayer + flag widgets ported from v2 use bare --dim / --teal / --water / --ink names.
+     v2 ran on a warm-brown canvas where the originals popped; on v3's zinc-950 they read near-black.
+     Remap to the v3 zinc text scale. NOTE: do NOT alias --muted here — shadcn/ui defines its own
+     --muted in globals.css and the cascade overrides this. The TranscriptPlayer fallback was
+     patched separately. */
+  --dim:   var(--text-primary);  /* zinc-50  — past/already-read words; brighter so context stays legible */
+  --teal:  var(--emerald);       /* speaker A (Agent) */
+  --water: #60a5fa;              /* speaker B (Customer) — blue-400 */
+  --ink:   var(--text-primary);  /* high-contrast inverse text on light chips */
+
+  /* ── Semantic — verdict actions (5 actions, 1:1 from spec) ──── */
+  --emerald:        #10b981; /* PASS / primary */
+  --emerald-400:    #34d399;
+  --emerald-600:    #059669;
+  --emerald-bg:     rgba(16, 185, 129, 0.10);
+  --emerald-bg-strong: rgba(16, 185, 129, 0.18);
+  --emerald-border: rgba(16, 185, 129, 0.30);
+
+  --red:        #ef4444;
+  --red-600:    #dc2626;
+  --red-bg:     rgba(239, 68, 68, 0.10);
+  --red-border: rgba(239, 68, 68, 0.30);
+
+  --amber:        #f59e0b;
+  --amber-400:    #fbbf24;
+  --amber-bg:     rgba(245, 158, 11, 0.10);
+  --amber-border: rgba(245, 158, 11, 0.30);
+
+  --blue:        #60a5fa;
+  --blue-bg:     rgba(96, 165, 250, 0.10);
+  --blue-border: rgba(96, 165, 250, 0.30);
+
+  --violet:        #a78bfa;
+  --violet-bg:     rgba(167, 139, 250, 0.10);
+  --violet-border: rgba(167, 139, 250, 0.30);
+
+  /* ── Shadows ─────────────────────────────────────────────────── */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.35);
+  --shadow-xl: 0 20px 60px rgba(0, 0, 0, 0.65), 0 6px 16px rgba(0, 0, 0, 0.4);
+
+  /* ── Focus ───────────────────────────────────────────────────── */
+  --focus-ring: 0 0 0 2px #09090b, 0 0 0 4px #10b981;
+
+  /* ── Radii ───────────────────────────────────────────────────── */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  /* ── Typography ──────────────────────────────────────────────── */
+  --font-sans: "Inter Tight", "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 18px;
+  --text-xl: 24px;
+  --text-2xl: 32px;
+}
+
+/* Karaoke shimmer animation */
+@keyframes ca-shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes ca-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes ca-pulse {
+  0%, 100% { opacity: 0.6; }
+  50%      { opacity: 1; }
+}
+
+/* Scrollbar polish for dark surfaces */
+.ca-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.ca-scroll::-webkit-scrollbar-track { background: transparent; }
+.ca-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.ca-scroll::-webkit-scrollbar-thumb:hover { background: var(--border-strong); background-clip: padding-box; border: 2px solid transparent; }

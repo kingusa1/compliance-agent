@@ -1,0 +1,96 @@
+PROJECT: Compliance Agent — v1 → v1.1 (Enterprise Hardening Inject)
+CREATED: 2026-05-06
+TECH STACK: FastAPI 0.115 (Py 3.12) + Inngest + Supabase Postgres + Supabase Storage + Alembic + pgvector
+            Next.js 16 (React 19) + shadcn + zustand + TanStack Query + Playwright + Vitest
+            Multi-engine STT tribunal (Deepgram + AssemblyAI + Speechmatics + Groq + OpenAI + Cohere + Gemini)
+            Smart Agent layer: Gemini Flash first → Claude Sonnet 4.6 escalate
+DEPLOYED:   amina VPS (Contabo, IP 161.97.178.185) behind Cloudflare Tunnel — backend :8001, frontend :9000
+REPO:       github.com/ArcadeTechLTD/compliance-agent
+SPEC:       docs/superpowers/specs/2026-05-06-enterprise-hardening-inject-design.md
+COMPARISON: architecture-comparison.md  (current stack vs compliance architecture 2.docx)
+
+=== MILESTONE: v1 → v1.1 Enterprise Hardening Inject ===
+Goal: Cover every layer of compliance architecture 2.docx using free / OSS only,
+without retrofitting Celery/RabbitMQ/Redis (Inngest replaces them) and without
+new paid SaaS dependencies.
+
+10 deliverables grouped into 5 implementation waves:
+  Wave 1 — foundation:    CI workflows + OpenTofu IaC + audit_log/failed_jobs migration
+  Wave 2 — observability: GlitchTip + LGTM-lite (Loki+Promtail+Prom+Grafana) + audit writes
+  Wave 3 — durability:    StorageBackend ABC + replay endpoint + pg_dump cron + restore drill
+  Wave 4 — cost:          embedding pre-filter + tiered LLM (flag-gated, A/B parity)
+  Wave 5 — deploy:        deploy.yml SSH workflow + branch protection rules
+
+Cross-cutting testing layer:
+  - superpowers:test-driven-development skill = per-test discipline (unchanged)
+  - .github/workflows/test.yml + coverage.yml = CI required checks
+  - .github/pull_request_template.md = touched-fns / tests-added checkboxes
+  - superpowers:verification-before-completion extended with diff-vs-tests gate
+  - branch protection on main blocks merge without green checks
+
+=== SESSION LOG ===
+
+[2026-05-06] INIT: Brainstormed enterprise hardening inject. Compared current
+stack against compliance architecture 2.docx. Identified 10 OSS-only
+deliverables. Wrote design spec. Generated harness (this file +
+feature_list.json + init.sh). 25 features identified — 17 existing core
+features + 8 inject-specific deliverables. All passes=false pending
+verification.
+
+[2026-05-06] DONE: Wave 1 (foundation) shipped on branch feat/wave1-foundation.
+Tasks completed:
+  T1  PR template (.github/pull_request_template.md) — 1f34bd1
+  T2  test.yml workflow (pytest + vitest + label-gated playwright) — 352120d
+  T3  coverage.yml workflow (pytest-cov FLOOR=50 from baseline 54%) — 4ddda9f + fix 01dfe39
+  T4  touched-fns-gate.yml — 27d09a1 + fix 2c6ea1f (anchored label match)
+  T5  failed_jobs migration + ORM + record_failed_job() writer — 73089d8
+  T6  _handle_exhausted_run() in redispatch_watchdog (Outcome B) — 7b31c35
+  T7  GET /api/observability/{audit,failed-jobs} routes — 02a88d1
+  T8a record_audit() on /upload + edit_metadata — 1a2efef
+  T8b record_audit() on hitl claim/release — 62590f1
+  T8c SKIPPED — rules are static JSON (rules_catalog.json), no DB CRUD
+  T8d record_audit() on script create/update/delete — 61cd2b3
+  T8e record_audit() on deal create + stub — 8afbf2c
+  +   AuditLog ORM model fix (cross-platform SQLite + Postgres) — b762f43
+  +   IaC pivot from Hetzner to Contabo — 76ebf15 + 06f992b
+PIVOT: Spec doc said "Hetzner"; production runs on Contabo. Dropped Hetzner
+provider; kept Cloudflare DNS as only Terraform-managed resource; Contabo
+VPS lifecycle now an SSH+Docker Compose runbook in
+infrastructure/contabo/README.md.
+TESTS: 28+ audit-related tests pass (test_audit_coverage 8 + test_failed_jobs 4
+ + test_observability_routes_audit 2 + test_script_versioning 11 + 3 ORM-fix).
+Pre-existing test_upload_deal_linkage failures (4) unrelated, Supabase env.
+LOCAL DEV DB: Docker pgvector container at :5433. backend/.env points there.
+HUMAN FOLLOW-UPS BEFORE MERGE:
+  1. Run `tofu init && tofu import cloudflare_record.compliance_apex
+     <zone>/<rec_id> && tofu plan` in infrastructure/contabo/ — must show
+     zero diff before merge.
+  2. After merge: open probe PRs to verify (a) test.yml/coverage.yml gate
+     red on broken test, (b) touched-fns-gate.yml refuses prod-only PRs.
+  3. Apply branch protection on main (Settings → Branches): require pytest,
+     vitest, coverage, gate; linear history; no force push.
+  4. Revoke compromised GitHub PAT before Wave 5 wires deploy.yml secrets.
+NEXT: Run /superpowers:writing-plans for Wave 2 (observability — GlitchTip
++ Loki+Promtail+Prometheus+Grafana + Sentry SDK wiring + 4 seed dashboards).
+BLOCKERS: None. PAT rotation still pending (Wave-5 prereq, can finish anytime
+before Wave 5).
+
+=== HOW TO USE THIS FILE ===
+- Read at START of every session.
+- Run `bash init.sh` to boot dev env (backend :8001, frontend :3000).
+- Pick exactly ONE failing feature from feature_list.json. Never multiple.
+- Test end-to-end as a human user (browser tools where available) before
+  flipping passes=false → passes=true.
+- Commit code, then update this file:
+    [YYYY-MM-DD] DONE: <feature>. NEXT: <next feature>. BLOCKERS: <any>.
+- Never delete features from feature_list.json. Only flip passes.
+- One feature per session. Finish fully before next.
+
+[2026-05-07] CLOUD DB: alembic upgrade head applied 6c863e1ce3b1_failed_jobs
+to cloud Supabase. Schema now matches repo head. Verified test_failed_jobs +
+test_observability_routes_audit go from 6 fail -> pass.
+
+[2026-05-08] CI GREEN PUSH: backend pytest 0 fail (was 159), frontend vitest 0 fail (was 4).
+Cloud Supabase migrated to alembic head 6c863e1ce3b1.
+test.yml + coverage.yml now run pgvector:pg16 service + alembic upgrade head
++ stub Supabase env. PR #4 now mergeable when CI confirms green.

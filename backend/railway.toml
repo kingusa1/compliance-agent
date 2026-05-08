@@ -1,0 +1,21 @@
+# Railway service config for the FastAPI backend.
+# Drop this file alongside backend/ and Railway will pick it up automatically
+# when the service root is set to backend/.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# /healthz is liveness only (returns 200 always once the process is up).
+# /readyz returns 503 when the DB is unreachable — don't use it for the
+# Railway healthcheck or you'll bounce the container during cold-DB seconds.
+healthcheckPath = "/healthz"
+healthcheckTimeout = 30
+# Restart on any non-zero exit; cap retries so a wedged process can't loop
+# forever burning Railway minutes.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+# Railway's default SIGTERM grace is 30s; the lifespan idle-loop bounded
+# shutdown completes in <5s so this is comfortable headroom.
+gracefulShutdownTimeout = 30

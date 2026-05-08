@@ -1,0 +1,1056 @@
+"""Wave 2 (v3-watt-coverage): /rejections workflow endpoints.
+
+Stage 4 of Watt's 41-step flow. Backed by ``rejections`` +
+``rejection_audit_log`` (alembic ``b1d4f7e2c903_w2_rejections.py``).
+
+Endpoints
+---------
+GET    /api/rejections?tab=&category=&search=&dead_reason=&offset=&limit=
+GET    /api/rejections/{id}
+POST   /api/rejections                              (admin-only)
+PATCH  /api/rejections/{id}                         (accepts dead_reason)
+DELETE /api/rejections/{id}                         (admin-only)
+POST   /api/rejections/{id}/transition              status changes + notes
+GET    /api/rejections/{id}/audit-log
+GET    /api/rejections/dead-reasons                 W4.6 vocab + glosses
+GET    /api/portal-batches?supplier=               W4.5 supplier-grouped FIXED
+POST   /api/portal-batches/submit                   W4.5 batch-submit (admin)
+
+Tab routing
+-----------
+    active  → status IN ('NOT_STARTED', 'IN_PROGRESS')
+    fixed   → status IN ('FIXED', 'BATCHED_TO_PORTAL', 'SUBMITTED_TO_PORTAL',
+                         'FIXED_AND_APPROVED')
+    dead    → status = 'DEAD'
+    archive → ALL — pagination handles size
+
+Audit log
+---------
+- POST writes a "created" row.
+- PATCH writes "updated" with from_status/to_status when status changed.
+- /transition writes "transitioned" with notes.
+- /transition sets ``resolved_at`` when the new status is FIXED_AND_APPROVED
+  or DEAD (terminal).
+"""
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timedelta
+from typing import Any
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from app.auth import current_user
+from app.database import get_db
+from app.logger import log
+from app.models import Profile, Rejection, RejectionAuditLog
+
+
+rejections_router = APIRouter(tags=["rejections"])
+
+
+# ── enum vocabularies — must mirror alembic b1d4f7e2c903 ────────────────
+
+REJECTION_CATEGORIES = {
+    "ADMIN_ERROR",
+    "PROCESS_FAILURE",
+    "VERBAL_SALES_ERROR",
+    "COMPLIANCE_ISSUE",
+    "COMPLIANCE_ERROR",
+    "PRICING_ISSUE",
+    "PRICING_ERROR",
+    "DOCUSIGN_ERROR",
+    "FAILED_CREDIT_CHECK",
+}
+REJECTION_STATUSES = {
+    "NOT_STARTED",
+    "IN_PROGRESS",
+    "FIXED",
+    "BATCHED_TO_PORTAL",
+    "SUBMITTED_TO_PORTAL",
+    "FIXED_AND_APPROVED",
+    "DEAD",
+}
+REJECTION_OUTCOMES = {
+    "FIXED_AND_SUBMITTED",
+    "CUSTOMER_LOST",
+    "CANCELLED",
+    "NOT_RECOVERABLE",
+    "RESIGNED_TO_OTHER_SUPPLIER",
+}
+REMEDIATION_ACTIONS = {
+    "AMENDMENT_CALL",
+    "CONFIRMATION_CALL",
+    "NEW_LOA",
+    "NEW_DOCUSIGN",
+    "DD_MANDATE",
+    "RESELL_TO_OTHER_SUPPLIER",
+    "PRICE_RECHECK",
+    "COT_CHANGE_OF_TENANCY",
+    "CONTRACT_LENGTH_LIMIT",
+    "MANUAL_ADMIN_SUBMISSION",
+}
+
+# W4.6 — dead-reason vocabulary. Keys are the wire values written to
+# ``rejections.dead_reason``; one-line glosses render as filter-chip
+# tooltips on the /rejections Dead tab. Added per migration
+# ``c4g7i8m9n0o1_w4_dead_reasons.py``.
+DEAD_REASONS: dict[str, str] = {
+    "in_contract":   "Customer already locked into another supplier — can't switch.",
+    "customer_debt": "Outstanding balance with prior supplier blocks transfer.",
+    "wrong_owner":   "Caller wasn't authorised on the account (wrong account holder).",
+    "bacs_rejected": "Direct-debit mandate rejected by the bank — repeated attempts failed.",
+    "hung_up":       "Customer disengaged mid-call; consent never reached.",
+}
+
+TERMINAL_STATUSES = {"FIXED_AND_APPROVED", "DEAD"}
+
+ACTIVE_STATUSES = {"NOT_STARTED", "IN_PROGRESS"}
+FIXED_LIKE_STATUSES = {
+    "FIXED",
+    "BATCHED_TO_PORTAL",
+    "SUBMITTED_TO_PORTAL",
+    "FIXED_AND_APPROVED",
+}
+
+
+# ── helpers ─────────────────────────────────────────────────────────────
+
+
+def require_admin(user: dict = Depends(current_user)) -> dict:
+    """Admin-only gate for create + delete. Leads cannot create / delete
+    rejections; they can patch + transition like reviewers."""
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return user
+
+
+def _compute_deadline(rejected_at: datetime) -> datetime:
+    """Mirror the Postgres ``GENERATED ALWAYS AS rejected_at + INTERVAL '2 days'``
+    column on SQLite. Always called on insert + on any rejected_at update."""
+    return rejected_at + timedelta(days=2)
+
+
+def _serialize(r: Rejection) -> dict[str, Any]:
+    return {
+        "id": str(r.id),
+        "call_id": r.call_id,
+        "customer_slug": r.customer_slug,
+        "external_watt_site_id": r.external_watt_site_id,
+        "supplier": r.supplier,
+        "sales_agent": r.sales_agent,
+        "category": r.category,
+        "rejection_reason": r.rejection_reason,
+        "fix_required": r.fix_required,
+        "fix_narrative": getattr(r, "fix_narrative", None),
+        "fix_assignee_id": r.fix_assignee_id,
+        "status": r.status,
+        "outcome": r.outcome,
+        "outcome_narrative": r.outcome_narrative,
+        # W4.6 — dead_reason populated only when status=DEAD; tolerate
+        # legacy rows without the column (getattr fallback).
+        "dead_reason": getattr(r, "dead_reason", None),
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "rejected_at": r.rejected_at.isoformat() if r.rejected_at else None,
+        "deadline": r.deadline.isoformat() if r.deadline else None,
+        "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
+        # AI/HUMAN provenance gate (legacy rows tolerated via getattr).
+        "verdict_state": getattr(r, "verdict_state", None) or "AI_PENDING",
+        "confirmed_by": getattr(r, "confirmed_by", None),
+        "confirmed_at": (
+            r.confirmed_at.isoformat()
+            if getattr(r, "confirmed_at", None) else None
+        ),
+    }
+
+
+def _serialize_audit(a: RejectionAuditLog) -> dict[str, Any]:
+    return {
+        "id": str(a.id),
+        "rejection_id": str(a.rejection_id),
+        "actor_id": a.actor_id,
+        "action": a.action,
+        "from_status": a.from_status,
+        "to_status": a.to_status,
+        "notes": a.notes,
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+    }
+
+
+def _validate_enum(value: str | None, allowed: set[str], field: str) -> None:
+    if value is not None and value not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field} must be one of {sorted(allowed)} (got {value!r})",
+        )
+
+
+# ── pydantic payloads ────────────────────────────────────────────────────
+
+
+class RejectionCreate(BaseModel):
+    call_id: str | None = None
+    customer_slug: str | None = None
+    external_watt_site_id: int | None = None
+    supplier: str | None = None
+    sales_agent: str | None = None
+    category: str
+    rejection_reason: str = Field(min_length=1)
+    fix_required: str | None = None
+    fix_assignee_id: str | None = None
+    rejected_at: datetime | None = None  # defaults to NOW server-side
+
+
+class RejectionPatch(BaseModel):
+    customer_slug: str | None = None
+    supplier: str | None = None
+    sales_agent: str | None = None
+    category: str | None = None
+    rejection_reason: str | None = None
+    fix_required: str | None = None
+    fix_narrative: str | None = None
+    fix_assignee_id: str | None = None
+    status: str | None = None
+    outcome: str | None = None
+    outcome_narrative: str | None = None
+    # W4.6 — dead-reason classification. Validated against ``DEAD_REASONS``
+    # in ``patch_rejection``; only meaningful when status=DEAD but we don't
+    # block writing it on non-DEAD rows (the chip just doesn't render).
+    dead_reason: str | None = None
+
+
+class TransitionPayload(BaseModel):
+    to_status: str
+    notes: str | None = None
+
+
+class PortalBatchSubmit(BaseModel):
+    """W4.5 — admin-only batch submit. ``rejection_ids`` must all belong
+    to ``supplier`` and currently sit in a FIXED-like status. The route
+    flips each one to SUBMITTED_TO_PORTAL + writes an audit row + logs the
+    portal submit."""
+    supplier: str = Field(min_length=1)
+    rejection_ids: list[str] = Field(min_length=1)
+
+
+# ── routes ───────────────────────────────────────────────────────────────
+
+
+@rejections_router.get("/api/rejections")
+def list_rejections(
+    tab: str = Query("active", regex="^(active|fixed|dead|archive)$"),
+    category: str | None = None,
+    search: str | None = None,
+    dead_reason: str | None = Query(
+        None,
+        description="W4.6 — restrict the dead tab to one of DEAD_REASONS keys.",
+    ),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    user: dict = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    q = db.query(Rejection)
+    if tab == "active":
+        q = q.filter(Rejection.status.in_(ACTIVE_STATUSES))
+    elif tab == "fixed":
+        q = q.filter(Rejection.status.in_(FIXED_LIKE_STATUSES))
+    elif tab == "dead":
+        q = q.filter(Rejection.status == "DEAD")
+    # archive: no status filter
+
+    if category:
+        _validate_enum(category, REJECTION_CATEGORIES, "category")
+        q = q.filter(Rejection.category == category)
+
+    if dead_reason:
+        _validate_enum(dead_reason, set(DEAD_REASONS.keys()), "dead_reason")
+        q = q.filter(Rejection.dead_reason == dead_reason)
+
+    if search:
+        like = f"%{search}%"
+        q = q.filter(
+            (Rejection.rejection_reason.ilike(like))
+            | (Rejection.supplier.ilike(like))
+            | (Rejection.customer_slug.ilike(like))
+            | (Rejection.sales_agent.ilike(like))
+        )
+
+    total = q.count()
+    rows = (
+        q.order_by(Rejection.rejected_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    # Per-tab counts (always over the same base set, no other filters) so
+    # the top-bar tabs can render a reliable badge regardless of which tab
+    # is currently filtered.
+    base = db.query(Rejection)
+    counts = {
+        "active": base.filter(Rejection.status.in_(ACTIVE_STATUSES)).count(),
+        "fixed": base.filter(Rejection.status.in_(FIXED_LIKE_STATUSES)).count(),
+        "dead": base.filter(Rejection.status == "DEAD").count(),
+        "archive": base.count(),
+    }
+    return {
+        "rejections": [_serialize(r) for r in rows],
+        "total": total,
+        "counts": counts,
+        "tab": tab,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@rejections_router.get("/api/rejections/dead-reasons")
+def list_dead_reasons(
+    user: dict = Depends(current_user),
+) -> dict[str, Any]:
+    """W4.6 — return the static dead-reason vocabulary + glosses so the
+    frontend can render the Dead-tab filter chips with hover tooltips
+    without hard-coding the list in two places. Mounted before
+    ``/api/rejections/{rid}`` so the path doesn't get shadowed by the
+    UUID-typed catch-all."""
+    return {
+        "dead_reasons": [
+            {"key": k, "label": k.replace("_", " ").title(), "gloss": gloss}
+            for k, gloss in DEAD_REASONS.items()
+        ]
+    }
+
+
+@rejections_router.get("/api/rejections/{rid}")
+def get_rejection(
+    rid: UUID,
+    user: dict = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    r = db.query(Rejection).filter(Rejection.id == rid).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Rejection not found")
+    return _serialize(r)
+
+
+@rejections_router.post("/api/rejections", status_code=201)
+def create_rejection(
+    payload: RejectionCreate,
+    user: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _validate_enum(payload.category, REJECTION_CATEGORIES, "category")
+    _validate_enum(payload.fix_required, REMEDIATION_ACTIONS, "fix_required")
+
+    rejected_at = payload.rejected_at or datetime.utcnow()
+    rid = uuid.uuid4()
+    r = Rejection(
+        id=rid,
+        call_id=payload.call_id,
+        customer_slug=payload.customer_slug,
+        external_watt_site_id=payload.external_watt_site_id,
+        supplier=payload.supplier,
+        sales_agent=payload.sales_agent,
+        category=payload.category,
+        rejection_reason=payload.rejection_reason,
+        fix_required=payload.fix_required,
+        fix_assignee_id=payload.fix_assignee_id,
+        status="NOT_STARTED",
+        rejected_at=rejected_at,
+        deadline=_compute_deadline(rejected_at),
+        created_at=datetime.utcnow(),
+    )
+    db.add(r)
+    db.flush()
+
+    db.add(
+        RejectionAuditLog(
+            id=uuid.uuid4(),
+            rejection_id=rid,
+            actor_id=user["id"],
+            action="created",
+            from_status=None,
+            to_status="NOT_STARTED",
+            notes=None,
+            created_at=datetime.utcnow(),
+        )
+    )
+    db.commit()
+    db.refresh(r)
+    log.info(f"REJECTION_CREATED id={rid} category={payload.category} actor={user['id']}")
+    return _serialize(r)
+
+
+@rejections_router.patch("/api/rejections/{rid}")
+def patch_rejection(
+    rid: UUID,
+    payload: RejectionPatch,
+    user: dict = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    r = db.query(Rejection).filter(Rejection.id == rid).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Rejection not found")
+
+    _validate_enum(payload.category, REJECTION_CATEGORIES, "category")
+    _validate_enum(payload.status, REJECTION_STATUSES, "status")
+    _validate_enum(payload.outcome, REJECTION_OUTCOMES, "outcome")
+    _validate_enum(payload.fix_required, REMEDIATION_ACTIONS, "fix_required")
+    _validate_enum(payload.dead_reason, set(DEAD_REASONS.keys()), "dead_reason")
+
+    prev_status = r.status
+    changes = payload.model_dump(exclude_unset=True)
+    for k, v in changes.items():
+        setattr(r, k, v)
+
+    # Set resolved_at if status moved to a terminal value via patch.
+    if payload.status and payload.status in TERMINAL_STATUSES and r.resolved_at is None:
+        r.resolved_at = datetime.utcnow()
+
+    # Audit row for any patch — capture status delta if there was one.
+    if payload.status and payload.status != prev_status:
+        db.add(
+            RejectionAuditLog(
+                id=uuid.uuid4(),
+                rejection_id=r.id,
+                actor_id=user["id"],
+                action="updated",
+                from_status=prev_status,
+                to_status=payload.status,
+                notes=payload.outcome_narrative,
+                created_at=datetime.utcnow(),
+            )
+        )
+    elif changes:
+        # Non-status patch — still log the touch so the timeline stays useful.
+        db.add(
+            RejectionAuditLog(
+                id=uuid.uuid4(),
+                rejection_id=r.id,
+                actor_id=user["id"],
+                action="updated",
+                from_status=prev_status,
+                to_status=prev_status,
+                notes=", ".join(sorted(changes.keys())),
+                created_at=datetime.utcnow(),
+            )
+        )
+
+    db.commit()
+    db.refresh(r)
+
+    # Inngest observability — surface every rejection patch (status flip
+    # or otherwise) so the dashboard can audit reviewer activity.
+    try:
+        from app.workflows.events import REJECTION_STATUS_CHANGED
+        from app.workflows.observability import emit_event
+        if payload.status and payload.status != prev_status:
+            emit_event(REJECTION_STATUS_CHANGED, {
+                "rejection_id": str(r.id),
+                "from_status": prev_status,
+                "to_status": payload.status,
+                "actor_id": user["id"],
+                "dead_reason": payload.dead_reason,
+                "outcome": payload.outcome,
+            })
+    except Exception:
+        pass
+
+    return _serialize(r)
+
+
+@rejections_router.delete("/api/rejections/{rid}")
+def delete_rejection(
+    rid: UUID,
+    user: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    r = db.query(Rejection).filter(Rejection.id == rid).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Rejection not found")
+    db.delete(r)
+    db.commit()
+    return {"deleted": True, "id": str(rid)}
+
+
+# ── AI/HUMAN verdict gate ────────────────────────────────────────────────
+# verdict_state on each rejection starts as AI_PENDING after the
+# rejection_factory writes it. A reviewer either confirms the AI verdict
+# as-is (HUMAN_CONFIRMED) or edits a field and saves (HUMAN_OVERRIDDEN).
+# Compliant/non-compliant pages exclude AI_PENDING — only human-touched
+# rejections count toward those totals.
+
+class _OverridePayload(BaseModel):
+    category: str | None = None
+    fix_required: str | None = None
+    fix_narrative: str | None = None
+    rejection_reason: str | None = None
+    outcome_narrative: str | None = None
+
+
+@rejections_router.post("/api/rejections/{rid}/confirm")
+def confirm_verdict(
+    rid: UUID,
+    user: dict = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    r = db.query(Rejection).filter(Rejection.id == rid).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Rejection not found")
+
+    prev_state = r.verdict_state
+    r.verdict_state = "HUMAN_CONFIRMED"
+    r.confirmed_by = user["id"]
+    r.confirmed_at = datetime.utcnow()
+
+    db.add(
+        RejectionAuditLog(
+            id=uuid.uuid4(),
+            rejection_id=r.id,
+            actor_id=user["id"],
+            action="verdict_confirmed",
+            from_status=prev_state,
+            to_status="HUMAN_CONFIRMED",
+            notes=None,
+            created_at=datetime.utcnow(),
+        )
+    )
+    db.commit()
+    db.refresh(r)
+    return _serialize(r)
+
+
+@rejections_router.post("/api/rejections/{rid}/override")
+def override_verdict(
+    rid: UUID,
+    payload: _OverridePayload,
+    user: dict = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    r = db.query(Rejection).filter(Rejection.id == rid).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Rejection not found")
+
+    _validate_enum(payload.category, REJECTION_CATEGORIES, "category")
+    _validate_enum(payload.fix_required, REMEDIATION_ACTIONS, "fix_required")
+
+    prev_state = r.verdict_state
+    changes = payload.model_dump(exclude_unset=True)
+    for k, v in changes.items():
+        setattr(r, k, v)
+    r.verdict_state = "HUMAN_OVERRIDDEN"
+    r.confirmed_by = user["id"]
+    r.confirmed_at = datetime.utcnow()
+
+    db.add(
+        RejectionAuditLog(
+            id=uuid.uuid4(),
+            rejection_id=r.id,
+            actor_id=user["id"],
+            action="verdict_overridden",
+            from_status=prev_state,
+            to_status="HUMAN_OVERRIDDEN",
+            notes=", ".join(sorted(changes.keys())) if changes else None,
+            created_at=datetime.utcnow(),
+        )
+    )
+    db.commit()
+    db.refresh(r)
+    return _serialize(r)
+
+
+@rejections_router.post("/api/rejections/{rid}/transition")
+def transition_rejection(
+    rid: UUID,
+    payload: TransitionPayload,
+    user: dict = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    r = db.query(Rejection).filter(Rejection.id == rid).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Rejection not found")
+
+    _validate_enum(payload.to_status, REJECTION_STATUSES, "to_status")
+
+    prev_status = r.status
+    r.status = payload.to_status
+    if payload.to_status in TERMINAL_STATUSES and r.resolved_at is None:
+        r.resolved_at = datetime.utcnow()
+
+    db.add(
+        RejectionAuditLog(
+            id=uuid.uuid4(),
+            rejection_id=r.id,
+            actor_id=user["id"],
+            action="transitioned",
+            from_status=prev_status,
+            to_status=payload.to_status,
+            notes=payload.notes,
+            created_at=datetime.utcnow(),
+        )
+    )
+    db.commit()
+    db.refresh(r)
+    return _serialize(r)
+
+
+@rejections_router.get("/api/rejections/{rid}/audit-log")
+def list_audit_log(
+    rid: UUID,
+    user: dict = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    r = db.query(Rejection).filter(Rejection.id == rid).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Rejection not found")
+    rows = (
+        db.query(RejectionAuditLog)
+        .filter(RejectionAuditLog.rejection_id == r.id)
+        .order_by(RejectionAuditLog.created_at.desc())
+        .all()
+    )
+    return {"audit_log": [_serialize_audit(a) for a in rows]}
+
+
+# ── W4.5 — portal-batches admin endpoints ────────────────────────────────
+
+
+@rejections_router.get("/api/portal-batches")
+def list_portal_batches(
+    supplier: str | None = None,
+    user: dict = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Group FIXED rejections by supplier so the admin team can submit
+    them to each supplier's portal in one batch. ``FIXED`` here means any
+    status in {FIXED, BATCHED_TO_PORTAL} — once a row hits SUBMITTED or
+    APPROVED it falls out (already gone over the wire).
+
+    ``supplier=`` narrows to a single bucket; otherwise we return every
+    supplier with at least one fixed rejection."""
+    batchable_statuses = {"FIXED", "BATCHED_TO_PORTAL"}
+    q = db.query(Rejection).filter(Rejection.status.in_(batchable_statuses))
+    if supplier:
+        q = q.filter(Rejection.supplier == supplier)
+    rows = q.order_by(Rejection.supplier, Rejection.rejected_at.asc()).all()
+
+    by_supplier: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        sup = r.supplier or "(unknown supplier)"
+        by_supplier.setdefault(sup, []).append(
+            {
+                "id": str(r.id),
+                "customer_name": r.customer_slug,  # frontend treats as display label
+                "customer_slug": r.customer_slug,
+                "external_watt_site_id": r.external_watt_site_id,
+                "rejection_reason": r.rejection_reason,
+                "category": r.category,
+                "status": r.status,
+                "fixed_at": (
+                    r.resolved_at.isoformat() if r.resolved_at else None
+                ),
+            }
+        )
+
+    batches = [
+        {"supplier": sup, "count": len(items), "rejections": items}
+        for sup, items in sorted(by_supplier.items())
+    ]
+    return {"batches": batches}
+
+
+@rejections_router.post("/api/portal-batches/submit")
+def submit_portal_batch(
+    payload: PortalBatchSubmit,
+    user: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Flip every rejection in ``rejection_ids`` to SUBMITTED_TO_PORTAL +
+    write an audit row + log the (stubbed) outbound portal call.
+
+    Validation:
+      - all ids must exist
+      - all rows must currently be in {FIXED, BATCHED_TO_PORTAL}
+      - all rows' supplier must match ``payload.supplier`` (so we don't
+        accidentally submit an E.ON row to the BGL portal)
+    """
+    rejection_uuids: list[UUID] = []
+    for raw in payload.rejection_ids:
+        try:
+            rejection_uuids.append(UUID(raw))
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid rejection id: {raw!r}",
+            )
+
+    rows = (
+        db.query(Rejection)
+        .filter(Rejection.id.in_(rejection_uuids))
+        .all()
+    )
+    found_ids = {str(r.id) for r in rows}
+    missing = [rid for rid in payload.rejection_ids if rid not in found_ids]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Rejection(s) not found: {missing}",
+        )
+
+    batchable_statuses = {"FIXED", "BATCHED_TO_PORTAL"}
+    bad_status = [r for r in rows if r.status not in batchable_statuses]
+    if bad_status:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Some rejections are not in a submittable state "
+                f"(must be FIXED or BATCHED_TO_PORTAL): "
+                f"{[(str(r.id), r.status) for r in bad_status]}"
+            ),
+        )
+
+    bad_supplier = [r for r in rows if (r.supplier or "") != payload.supplier]
+    if bad_supplier:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Some rejections don't belong to supplier {payload.supplier!r}: "
+                f"{[(str(r.id), r.supplier) for r in bad_supplier]}"
+            ),
+        )
+
+    # ── stubbed portal API call ────────────────────────────────────────
+    # In production this would POST to the supplier's portal endpoint
+    # (per supplier-specific adapter). Today we just emit a structured
+    # log line so the operator can verify the batch shipped.
+    log.info(
+        f"PORTAL_BATCH_SUBMIT supplier={payload.supplier} "
+        f"count={len(rows)} actor={user['id']} "
+        f"ids={[str(r.id) for r in rows]}"
+    )
+
+    submitted_at = datetime.utcnow()
+    for r in rows:
+        prev = r.status
+        r.status = "SUBMITTED_TO_PORTAL"
+        db.add(
+            RejectionAuditLog(
+                id=uuid.uuid4(),
+                rejection_id=r.id,
+                actor_id=user["id"],
+                action="portal_submitted",
+                from_status=prev,
+                to_status="SUBMITTED_TO_PORTAL",
+                notes=f"Batched to {payload.supplier} portal",
+                created_at=submitted_at,
+            )
+        )
+
+    db.commit()
+
+    # Inngest observability — surface batch submit + per-rejection
+    # status flip in the dashboard.
+    try:
+        from app.workflows.events import PORTAL_BATCH_SUBMITTED, REJECTION_STATUS_CHANGED
+        from app.workflows.observability import emit_event
+        rejection_ids = [str(r.id) for r in rows]
+        emit_event(PORTAL_BATCH_SUBMITTED, {
+            "supplier": payload.supplier,
+            "rejection_ids": rejection_ids,
+            "submitted_count": len(rows),
+            "actor_id": user["id"],
+        })
+        for r in rows:
+            emit_event(REJECTION_STATUS_CHANGED, {
+                "rejection_id": str(r.id),
+                "from_status": "FIXED",
+                "to_status": "SUBMITTED_TO_PORTAL",
+                "actor_id": user["id"],
+            })
+    except Exception:
+        pass
+
+    return {
+        "submitted": len(rows),
+        "supplier": payload.supplier,
+        "rejection_ids": [str(r.id) for r in rows],
+    }
+
+
+# ── auto-create on FAIL/REVIEW verdict (called from hitl_routes) ─────────
+
+# Keyword scan: keep order-stable so two equal-priority matches resolve
+# deterministically. Most specific keywords first.
+_CATEGORY_RULES: list[tuple[set[str], str]] = [
+    ({"vat", "ccl", "green deal"}, "COMPLIANCE_ERROR"),
+    (
+        {"compliance", "broker", "disclaimer", "watt", "ombudsman", "tpi"},
+        "COMPLIANCE_ISSUE",
+    ),
+    ({"pricing", "rate", "uplift", "tariff", "price"}, "PRICING_ISSUE"),
+    (
+        {"missed", "didn't say", "did not say", "not stated", "missing"},
+        "VERBAL_SALES_ERROR",
+    ),
+    (
+        {"bacs", "dd", "credit", "in contract", "in-contract", "expired", "envelope"},
+        "PROCESS_FAILURE",
+    ),
+    ({"docusign"}, "DOCUSIGN_ERROR"),
+    ({"name", "address", "mpan", "mprn", "wrong", "typo"}, "ADMIN_ERROR"),
+]
+
+
+def infer_category(reason: str | None, rule_id: str | None = None) -> str:
+    """Heuristic category inference for auto-created rejections.
+
+    Scans the reviewer's free-text reason + the firing rule_id (if any)
+    for keywords. Falls back to ADMIN_ERROR — the safest default in the
+    XLSX deep-dive (tracker rows tagged ADMIN_ERROR are the largest
+    bucket and rarely need to be re-categorized).
+    """
+    haystack = " ".join(filter(None, [reason or "", rule_id or ""])).lower()
+    for keywords, cat in _CATEGORY_RULES:
+        for kw in keywords:
+            if kw in haystack:
+                return cat
+    return "ADMIN_ERROR"
+
+
+# W4.7 — minimum AI confidence to prefer the suggested category over the
+# keyword heuristic. Picked from the bucket-accuracy benchmark (XLSX
+# deep-dive review): at ≥0.7 the AI is right ~91% of the time vs the
+# heuristic's ~50%. Below this we fall back so a low-confidence guess
+# never overwrites the safer "ADMIN_ERROR" default.
+AI_CATEGORY_MIN_CONFIDENCE = 0.7
+
+
+def _resolve_ai_suggestion(
+    cp: dict | object | None,
+) -> tuple[str | None, str | None, float | None]:
+    """Pull (category, fix_required, confidence) off either:
+      - a JSON checkpoint result dict (from ``call.checkpoint_results`` —
+        keys ``suggested_category`` / ``suggested_fix_required`` /
+        ``category_confidence``, the analyzer's output schema), OR
+      - a CallCheckpoint ORM row (W4.7 columns
+        ``ai_category`` / ``ai_fix_required`` / ``ai_category_confidence``).
+
+    Validates against the Watt enums; mistyped or out-of-vocab values
+    collapse to None so the caller's ``conf >= 0.7`` gate naturally falls
+    through to the heuristic without bespoke branching.
+    """
+    if cp is None:
+        return None, None, None
+
+    if isinstance(cp, dict):
+        cat = cp.get("suggested_category") or cp.get("ai_category")
+        fix = cp.get("suggested_fix_required") or cp.get("ai_fix_required")
+        conf = cp.get("category_confidence")
+        if conf is None:
+            conf = cp.get("ai_category_confidence")
+    else:
+        cat = getattr(cp, "ai_category", None)
+        fix = getattr(cp, "ai_fix_required", None)
+        conf = getattr(cp, "ai_category_confidence", None)
+
+    if not isinstance(cat, str) or cat not in REJECTION_CATEGORIES:
+        cat = None
+    if not isinstance(fix, str) or fix not in REMEDIATION_ACTIONS:
+        fix = None
+    if isinstance(conf, bool) or not isinstance(conf, (int, float)):
+        conf = None
+    elif not (0.0 <= float(conf) <= 1.0):
+        conf = None
+    else:
+        conf = float(conf)
+    if cat is None:
+        # Confidence without a category is meaningless — discard.
+        conf = None
+    return cat, fix, conf
+
+
+def auto_create_rejection_for_verdict(
+    db: Session,
+    *,
+    call,
+    actor_id: str,
+    verdict_action: str,
+    reason: str | None,
+    rule_id: str | None = None,
+    checkpoint: dict | object | None = None,
+) -> Rejection | None:
+    """Side-effect helper invoked by submit_verdict when a reviewer marks a
+    checkpoint FAIL or REVIEW. Creates a rejection + audit log row.
+
+    Returns the created Rejection (so the caller can surface its id in the
+    response), or None if `verdict_action` doesn't trigger creation.
+
+    W4.7 — when ``checkpoint`` carries an AI-suggested category with
+    confidence ≥ ``AI_CATEGORY_MIN_CONFIDENCE`` (0.7), use the AI's bucket
+    + remediation. Otherwise fall back to ``infer_category`` (keyword
+    heuristic). Both paths log a clear marker
+    (``AI_SUGGESTION`` vs ``HEURISTIC_FALLBACK``) so we can monitor
+    accuracy in prod.
+    """
+    if verdict_action not in ("FAIL", "REVIEW"):
+        return None
+
+    rejected_at = datetime.utcnow()
+    customer_slug: str | None = None
+    site_id: int | None = None
+    supplier = call.detected_supplier
+
+    try:  # best-effort customer/site lookup via deal
+        from app.models import Customer, CustomerDeal
+
+        if call.deal_id:
+            deal = db.query(CustomerDeal).filter(CustomerDeal.id == call.deal_id).first()
+            if deal is not None:
+                site_id = deal.external_watt_site_id
+                if deal.customer_id:
+                    cust = (
+                        db.query(Customer)
+                        .filter(Customer.id == deal.customer_id)
+                        .first()
+                    )
+                    if cust is not None:
+                        customer_slug = cust.slug
+                        if site_id is None:
+                            site_id = cust.external_watt_site_id
+    except Exception:
+        # The auto-create must never fail the verdict submit; swallow and
+        # log so we still get a rejection row even with sparse links.
+        log.warning("REJECTION_AUTO_CREATE_link_lookup_failed", exc_info=True)
+
+    # W4.7 — prefer AI suggestion over heuristic when confidence ≥ 0.7.
+    ai_cat, ai_fix, ai_conf = _resolve_ai_suggestion(checkpoint)
+    if (
+        ai_cat is not None
+        and ai_conf is not None
+        and ai_conf >= AI_CATEGORY_MIN_CONFIDENCE
+    ):
+        category = ai_cat
+        fix_required = ai_fix  # may be None — that's OK, fix_required is nullable
+        decision_path = "AI_SUGGESTION"
+    else:
+        category = infer_category(reason, rule_id)
+        fix_required = None
+        decision_path = "HEURISTIC_FALLBACK"
+
+    # Sprint A1 — pull Claude's own rejection-tracker narrative (one-line
+    # headline + 2-4 sentence coaching notes) off either a JSON checkpoint
+    # dict (call.checkpoint_results) or a CallCheckpoint ORM row. Falls
+    # back to the manual reviewer reason when AI fields are missing so
+    # pre-A1 calls + analyzer errors keep working.
+    ai_rejection_reason: str | None = None
+    ai_narrative_notes: str | None = None
+    if isinstance(checkpoint, dict):
+        ai_rejection_reason = checkpoint.get("ai_rejection_reason")
+        ai_narrative_notes = checkpoint.get("ai_narrative_notes")
+    elif checkpoint is not None:
+        ai_rejection_reason = getattr(checkpoint, "ai_rejection_reason", None)
+        ai_narrative_notes = getattr(checkpoint, "ai_narrative_notes", None)
+    # Sanitize — empty strings count as missing.
+    if isinstance(ai_rejection_reason, str) and not ai_rejection_reason.strip():
+        ai_rejection_reason = None
+    if isinstance(ai_narrative_notes, str) and not ai_narrative_notes.strip():
+        ai_narrative_notes = None
+
+    final_reason = (
+        ai_rejection_reason
+        or reason
+        or "Auto-created from FAIL verdict"
+    )
+
+    rid = uuid.uuid4()
+    r = Rejection(
+        id=rid,
+        call_id=getattr(call, "id", None),
+        customer_slug=customer_slug,
+        external_watt_site_id=site_id,
+        supplier=supplier,
+        sales_agent=getattr(call, "agent_name", None),
+        category=category,
+        rejection_reason=final_reason[:1000],
+        outcome_narrative=ai_narrative_notes,
+        fix_required=fix_required,
+        status="NOT_STARTED",
+        rejected_at=rejected_at,
+        deadline=_compute_deadline(rejected_at),
+        created_at=datetime.utcnow(),
+    )
+    db.add(r)
+    db.flush()
+    db.add(
+        RejectionAuditLog(
+            id=uuid.uuid4(),
+            rejection_id=rid,
+            actor_id=actor_id,
+            action="created",
+            from_status=None,
+            to_status="NOT_STARTED",
+            notes="Auto-created from verdict",
+            created_at=datetime.utcnow(),
+        )
+    )
+
+    # Sprint C2 — back-link the rejection to its parent Deal and flip the
+    # deal to ``closed_lost`` (unless it's already terminal). Best-effort:
+    # any failure here is logged + swallowed so the rejection itself still
+    # commits cleanly.
+    try:
+        from app.models import CustomerDeal as _Deal
+
+        if getattr(call, "deal_id", None):
+            deal = db.query(_Deal).filter(_Deal.id == call.deal_id).first()
+            if deal is not None:
+                deal.rejection_id = rid
+                if deal.status not in ("closed_lost", "closed_done"):
+                    deal.status = "closed_lost"
+    except Exception:  # pragma: no cover — defensive
+        log.warning("REJECTION_AUTO_CREATE_deal_link_failed", exc_info=True)
+
+    log.info(
+        f"REJECTION_AUTO_CREATED id={rid} call_id={getattr(call, 'id', None)} "
+        f"category={r.category} fix={r.fix_required} path={decision_path} "
+        f"ai_conf={ai_conf if ai_conf is not None else '-'} "
+        f"ai_reason={'yes' if ai_rejection_reason else 'no'} "
+        f"actor={actor_id}"
+    )
+
+    # Inngest observability — fire-and-forget so this never blocks the
+    # API response. Surfaces every auto-created rejection in the
+    # Inngest dashboard alongside upload + finalize events.
+    try:
+        from app.workflows.events import REJECTION_AUTO_CREATED, DEAL_STATUS_CHANGED
+        from app.workflows.observability import emit_event
+        emit_event(REJECTION_AUTO_CREATED, {
+            "rejection_id": rid,
+            "call_id": getattr(call, "id", None),
+            "deal_id": str(getattr(call, "deal_id", "")) if getattr(call, "deal_id", None) else None,
+            "category": r.category,
+            "fix_required": r.fix_required,
+            "decision_path": decision_path,
+            "ai_confidence": ai_conf,
+            "actor_id": actor_id,
+        })
+        # If we flipped the deal status above, surface that too.
+        try:
+            deal_for_event = db.query(_Deal).filter(_Deal.id == call.deal_id).first() if getattr(call, "deal_id", None) else None
+            if deal_for_event is not None and deal_for_event.status == "closed_lost":
+                emit_event(DEAL_STATUS_CHANGED, {
+                    "deal_id": str(deal_for_event.id),
+                    "from_status": "in_progress",
+                    "to_status": "closed_lost",
+                    "rejection_id": rid,
+                    "actor_id": actor_id,
+                })
+        except Exception:
+            pass
+    except Exception:  # pragma: no cover — observability must not break business path
+        pass
+
+    return r

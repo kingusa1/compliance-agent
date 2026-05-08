@@ -1,0 +1,84 @@
+<!--
+  W3.B (v3-watt-coverage) — Customer confirmation email template.
+
+  Compliance manual §8: post-call confirmation must restate the agent-quoted
+  unit rate + standing charge, the contract length, and a 14-day cooling-off
+  notice referencing the signed DocuSign envelope.
+
+  Template engine: plain Python ``str.format_map`` with a defaultdict that
+  returns ``{{ MISSING: <key> }}`` for any field the call doesn't yet have
+  (per failure-mode plan). DO NOT switch to Jinja2 — we deliberately avoid
+  pulling a new runtime dep for one template.
+
+  Placeholders (all required to be passed in via .format_map):
+    customer_name, supplier, contract_length, unit_rate, standing_charge,
+    docusign_ref, call_ref, sender_name, sender_email
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Confirmation of your energy contract</title>
+</head>
+<body style="margin:0;padding:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.55;color:#222;background:#f6f7f9;">
+<div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e3e6eb;border-radius:8px;padding:28px;">
+
+  <h1 style="margin:0 0 16px 0;font-size:18px;font-weight:600;color:#0b1220;">
+    Confirmation of your energy contract
+  </h1>
+
+  <p style="margin:0 0 14px 0;">Dear {customer_name},</p>
+
+  <p style="margin:0 0 14px 0;">
+    Thank you for speaking with us today. This email confirms the contract
+    you agreed verbally on the call, signed via DocuSign envelope
+    <strong>{docusign_ref}</strong> (call reference {call_ref}).
+  </p>
+
+  <h2 style="margin:20px 0 8px 0;font-size:14px;font-weight:600;color:#0b1220;text-transform:uppercase;letter-spacing:0.04em;">
+    Contract summary
+  </h2>
+  <table cellspacing="0" cellpadding="6" style="width:100%;border-collapse:collapse;font-size:13px;">
+    <tr>
+      <td style="border-bottom:1px solid #eef0f3;color:#5b6573;width:42%;">Supplier</td>
+      <td style="border-bottom:1px solid #eef0f3;font-weight:500;">{supplier}</td>
+    </tr>
+    <tr>
+      <td style="border-bottom:1px solid #eef0f3;color:#5b6573;">Contract length</td>
+      <td style="border-bottom:1px solid #eef0f3;font-weight:500;">{contract_length}</td>
+    </tr>
+    <tr>
+      <td style="border-bottom:1px solid #eef0f3;color:#5b6573;">Unit rate (quoted)</td>
+      <td style="border-bottom:1px solid #eef0f3;font-weight:500;">{unit_rate}</td>
+    </tr>
+    <tr>
+      <td style="color:#5b6573;">Standing charge (quoted)</td>
+      <td style="font-weight:500;">{standing_charge}</td>
+    </tr>
+  </table>
+
+  <h2 style="margin:24px 0 8px 0;font-size:14px;font-weight:600;color:#0b1220;text-transform:uppercase;letter-spacing:0.04em;">
+    Your 14-day cooling-off period
+  </h2>
+  <p style="margin:0 0 14px 0;">
+    You have a 14-day cooling-off period under the Consumer Contracts
+    Regulations 2013, starting from today. During this window you may
+    cancel the contract without penalty by replying to this email or
+    calling us. After 14 days the contract becomes binding for the term
+    above.
+  </p>
+
+  <p style="margin:18px 0 4px 0;color:#5b6573;font-size:12px;">
+    Signed contract reference: <strong>{docusign_ref}</strong><br>
+    If you did not authorise this contract, please contact us immediately.
+  </p>
+
+  <hr style="border:none;border-top:1px solid #eef0f3;margin:22px 0 16px 0;">
+
+  <p style="margin:0;color:#5b6573;font-size:12px;">
+    {sender_name}<br>
+    {sender_email}
+  </p>
+</div>
+</body>
+</html>

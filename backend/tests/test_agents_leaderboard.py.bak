@@ -1,0 +1,207 @@
+"""Phase C5: GET /api/agents leaderboard aggregation.
+
+Uses the real Postgres session (like test_calls_v2_segments_flags.py) so the
+endpoint and the test see the same rows — other test modules permanently
+install an in-memory SQLite engine via `app.dependency_overrides`, and the
+autouse fixture here pops that off.
+
+Inserts:
+- Agent A: 2 calls, 3 CRITICAL flags in last 7d → needs_escalation=True
+- Agent B: 1 call, 0 flags → needs_escalation=False
+
+Assertions:
+- both agents appear
+- critical_count_7d exact (3 vs 0)
+- needs_escalation boolean flips at threshold >=3
+- ordering: A before B (more criticals)
+- empty DB returns {agents: []}
+
+Every row inserted is cleaned up in `finally` so repeated runs don't grow
+the local DB.
+"""
+import uuid
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.database import SessionLocal, get_db
+from app.main import app
+from app.models import Call, CallSegment, Flag
+
+client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _clear_db_override():
+    """Pop any in-memory SQLite override installed by sibling test modules so
+    the endpoint hits the same Postgres session our seed code uses."""
+    app.dependency_overrides.pop(get_db, None)
+    yield
+
+
+def _insert_call(db, agent_name: str, status: str = "completed") -> Call:
+    name = f"c5-{uuid.uuid4().hex[:8]}.wav"
+    call = Call(
+        filename=name,
+        file_path=f"/tmp/{name}",
+        customer_name=f"C5Co-{uuid.uuid4().hex[:6]}",
+        agent_name=agent_name,
+        status=status,
+        call_type="full",
+    )
+    db.add(call)
+    db.commit()
+    db.refresh(call)
+    return call
+
+
+def _insert_critical_flag(db, call_id: str) -> Flag:
+    flag = Flag(
+        call_id=call_id,
+        severity="CRITICAL",
+        detection_type="keyword",
+        category="Test",
+        trigger_phrase="test",
+    )
+    db.add(flag)
+    db.commit()
+    db.refresh(flag)
+    return flag
+
+
+def test_leaderboard_escalation_threshold():
+    db = SessionLocal()
+    suffix = uuid.uuid4().hex[:6]
+    agent_a = f"AgentA-{suffix}"
+    agent_b = f"AgentB-{suffix}"
+    created_calls: list[str] = []
+    created_flags: list = []
+
+    try:
+        # Agent A: 2 calls, 3 CRITICAL flags distributed across them
+        call_a1 = _insert_call(db, agent_a)
+        call_a2 = _insert_call(db, agent_a)
+        created_calls.extend([call_a1.id, call_a2.id])
+
+        for cid in [call_a1.id, call_a1.id, call_a2.id]:
+            created_flags.append(_insert_critical_flag(db, cid))
+
+        # Agent B: 1 call, no flags
+        call_b = _insert_call(db, agent_b)
+        created_calls.append(call_b.id)
+
+        # Call endpoint
+        r = client.get("/api/agents")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "agents" in body
+        agents = {a["name"]: a for a in body["agents"]}
+        assert agent_a in agents, f"Agent A missing from {list(agents.keys())}"
+        assert agent_b in agents, f"Agent B missing from {list(agents.keys())}"
+
+        a_row = agents[agent_a]
+        b_row = agents[agent_b]
+        assert a_row["critical_count_7d"] == 3
+        assert a_row["needs_escalation"] is True
+        assert a_row["escalated"] is True
+        assert a_row["total_calls"] == 2
+        assert a_row["email"].endswith("@wattutilities.co.uk")
+
+        assert b_row["critical_count_7d"] == 0
+        assert b_row["needs_escalation"] is False
+        assert b_row["total_calls"] == 1
+
+        # Ordering: A (more criticals) before B in the response list
+        names_in_order = [a["name"] for a in body["agents"]]
+        assert names_in_order.index(agent_a) < names_in_order.index(agent_b)
+    finally:
+        # Flags cascade on call delete, but we delete them explicitly first
+        # because the ORM-level relationship cascade doesn't fire for raw
+        # delete() queries against ids we never loaded.
+        for fl in created_flags:
+            db.delete(fl)
+        db.commit()
+        for cid in created_calls:
+            c = db.query(Call).filter(Call.id == cid).one_or_none()
+            if c:
+                db.delete(c)
+        db.commit()
+        db.close()
+
+
+def test_leaderboard_threshold_exactly_at_three():
+    """Boundary check: 2 criticals → not escalated; 3 → escalated."""
+    db = SessionLocal()
+    suffix = uuid.uuid4().hex[:6]
+    agent_under = f"Under-{suffix}"
+    agent_at = f"At-{suffix}"
+    created_calls: list[str] = []
+    created_flags: list = []
+
+    try:
+        c_under = _insert_call(db, agent_under)
+        c_at = _insert_call(db, agent_at)
+        created_calls.extend([c_under.id, c_at.id])
+
+        # 2 criticals for "under", 3 for "at"
+        for _ in range(2):
+            created_flags.append(_insert_critical_flag(db, c_under.id))
+        for _ in range(3):
+            created_flags.append(_insert_critical_flag(db, c_at.id))
+
+        r = client.get("/api/agents")
+        assert r.status_code == 200
+        agents = {a["name"]: a for a in r.json()["agents"]}
+        assert agents[agent_under]["needs_escalation"] is False
+        assert agents[agent_under]["critical_count_7d"] == 2
+        assert agents[agent_at]["needs_escalation"] is True
+        assert agents[agent_at]["critical_count_7d"] == 3
+    finally:
+        for fl in created_flags:
+            db.delete(fl)
+        db.commit()
+        for cid in created_calls:
+            c = db.query(Call).filter(Call.id == cid).one_or_none()
+            if c:
+                db.delete(c)
+        db.commit()
+        db.close()
+
+
+def test_leaderboard_empty_db_returns_empty_list():
+    """When there are no calls at all, endpoint returns {agents: []}.
+
+    Uses a private in-memory SQLite with StaticPool (same pattern as
+    test_analytics_routes.py) so the one connection that runs create_all
+    is the same one the endpoint queries."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    # Import models so every table is registered on Base.metadata before
+    # create_all — otherwise `calls` is missing on the fresh engine.
+    from app import models  # noqa: F401
+    from app.database import Base
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestSession = sessionmaker(bind=engine)
+
+    def _override():
+        db = TestSession()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = _override
+    try:
+        r = client.get("/api/agents")
+        assert r.status_code == 200
+        assert r.json() == {"agents": []}
+    finally:
+        app.dependency_overrides.pop(get_db, None)

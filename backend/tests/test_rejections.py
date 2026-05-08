@@ -1,0 +1,341 @@
+"""W2 (v3-watt-coverage): /api/rejections endpoint suite + auto-create on FAIL verdict.
+
+Setup mirrors test_compliance_override.py: dedicated in-memory SQLite +
+StaticPool, autouse clean_db fixture overrides ``get_db``. Every test
+authenticates with the shared test ES256 keypair via ``mock_jwks``.
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.database import Base, get_db
+from app.main import app
+from app.models import Call, CallCheckpoint, Profile, Rejection, RejectionAuditLog
+from app.rejections_routes import infer_category
+
+
+_engine = create_engine(
+    "sqlite:///:memory:",
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
+Base.metadata.create_all(_engine)
+TestSessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False)
+
+
+def _override_get_db():
+    db = TestSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def clean_db():
+    app.dependency_overrides[get_db] = _override_get_db
+    Base.metadata.drop_all(_engine)
+    Base.metadata.create_all(_engine)
+    yield
+    app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.fixture(autouse=True)
+def _disable_dev_all_admin(monkeypatch):
+    """Wave 4 DEV_ALL_ADMIN flag rewrites every user's role to 'admin'.
+    Admin-gate tests (POST /api/rejections requires admin/lead, DELETE
+    requires admin) need stored Profile.role to be honored so 'sarah'
+    (reviewer) gets the 403 the test expects."""
+    monkeypatch.setattr("app.config.settings.dev_all_admin", False)
+    yield
+
+
+@pytest.fixture
+def seed_profiles_local():
+    db = TestSessionLocal()
+    try:
+        db.add_all([
+            Profile(id="sarah", email="sarah@test.local", name="Sarah Ali",   role="reviewer", active=True),
+            Profile(id="omar",  email="omar@test.local",  name="Omar Hassan", role="lead",     active=True),
+            Profile(id="zoe",   email="zoe@test.local",   name="Zoe Admin",   role="admin",    active=True),
+        ])
+        db.commit()
+    finally:
+        db.close()
+
+
+def _create(payload: dict, headers: dict) -> dict:
+    r = client.post("/api/rejections", json=payload, headers=headers)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+# ─── Category inference (pure function) ─────────────────────────────────
+
+
+def test_infer_category_keyword_branches():
+    assert infer_category("BGL pulled prices and rate ceiling exceeded") == "PRICING_ISSUE"
+    assert infer_category("agent missed cooling-off disclosure") == "VERBAL_SALES_ERROR"
+    assert (
+        infer_category("compliance / TPI commission disclosure missing", "WATT_BROKER")
+        == "COMPLIANCE_ISSUE"
+    )
+    assert infer_category("wrong name on the LOA — typo on signup") == "ADMIN_ERROR"
+    assert infer_category("BACS rejected three times — bank account closed") == "PROCESS_FAILURE"
+    assert infer_category("VAT clause missing — Green Deal section") == "COMPLIANCE_ERROR"
+    assert infer_category("DocuSign envelope expired") in {"DOCUSIGN_ERROR", "PROCESS_FAILURE"}
+    # Default — nothing matches.
+    assert infer_category("just a vague note") == "ADMIN_ERROR"
+    # No reason at all.
+    assert infer_category(None) == "ADMIN_ERROR"
+
+
+# ─── CRUD ───────────────────────────────────────────────────────────────
+
+
+def test_admin_creates_with_default_status_and_2day_deadline(
+    mock_jwks, seed_profiles_local, auth
+):
+    payload = {
+        "category": "ADMIN_ERROR",
+        "rejection_reason": "wrong name on the account",
+        "supplier": "E.ON Next Energy",
+        "sales_agent": "Sammie",
+    }
+    body = _create(payload, auth("zoe"))
+    assert body["status"] == "NOT_STARTED"
+    assert body["category"] == "ADMIN_ERROR"
+    rejected = datetime.fromisoformat(body["rejected_at"])
+    deadline = datetime.fromisoformat(body["deadline"])
+    diff = deadline - rejected
+    assert timedelta(days=2) - timedelta(seconds=2) <= diff <= timedelta(days=2) + timedelta(seconds=2)
+
+    # An audit row was written.
+    db = TestSessionLocal()
+    try:
+        rows = db.query(RejectionAuditLog).all()
+        assert len(rows) == 1
+        assert rows[0].action == "created"
+        assert rows[0].to_status == "NOT_STARTED"
+    finally:
+        db.close()
+
+
+def test_non_admin_cannot_create(mock_jwks, seed_profiles_local, auth):
+    r = client.post(
+        "/api/rejections",
+        json={"category": "ADMIN_ERROR", "rejection_reason": "x"},
+        headers=auth("sarah"),
+    )
+    assert r.status_code == 403
+
+
+def test_invalid_category_rejected(mock_jwks, seed_profiles_local, auth):
+    r = client.post(
+        "/api/rejections",
+        json={"category": "BOGUS", "rejection_reason": "x"},
+        headers=auth("zoe"),
+    )
+    assert r.status_code == 400
+
+
+def test_list_with_tab_filtering(mock_jwks, seed_profiles_local, auth):
+    # Create one in each canonical bucket.
+    for status_, cat in [
+        ("NOT_STARTED", "ADMIN_ERROR"),
+        ("FIXED", "PRICING_ISSUE"),
+        ("DEAD", "VERBAL_SALES_ERROR"),
+    ]:
+        body = _create(
+            {"category": cat, "rejection_reason": f"seed-{cat}"},
+            auth("zoe"),
+        )
+        if status_ != "NOT_STARTED":
+            r = client.patch(
+                f"/api/rejections/{body['id']}",
+                json={"status": status_},
+                headers=auth("zoe"),
+            )
+            assert r.status_code == 200, r.text
+
+    def _list(tab):
+        r = client.get(f"/api/rejections?tab={tab}", headers=auth("sarah"))
+        assert r.status_code == 200
+        return r.json()
+
+    a = _list("active")
+    f = _list("fixed")
+    d = _list("dead")
+    arch = _list("archive")
+
+    assert {x["category"] for x in a["rejections"]} == {"ADMIN_ERROR"}
+    assert {x["category"] for x in f["rejections"]} == {"PRICING_ISSUE"}
+    assert {x["category"] for x in d["rejections"]} == {"VERBAL_SALES_ERROR"}
+    assert len(arch["rejections"]) == 3
+    # Counts correct regardless of which tab we hit.
+    assert a["counts"] == {"active": 1, "fixed": 1, "dead": 1, "archive": 3}
+
+
+def test_patch_with_status_writes_audit_log(mock_jwks, seed_profiles_local, auth):
+    body = _create(
+        {"category": "ADMIN_ERROR", "rejection_reason": "x"}, auth("zoe")
+    )
+    rid = body["id"]
+    r = client.patch(
+        f"/api/rejections/{rid}",
+        json={"status": "IN_PROGRESS"},
+        headers=auth("sarah"),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "IN_PROGRESS"
+
+    log_resp = client.get(f"/api/rejections/{rid}/audit-log", headers=auth("sarah"))
+    assert log_resp.status_code == 200
+    rows = log_resp.json()["audit_log"]
+    # At least: created + updated.
+    assert any(a["action"] == "created" for a in rows)
+    upd = [a for a in rows if a["action"] == "updated"]
+    assert upd and upd[0]["from_status"] == "NOT_STARTED"
+    assert upd[0]["to_status"] == "IN_PROGRESS"
+
+
+def test_transition_endpoint_sets_resolved_at_on_terminal(
+    mock_jwks, seed_profiles_local, auth
+):
+    body = _create(
+        {"category": "PRICING_ISSUE", "rejection_reason": "x"}, auth("zoe")
+    )
+    rid = body["id"]
+    r = client.post(
+        f"/api/rejections/{rid}/transition",
+        json={"to_status": "FIXED_AND_APPROVED", "notes": "approved by EON"},
+        headers=auth("sarah"),
+    )
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["status"] == "FIXED_AND_APPROVED"
+    assert out["resolved_at"] is not None
+
+
+def test_delete_admin_only(mock_jwks, seed_profiles_local, auth):
+    body = _create(
+        {"category": "ADMIN_ERROR", "rejection_reason": "x"}, auth("zoe")
+    )
+    rid = body["id"]
+
+    # Non-admin can't delete.
+    r = client.delete(f"/api/rejections/{rid}", headers=auth("sarah"))
+    assert r.status_code == 403
+
+    # Admin can.
+    r = client.delete(f"/api/rejections/{rid}", headers=auth("zoe"))
+    assert r.status_code == 200
+    assert r.json()["deleted"] is True
+
+    # And it's gone.
+    r = client.get(f"/api/rejections/{rid}", headers=auth("sarah"))
+    assert r.status_code == 404
+
+
+# ─── Auto-create on FAIL verdict ────────────────────────────────────────
+
+
+def _seed_call_with_one_cp() -> str:
+    db = TestSessionLocal()
+    try:
+        cps = [
+            {
+                "id": "cp_1",
+                "name": "Confirm consent",
+                "status": "pass",
+                "verdict": "pass",
+                "confidence": 0.9,
+                "rule_id": "MISSING_PRICE",
+            }
+        ]
+        c = Call(
+            id="c-auto",
+            filename="x.mp3",
+            file_path="c-auto/x.mp3",
+            duration_seconds=10.0,
+            transcript="...",
+            detected_supplier="E.ON Next Energy",
+            agent_name="Sammie",
+            checkpoint_results=json.dumps(cps),
+        )
+        db.add(c)
+        # Sprint A1+ — auto_create_rejection_for_verdict iterates failed
+        # CallCheckpoint ORM rows (not the JSON blob), so seed at least
+        # one passed=False row keyed to the same call.
+        db.add(CallCheckpoint(
+            id="aaaaaaaa-1111-1111-1111-000000000001",
+            call_id="c-auto",
+            rule_text="MISSING_PRICE",
+            passed=False,
+            excerpt=None,
+        ))
+        db.commit()
+    finally:
+        db.close()
+    return "c-auto"
+
+
+def test_auto_create_on_fail_verdict(mock_jwks, seed_profiles_local, auth):
+    cid = _seed_call_with_one_cp()
+    r = client.post(
+        f"/api/calls/{cid}/verdict",
+        headers=auth("sarah"),
+        json={
+            "checkpoint_id": "cp_1",
+            "verdict": "FAIL",
+            "reasoning": "BGL pulled prices and unit rate exceeded ceiling — needs re-quote",
+        },
+    )
+    assert r.status_code == 200, r.text
+    payload = r.json()
+    assert payload["saved"] is True
+    assert payload.get("auto_rejection_id"), payload
+
+    # Resulting rejection: hooked to call + supplier + sales-agent + inferred category.
+    db = TestSessionLocal()
+    try:
+        rej = db.query(Rejection).one()
+        assert str(rej.id) == payload["auto_rejection_id"]
+        assert rej.call_id == cid
+        assert rej.category == "PRICING_ISSUE"
+        assert rej.supplier == "E.ON Next Energy"
+        assert rej.sales_agent == "Sammie"
+        assert rej.status == "NOT_STARTED"
+        assert rej.deadline is not None
+    finally:
+        db.close()
+
+
+def test_no_auto_create_on_pass_verdict(mock_jwks, seed_profiles_local, auth):
+    cid = _seed_call_with_one_cp()
+    r = client.post(
+        f"/api/calls/{cid}/verdict",
+        headers=auth("sarah"),
+        json={
+            "checkpoint_id": "cp_1",
+            "verdict": "PASS",
+            "reasoning": "all good",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json().get("auto_rejection_id") is None
+    db = TestSessionLocal()
+    try:
+        assert db.query(Rejection).count() == 0
+    finally:
+        db.close()

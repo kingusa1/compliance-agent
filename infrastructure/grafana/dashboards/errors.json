@@ -1,0 +1,51 @@
+{
+  "title": "Errors",
+  "uid": "compliance-errors",
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "browser",
+  "time": { "from": "now-24h", "to": "now" },
+  "refresh": "1m",
+  "tags": ["compliance", "errors"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "ERROR-level log lines per minute",
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum by (compose_service) (count_over_time({compose_service=~\"compliance-.*\"} | json | level=\"ERROR\" [1m]))",
+          "legendFormat": "{{compose_service}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "logs" }, "overrides": [] }
+    },
+    {
+      "id": 2,
+      "type": "logs",
+      "title": "Recent ERROR log lines (compliance-backend)",
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 9 },
+      "targets": [
+        {
+          "expr": "{compose_service=\"compliance-backend\"} | json | level=\"ERROR\"",
+          "refId": "A"
+        }
+      ],
+      "options": { "showTime": true, "wrapLogMessage": true, "dedupStrategy": "none" }
+    },
+    {
+      "id": 3,
+      "type": "text",
+      "title": "GlitchTip — top exceptions",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 23 },
+      "options": {
+        "mode": "markdown",
+        "content": "GlitchTip top exception list lives at [GLITCHTIP_DOMAIN/issues](http://localhost:8080/issues). Embed via iframe panel after first event arrives."
+      }
+    }
+  ]
+}

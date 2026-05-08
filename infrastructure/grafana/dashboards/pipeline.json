@@ -1,0 +1,53 @@
+{
+  "title": "Pipeline",
+  "uid": "compliance-pipeline",
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "browser",
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "tags": ["compliance", "pipeline"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Step duration p50 / p95 / p99 (s)",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, step) (rate(pipeline_step_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 — {{step}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, step) (rate(pipeline_step_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 — {{step}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, step) (rate(pipeline_step_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99 — {{step}}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "options": { "legend": { "showLegend": true, "displayMode": "table", "placement": "right" } }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Throughput — completed steps / min",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 9 },
+      "targets": [
+        {
+          "expr": "sum by (step) (rate(pipeline_step_duration_seconds_count[1m])) * 60",
+          "legendFormat": "{{step}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] }
+    }
+  ]
+}

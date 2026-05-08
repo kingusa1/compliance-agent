@@ -1,0 +1,180 @@
+{
+  "model": "anthropic/claude-opus-4.7",
+  "reasoning_effort": "high",
+  "batch_size": 6,
+  "call_id": "e9a28d20-585f-4136-81d8-3974dec2e3ab",
+  "filename": "EON__Elec_Verbal_Contract__from_1061_to_07852209642_cr_2026_Apr_08_10_50_52.mp3",
+  "supplier": "E.ON Next",
+  "num_checkpoints": 24,
+  "api_calls": 4,
+  "elapsed_s": 40.5,
+  "tokens_in": 18265,
+  "tokens_out": 2336,
+  "reasoning_tokens": 0,
+  "cost_usd": 0.4492,
+  "score": {
+    "accuracy": 95.8,
+    "matches": 23,
+    "mismatches": 1,
+    "missing": 0,
+    "unknown": 0,
+    "false_fails": 0,
+    "false_passes": 0,
+    "partial_disag": 1,
+    "total": 24,
+    "details": [
+      [
+        "PARTIAL_DISAG",
+        "vat and additional charges exclusion",
+        "pass",
+        "partial"
+      ]
+    ]
+  },
+  "predictions": [
+    {
+      "name": "Recording Disclosure",
+      "status": "pass",
+      "evidence": "calls are recorded for monitoring purposes",
+      "notes": null
+    },
+    {
+      "name": "Date and Time Statement",
+      "status": "pass",
+      "evidence": "today's date is the 04/08/2026 time is currently fifty three minutes past ten",
+      "notes": null
+    },
+    {
+      "name": "Third Party Intermediary Declaration",
+      "status": "pass",
+      "evidence": "my name is alex fitton we are the third party in community what utility limited working on behalf of oakley group limited we are not directly employed by eonxt",
+      "notes": null
+    },
+    {
+      "name": "Authority to Act Consent",
+      "status": "pass",
+      "evidence": "can you confirm that you are happy for me to act on your behalf to agree this new contract with eonxt is that okay / yep that's fine",
+      "notes": null
+    },
+    {
+      "name": "Customer Identification",
+      "status": "pass",
+      "evidence": "yeah it's adam cade company is wk limited and i'm the director",
+      "notes": null
+    },
+    {
+      "name": "Site Address Confirmation",
+      "status": "pass",
+      "evidence": "can you confirm for me the full supply full supply address that your next is supplying please / so it's the spot that is 30 high street in ben stanton ... pe289jz",
+      "notes": null
+    },
+    {
+      "name": "Contractual Authority Confirmation",
+      "status": "pass",
+      "evidence": "i can confirm that you do have the necessary authority to agree this legally binding contract between eonex and the business that you represent but also i've discussed is that okay yeah",
+      "notes": null
+    },
+    {
+      "name": "Meter Change Notification",
+      "status": "pass",
+      "evidence": "eonnex may need to change a meter and install automated meter reading equipment to comply with industry regulations if this is the case they will contact you with more information",
+      "notes": null
+    },
+    {
+      "name": "Credit Check and Contract Continuity",
+      "status": "pass",
+      "evidence": "eonnex can carry out business or personal checks with credit reference agencies before enjoying your contract if your credit check is unsatisfactory or you don't pay them they may terminate your plan make changes to how you pay or disconnect you your contract with eonx is continuous it will then normally point some of this contract to register to them they choose to end it or when you agree a new contract with them",
+      "notes": null
+    },
+    {
+      "name": "Plan Start Date",
+      "status": "pass",
+      "evidence": "your plan will start when your current one comes to an end",
+      "notes": null
+    },
+    {
+      "name": "Plan Term and Consumption",
+      "status": "pass",
+      "evidence": "you've agreed to a twelve month fixed business electricity plan it is for the consumption of... the usage is 6,348 kilowatts per annum",
+      "notes": null
+    },
+    {
+      "name": "Total Contract Cost",
+      "status": "pass",
+      "evidence": "the estimated total cost of this contract is \u00a32,039.58",
+      "notes": null
+    },
+    {
+      "name": "Commission Disclosure",
+      "status": "pass",
+      "evidence": "the estimated total cost of this contract is \u00a32,039.58 our commission makes up an estimated total amount of again let me just pull up the portal for you paul sorry about this so a \u00a3126.96 over the length of your contract and it is calculated based on your estimated annual energy consumption any any other arrangements not included in the onyx terms and conditions are between you the consumer and those what utility is limited",
+      "notes": null
+    },
+    {
+      "name": "Price Breakdown",
+      "status": "partial",
+      "evidence": "The price you are agreeing to is so as i said your standing charge is gonna be at 30p per day your daytime and nighttime unit rate will be at 30.4p per kilowatt hour",
+      "notes": "Standing charge and day/night rates stated, but no evening/weekend charge or RHT rate mentioned - may not be applicable given flat rate tariff chosen"
+    },
+    {
+      "name": "Capacity Charges",
+      "status": "fail",
+      "evidence": "NOT FOUND IN TRANSCRIPT",
+      "notes": "No mention of ASC charge, kVA, excess capacity, or Network Operator - may not be applicable for this small business"
+    },
+    {
+      "name": "VAT and Additional Charges Exclusion",
+      "status": "partial",
+      "evidence": "All prices that's with vat and climate change levy in green deal if these do apply to you emix will have them at the current rates. The prices are fully inclusive of data collection the meter operation cost",
+      "notes": "Agent said 'with VAT' instead of 'excluding VAT' - this is incorrect wording. CCL and Green Deal mentioned, data collection and meter operation costs mentioned"
+    },
+    {
+      "name": "Fixed Price Terms",
+      "status": "pass",
+      "evidence": "prices are fixed for the duration of your contract unless false information has been provided or there are any changes outside of supplies control",
+      "notes": null
+    },
+    {
+      "name": "Payment Method Confirmation",
+      "status": "partial",
+      "evidence": "can you confirm that you are happy for us to use the current direct debit information that is held by eonex is that okay yeah ... yeah it's fine yeah",
+      "notes": "Confirmed existing Direct Debit for renewal, but did not explain that prices would increase if DD is cancelled or payment fails"
+    },
+    {
+      "name": "Renewal Information Notice",
+      "status": "pass",
+      "evidence": "before you plan on eonex will send you information about your renewal options",
+      "notes": null
+    },
+    {
+      "name": "Supplier Switch Objection Rights",
+      "status": "pass",
+      "evidence": "may object to your changing supplier if there's a debt balance on your account",
+      "notes": null
+    },
+    {
+      "name": "Marketing Consent",
+      "status": "partial",
+      "evidence": "eomix would like to keep you up to date with new products like tariffs heating and other energy related services would we be happy for them to contact you by email by post email or telephone which may include text messages... yeah no robert not any and no no no no no no no no no no no no no worries... you can change your consent at any time through your online account or by contacting them directly",
+      "notes": "All methods mentioned and change consent informed, but individual answers for each method (post, email, telephone/text) were not separately logged - customer gave a blanket 'no' response"
+    },
+    {
+      "name": "Terms and Conditions Availability",
+      "status": "pass",
+      "evidence": "you will receive a copy of the full terms and conditions with confirmation of what we've agreed today you can also find a copy on the eonx website at www.eonx.com/policies",
+      "notes": null
+    },
+    {
+      "name": "Direct Debit Guarantee Offer",
+      "status": "pass",
+      "evidence": "would you like me to read the direct debit guarantee to you now or are you happy to receive that in the confirmation letter",
+      "notes": null
+    },
+    {
+      "name": "Final Confirmation and Proceed",
+      "status": "partial",
+      "evidence": "can you confirm that you've understood these terms and that you're happy to proceed is that okay yes that's fine",
+      "notes": "Customer confirmed understanding and happy to proceed, but the Direct Debit Guarantee text covering notification of changes, refund rights, and cancellation process was not read out - customer opted to receive it in confirmation letter"
+    }
+  ]
+}

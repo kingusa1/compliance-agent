@@ -1,0 +1,92 @@
+/**
+ * /tracker inline-edit mutation.
+ *
+ * PATCH /api/tracker/rows/{rejection_id} — accepts {field: value} body and
+ * returns the updated row id + per-field source map. Uses the auth-aware
+ * `apiFetch` (Supabase Bearer JWT, one-shot refresh-and-retry on 401).
+ *
+ * On success, invalidates the `["admin", "tracker", ...]` query key prefix
+ * so the table refetches with the new value + flipped `source: "human"`
+ * provenance badges.
+ */
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+
+import { apiFetch } from "@/lib/api";
+import type { TrackerFieldSource } from "@/lib/queries/tracker";
+
+export type EditTrackerVars = {
+  rejectionId: string;
+  fields: Record<string, string | number | null>;
+};
+
+export type EditTrackerResponse = {
+  id: string;
+  field_sources: Record<string, TrackerFieldSource>;
+};
+
+async function patchTrackerRow({ rejectionId, fields }: EditTrackerVars): Promise<EditTrackerResponse> {
+  return apiFetch<EditTrackerResponse>(`/api/tracker/rows/${encodeURIComponent(rejectionId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(fields),
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function useEditTrackerRow() {
+  const qc = useQueryClient();
+  return useMutation<EditTrackerResponse, Error, EditTrackerVars>({
+    mutationFn: patchTrackerRow,
+    onSuccess: () => {
+      // useTrackerRowsQuery uses ["admin", "tracker", filters] — prefix match.
+      qc.invalidateQueries({ queryKey: ["admin", "tracker"] });
+    },
+  });
+}
+
+
+// ── AI/HUMAN verdict gate mutations ──────────────────────────────────────
+// confirm  → POST /api/rejections/{id}/confirm  → HUMAN_CONFIRMED
+// override → POST /api/rejections/{id}/override → HUMAN_OVERRIDDEN
+// Side-panel uses confirm when no field changed; override when reviewer
+// edited any of {category, fix_required, fix_narrative, rejection_reason}.
+
+export type OverridePayload = {
+  category?: string | null;
+  fix_required?: string | null;
+  fix_narrative?: string | null;
+  rejection_reason?: string | null;
+  outcome_narrative?: string | null;
+};
+
+async function confirmRejection(rejectionId: string): Promise<void> {
+  await apiFetch(`/api/rejections/${encodeURIComponent(rejectionId)}/confirm`, {
+    method: "POST",
+  });
+}
+
+async function overrideRejection(
+  rejectionId: string,
+  body: OverridePayload,
+): Promise<void> {
+  await apiFetch(`/api/rejections/${encodeURIComponent(rejectionId)}/override`, {
+    method: "POST",
+    body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function useConfirmVerdict() {
+  const qc = useQueryClient();
+  return useMutation<void, Error, string>({
+    mutationFn: (rejectionId) => confirmRejection(rejectionId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "tracker"] }),
+  });
+}
+
+export function useOverrideVerdict() {
+  const qc = useQueryClient();
+  return useMutation<void, Error, { rejectionId: string; body: OverridePayload }>({
+    mutationFn: ({ rejectionId, body }) => overrideRejection(rejectionId, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "tracker"] }),
+  });
+}

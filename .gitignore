@@ -1,0 +1,56 @@
+# ── Dependencies ─────────────────────────────────────────────────────────
+node_modules/
+venv/
+.venv/
+
+# ── Build artifacts ──────────────────────────────────────────────────────
+.next/
+dist/
+build/
+*.tar.gz
+frontend-v3/tsconfig.tsbuildinfo
+frontend-v3/test-results/
+frontend-v3/playwright-report/
+
+# ── Python caches ────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Test / coverage artifacts ────────────────────────────────────────────
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# ── Runtime data (do NOT commit user uploads / local DBs) ────────────────
+backend/uploads/
+backend/var/
+*.sqlite
+*.sqlite3
+*.db
+
+# ── Editor / OS noise ────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ── Env files — never commit (creds + endpoints vary per machine) ────────
+.env
+.env.*
+!.env.example
+!*.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+frontend-v3/.env
+frontend-v3/.env.*
+!frontend-v3/.env.local.example
+
+# ── Logs ─────────────────────────────────────────────────────────────────
+*.log
+backend/*.log

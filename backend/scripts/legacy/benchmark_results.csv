@@ -1,0 +1,4 @@
+timestamp,call_id,supplier,checkpoints,approach,provider,model,time_seconds,token_estimate,llm_calls,accuracy,matches,mismatches,missing,score_gt,score_test
+2026-04-13T22:08:05.446313,e9a28d20,E.ON Next,24,extract-then-judge,openrouter,anthropic/claude-sonnet-4-6,55.3,9986,25,79.2,19,5,0,18/24,15/24
+2026-04-13T22:09:20.922301,e9a28d20,E.ON Next,24,batched-6,openrouter,anthropic/claude-sonnet-4-6,75.5,14461,4,91.7,22,2,0,18/24,18/24
+2026-04-13T22:12:14.695512,e9a28d20,E.ON Next,24,single-prompt,openrouter,anthropic/claude-sonnet-4-6,173.8,6015,1,83.3,20,4,0,18/24,16/24

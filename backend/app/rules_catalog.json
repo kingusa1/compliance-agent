@@ -1,0 +1,170 @@
+[
+  {
+    "id": "R-001",
+    "name": "Watt Utilities mention in first 20s",
+    "category": "identity",
+    "severity": "critical",
+    "expected_phrases": ["Watt Utilities", "calling from Watt", "Watt"],
+    "description": "Lead-gen intro must explicitly identify Watt Utilities within the first 20 seconds (Watt gates Step 5, Lead Gen CRITICAL #1)."
+  },
+  {
+    "id": "R-002",
+    "name": "Supplier impersonation",
+    "category": "identity",
+    "severity": "critical",
+    "expected_phrases": [],
+    "description": "Agent must not claim to be calling FROM a supplier (e.g. 'British Gas', 'E.ON'). Watt is a broker and any impersonation is a CRITICAL fail (Step 5 Lead Gen CRITICAL #2)."
+  },
+  {
+    "id": "R-003",
+    "name": "Guaranteed savings claim",
+    "category": "pricing",
+    "severity": "critical",
+    "expected_phrases": [],
+    "description": "Agent must not promise guaranteed savings, lowest price, or that the customer 'can't get better' (Step 5 Lead Gen CRITICAL #3)."
+  },
+  {
+    "id": "R-004",
+    "name": "Whole-market claim",
+    "category": "pricing",
+    "severity": "critical",
+    "expected_phrases": [],
+    "description": "Agent must not claim Watt searches the whole market or every supplier (Step 5 Lead Gen CRITICAL #4)."
+  },
+  {
+    "id": "R-005",
+    "name": "Pressure after objection",
+    "category": "consent",
+    "severity": "critical",
+    "expected_phrases": [],
+    "description": "Agent must de-escalate or end the call after a clear customer objection — continued pressure is a CRITICAL fail (Step 5 Lead Gen CRITICAL #5)."
+  },
+  {
+    "id": "R-006",
+    "name": "Decision-maker confirmation",
+    "category": "identity",
+    "severity": "high",
+    "expected_phrases": ["bill payer", "decision maker", "authorised"],
+    "description": "Agent must confirm the customer is the bill-payer or authorised decision maker (Step 5 Lead Gen HIGH #1)."
+  },
+  {
+    "id": "R-007",
+    "name": "Contract / renewal status check",
+    "category": "qualification",
+    "severity": "high",
+    "expected_phrases": ["contract end", "renewal", "current contract"],
+    "description": "Agent must ask when the current supply contract ends before pitching (Step 5 Lead Gen HIGH #2)."
+  },
+  {
+    "id": "R-008",
+    "name": "Clear process explanation",
+    "category": "disclosure",
+    "severity": "high",
+    "expected_phrases": [],
+    "description": "Agent must clearly explain the broker-quote-switch process — flagged via clarity heuristic (Step 5 Lead Gen HIGH #3)."
+  },
+  {
+    "id": "R-009",
+    "name": "Approved script followed",
+    "category": "terms",
+    "severity": "critical",
+    "expected_phrases": [],
+    "description": "Verbal contract must follow Watt's approved supplier-specific script (Step 5 Verbal CRITICAL #1)."
+  },
+  {
+    "id": "R-010",
+    "name": "Commission disclosed",
+    "category": "disclosure",
+    "severity": "critical",
+    "expected_phrases": ["commission", "fee", "we earn", "we are paid"],
+    "description": "Verbal contract must disclose Watt's commission / fee from the supplier (Step 5 Verbal CRITICAL #2)."
+  },
+  {
+    "id": "R-011",
+    "name": "Contract terms stated",
+    "category": "terms",
+    "severity": "critical",
+    "expected_phrases": ["unit rate", "standing charge", "term"],
+    "description": "Verbal contract must state supplier, term length, unit rate, and standing charge (Step 5 Verbal CRITICAL #3)."
+  },
+  {
+    "id": "R-012",
+    "name": "Clear customer agreement",
+    "category": "consent",
+    "severity": "critical",
+    "expected_phrases": ["yes", "I agree", "I confirm"],
+    "description": "Customer must give an explicit verbal agreement (yes / agree / confirm) — silence or ambiguity fails (Step 5 Verbal CRITICAL #4)."
+  },
+  {
+    "id": "R-013",
+    "name": "Agent does not answer for customer",
+    "category": "consent",
+    "severity": "critical",
+    "expected_phrases": [],
+    "description": "Agent must give the customer space to respond — answering on the customer's behalf is a CRITICAL fail (Step 5 Verbal CRITICAL #5)."
+  },
+  {
+    "id": "R-014",
+    "name": "Script not rushed",
+    "category": "disclosure",
+    "severity": "high",
+    "expected_phrases": [],
+    "description": "Speech-rate threshold + customer-interruption count flag a rushed script (Step 5 Verbal HIGH #1)."
+  },
+  {
+    "id": "R-015",
+    "name": "Summary read-back",
+    "category": "disclosure",
+    "severity": "high",
+    "expected_phrases": ["to confirm", "to summarise", "what we agreed"],
+    "description": "Agent must read back a summary of agreed terms before closing (Step 5 Verbal HIGH #2)."
+  },
+  {
+    "id": "R-016",
+    "name": "No customer confusion",
+    "category": "disclosure",
+    "severity": "high",
+    "expected_phrases": [],
+    "description": "Repeated 'what?' / 'I don't understand' / asks-for-repeat by the customer signal confusion (Step 5 Verbal HIGH #3)."
+  },
+  {
+    "id": "R-017",
+    "name": "MPAN / MPRN captured",
+    "category": "terms",
+    "severity": "medium",
+    "expected_phrases": ["supply number", "MPAN", "MPRN"],
+    "description": "Supply number(s) must be captured before submitting a quote — coaching gate."
+  },
+  {
+    "id": "R-018",
+    "name": "Expected go-live date stated",
+    "category": "terms",
+    "severity": "medium",
+    "expected_phrases": ["go live", "live date", "switch date"],
+    "description": "Agent should state the expected supply start date so the customer can plan — coaching gate."
+  },
+  {
+    "id": "R-019",
+    "name": "Annual cost stated",
+    "category": "pricing",
+    "severity": "medium",
+    "expected_phrases": ["annual", "per year", "yearly"],
+    "description": "Agent should give an estimated annual cost so the customer can compare — coaching gate."
+  },
+  {
+    "id": "R-020",
+    "name": "Polite greeting",
+    "category": "identity",
+    "severity": "medium",
+    "expected_phrases": ["good morning", "good afternoon", "hello"],
+    "description": "Intro should open with a polite greeting — coaching gate."
+  },
+  {
+    "id": "R-021",
+    "name": "Closing courtesy",
+    "category": "disclosure",
+    "severity": "medium",
+    "expected_phrases": ["thank you", "have a good"],
+    "description": "Close stage should end with a courtesy thank-you — coaching gate."
+  }
+]

@@ -1,0 +1,303 @@
+[
+  {
+    "id": 1,
+    "category": "core",
+    "description": "Reviewer uploads call audio file and receives a compliance verdict",
+    "steps": [
+      "Open frontend on /upload",
+      "Drop an mp3/wav file",
+      "Wait for transcription + analysis",
+      "Verify verdict appears with score, status, rule pass/fail breakdown"
+    ],
+    "passes": false
+  },
+  {
+    "id": 2,
+    "category": "core",
+    "description": "Reviewer browses call list and opens a call to inspect details",
+    "steps": [
+      "Open /calls",
+      "Filter by status / supplier / date",
+      "Click a row",
+      "Verify transcript, checkpoints, audio playback all render"
+    ],
+    "passes": false
+  },
+  {
+    "id": 3,
+    "category": "core",
+    "description": "Reviewer claims a call for HITL review and releases on completion",
+    "steps": [
+      "From a call detail page, click Claim",
+      "Verify only this reviewer can edit",
+      "Click Release",
+      "Verify another reviewer can claim it"
+    ],
+    "passes": false
+  },
+  {
+    "id": 4,
+    "category": "core",
+    "description": "Reviewer edits call metadata (agent name, supplier, script variant) and changes persist",
+    "steps": [
+      "From call detail, edit Agent / Supplier / Script fields",
+      "Save",
+      "Reload",
+      "Verify values persisted and audit row written"
+    ],
+    "passes": false
+  },
+  {
+    "id": 5,
+    "category": "core",
+    "description": "Operator triggers replay (re-analysis) on a stored transcript without re-transcribing",
+    "steps": [
+      "From call detail, click Reanalyze",
+      "Verify endpoint accepts and returns 202 within 1 s",
+      "Verify no new transcription cost incurred",
+      "Verify new verdict written with audit row"
+    ],
+    "passes": false
+  },
+  {
+    "id": 6,
+    "category": "data",
+    "description": "Reviewer can see an audit log of who did what and when across calls and rules",
+    "steps": [
+      "Open /observability/audit",
+      "Filter by actor / action / date",
+      "Verify rows include actor, action, resource_id, ip, timestamp"
+    ],
+    "passes": false
+  },
+  {
+    "id": 7,
+    "category": "data",
+    "description": "Operator can see failed jobs (Inngest retry exhaustion) and replay them from the UI",
+    "steps": [
+      "Force a pipeline failure on a test call (kill provider key)",
+      "Wait for retries to exhaust",
+      "Open /observability/stuck",
+      "Verify failed_jobs row appears with last_step + last_error",
+      "Click Replay → verify call re-runs from last successful step"
+    ],
+    "passes": false
+  },
+  {
+    "id": 8,
+    "category": "ops",
+    "description": "Engineer sees uncaught exceptions in self-hosted GlitchTip with job_id tag and stack trace",
+    "steps": [
+      "Deliberately raise an exception in a backend route in staging",
+      "Open GlitchTip UI",
+      "Verify exception appears within 30 s",
+      "Verify stack trace + job_id/call_id tag + request payload present"
+    ],
+    "passes": false
+  },
+  {
+    "id": 9,
+    "category": "ops",
+    "description": "Operator opens Grafana dashboard and sees live pipeline / LLM / API / errors metrics",
+    "steps": [
+      "Open Grafana (port 3001)",
+      "Open Pipeline dashboard → see step duration p50/p95/p99",
+      "Open LLM dashboard → see call rate + escalation rate",
+      "Open API dashboard → see RPS + error rate per route",
+      "Open Errors dashboard → see top exception types"
+    ],
+    "passes": false
+  },
+  {
+    "id": 10,
+    "category": "ops",
+    "description": "Operator can search any call's logs end-to-end in Grafana Loki by job_id",
+    "steps": [
+      "In Grafana → Explore → Loki",
+      "Query {compose_service=\"compliance-backend\"} |= \"job_id=<id>\"",
+      "Verify every pipeline step is visible for that single call"
+    ],
+    "passes": false
+  },
+  {
+    "id": 11,
+    "category": "ops",
+    "description": "Operator can restore Postgres from the most recent daily backup into a scratch DB",
+    "steps": [
+      "Run scripts/restore_drill.sh",
+      "Verify scratch DB receives latest dump from Supabase Storage backups/ bucket",
+      "Verify table row counts match production within 24 h drift",
+      "Document drill in docs/durability.md"
+    ],
+    "passes": false
+  },
+  {
+    "id": 12,
+    "category": "ops",
+    "description": "Engineer can rebuild VPS infra from tofu apply, with zero diff against live state",
+    "steps": [
+      "cd infrastructure/hetzner",
+      "tofu init && tofu plan",
+      "Verify plan output shows 0 changes against live VPS",
+      "Document any required tofu import steps"
+    ],
+    "passes": false
+  },
+  {
+    "id": 13,
+    "category": "ci",
+    "description": "Engineer cannot merge a PR unless pytest + vitest + coverage checks pass",
+    "steps": [
+      "Open a PR with deliberately broken test",
+      "Verify test.yml + coverage.yml run",
+      "Verify Merge button is blocked",
+      "Fix test → verify checks pass and merge unblocks"
+    ],
+    "passes": false
+  },
+  {
+    "id": 14,
+    "category": "ci",
+    "description": "Engineer cannot merge a PR that modifies prod code without a corresponding test edit in same branch",
+    "steps": [
+      "Open PR modifying backend/app/routes.py with no test edit",
+      "Verify verification-before-completion gate fails",
+      "Add test edit to PR",
+      "Verify gate passes"
+    ],
+    "passes": false
+  },
+  {
+    "id": 15,
+    "category": "ci",
+    "description": "Push to main triggers automatic deploy to amina VPS in under 5 minutes",
+    "steps": [
+      "Merge a no-op PR to main",
+      "Watch deploy.yml run",
+      "Verify SSH step runs docker compose pull && up -d",
+      "Verify /healthz on amina returns 200 within 5 min of push"
+    ],
+    "passes": false
+  },
+  {
+    "id": 16,
+    "category": "data",
+    "description": "Engineer can swap storage backend (Supabase ↔ S3/MinIO) by changing one env var, no code change",
+    "steps": [
+      "Set STORAGE_BACKEND=s3 + MinIO credentials in .env",
+      "Restart backend",
+      "Upload a call audio",
+      "Verify audio lands in MinIO bucket and signed URL playback works",
+      "Flip back to STORAGE_BACKEND=supabase, restart, verify same"
+    ],
+    "passes": false
+  },
+  {
+    "id": 17,
+    "category": "cost",
+    "description": "Operator sees mean LLM cost per call drop ≥5× when tiered LLM + embedding pre-filter enabled",
+    "steps": [
+      "Disable both flags, run 50 sample calls, record mean LLM cost",
+      "Enable embedding_prefilter_enabled + use_agent_analyzer",
+      "Run same 50 sample calls, record mean LLM cost",
+      "Verify ≥5× drop AND ≥98% verdict parity vs baseline",
+      "Flip flags in prod"
+    ],
+    "passes": false
+  },
+  {
+    "id": 18,
+    "category": "core",
+    "description": "Reviewer manages compliance rules catalog (add / edit / disable) with audit trail",
+    "steps": [
+      "Open /rules",
+      "Add a new rule, edit existing, disable one",
+      "Verify changes persist",
+      "Verify audit_log rows created for each mutation"
+    ],
+    "passes": false
+  },
+  {
+    "id": 19,
+    "category": "core",
+    "description": "Reviewer manages scripts and script variants with versioning",
+    "steps": [
+      "Open /scripts",
+      "Create a new script variant",
+      "Verify version number increments",
+      "Assign script to a call → verify checkpoint analysis uses it"
+    ],
+    "passes": false
+  },
+  {
+    "id": 20,
+    "category": "core",
+    "description": "Reviewer chats with agent assistant grounded in RAG (rules / LOAs / supplier docs)",
+    "steps": [
+      "Open agent chat panel from a call",
+      "Ask question about a specific rule",
+      "Verify response cites the rule from RAG",
+      "Verify tool calls (search_rules / search_loas) visible in trace"
+    ],
+    "passes": false
+  },
+  {
+    "id": 21,
+    "category": "data",
+    "description": "Admin ingests new RAG sources (rules / supplier docs / LOAs / rejections) via admin UI",
+    "steps": [
+      "Open /rag/admin",
+      "Upload a PDF or paste text",
+      "Verify chunks + embeddings written to pgvector",
+      "Verify search returns the new content"
+    ],
+    "passes": false
+  },
+  {
+    "id": 22,
+    "category": "core",
+    "description": "Operator imports a tracker XLSX file and exports verified data back",
+    "steps": [
+      "Open /tracker/import",
+      "Upload XLSX → verify rows parsed",
+      "Edit a few rows in tracker UI",
+      "Export → verify XLSX matches edits"
+    ],
+    "passes": false
+  },
+  {
+    "id": 23,
+    "category": "core",
+    "description": "Reviewer manages deals lifecycle (intake → verified → resolved) across multiple calls",
+    "steps": [
+      "Upload calls that share a customer",
+      "Verify same-deal grouping toggle works",
+      "Verify composite verdict spans all calls",
+      "Resolve deal → verify status propagates"
+    ],
+    "passes": false
+  },
+  {
+    "id": 24,
+    "category": "data",
+    "description": "Reviewer sees risk flags (vulnerable customer / pricing mismatch) on call detail",
+    "steps": [
+      "Process a call with a known vulnerable-customer phrase",
+      "Verify VULNERABLE_CUSTOMER flag appears",
+      "Process a call with mismatched pricing",
+      "Verify PRICING_MISMATCH flag appears"
+    ],
+    "passes": false
+  },
+  {
+    "id": 25,
+    "category": "auth",
+    "description": "Reviewer authenticates via Supabase Auth and HITL roles enforce route access",
+    "steps": [
+      "Log out → verify protected routes redirect to login",
+      "Log in as reviewer → verify can access /calls and /hitl",
+      "Log in as non-reviewer → verify HITL routes return 403"
+    ],
+    "passes": false
+  }
+]

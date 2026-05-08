@@ -1,0 +1,62 @@
+{
+  "supplier_name": "Energy Solutions",
+  "script_name": "Third-Party Disclosure Script v1",
+  "version": "1.0",
+  "mode": "meaning_for_meaning",
+  "checkpoints": [
+    {
+      "section": 1,
+      "name": "Agent explicitly states the company is a third party",
+      "strictness": "mandatory",
+      "required": "Agent must clearly state they are a third party, independent broker, or intermediary — not the energy supplier itself.",
+      "key_phrases": [
+        "third party",
+        "independent broker",
+        "independent energy broker",
+        "not an energy supplier",
+        "intermediary"
+      ]
+    },
+    {
+      "section": 2,
+      "name": "Agent states the company is NOT an energy supplier",
+      "strictness": "mandatory",
+      "required": "Agent must explicitly clarify they do not supply energy directly and are distinct from named suppliers such as British Gas, E.ON Next, etc.",
+      "key_phrases": [
+        "not an energy supplier",
+        "not British Gas",
+        "not E.ON",
+        "separate company",
+        "completely separate"
+      ]
+    },
+    {
+      "section": 3,
+      "name": "Agent identifies as an independent broker or intermediary",
+      "strictness": "mandatory",
+      "required": "Agent must describe their role as a broker, intermediary, or comparison service working across multiple suppliers.",
+      "key_phrases": [
+        "broker",
+        "intermediary",
+        "compare",
+        "comparison",
+        "multiple suppliers",
+        "best deal",
+        "best rate"
+      ]
+    },
+    {
+      "section": 4,
+      "name": "Agent discloses how they are remunerated",
+      "strictness": "mandatory",
+      "required": "Agent must explain that they receive a referral fee or commission from the supplier, not from the customer.",
+      "key_phrases": [
+        "referral fee",
+        "commission",
+        "paid by the supplier",
+        "no cost to you",
+        "free to you"
+      ]
+    }
+  ]
+}

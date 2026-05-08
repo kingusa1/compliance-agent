@@ -1,0 +1,13 @@
+[00:00] Agent: Good morning, my name is Sarah calling from Energy Solutions. How are you today?
+[00:05] Customer: I'm fine, thank you. Who are you with again?
+[00:08] Agent: I'm calling from Energy Solutions. I want to be completely upfront with you — we are an independent energy broker and a third party. We are not an energy supplier like British Gas or E.ON Next. We compare deals across multiple suppliers to find you the best available rate.
+[00:22] Customer: Oh, so you're not from British Gas?
+[00:24] Agent: That's correct, not at all. We are a completely separate company. We act as a broker — an intermediary — between you and the energy suppliers. Our job is to help you find the best deal without any obligation.
+[00:37] Customer: Okay, that makes sense. So what suppliers do you compare?
+[00:40] Agent: We compare a wide range of suppliers including British Gas, E.ON Next, Octopus Energy, EDF, and several others. Because we're an independent broker, we can give you an unbiased comparison.
+[00:52] Customer: And is there any cost to me for using your service?
+[00:55] Agent: No cost to you at all. We are paid a referral fee by the supplier if you switch, but that doesn't affect the rate you're quoted — it's the same price you'd get going direct.
+[01:05] Customer: Alright, I'm happy to hear what you've got.
+[01:07] Agent: Brilliant. Could I just take your postcode and current supplier to get started?
+[01:11] Customer: Yes, it's SW1A 1AA and I'm currently with British Gas.
+[01:15] Agent: Perfect, let me just pull up the comparison for you now...

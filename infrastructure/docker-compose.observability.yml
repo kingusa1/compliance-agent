@@ -1,0 +1,141 @@
+# docker-compose.observability.yml
+# GlitchTip + LGTM-lite (Loki/Promtail/Prometheus/Grafana).
+# Runs alongside the app stack:
+#   docker network create compliance-net   # one-time, if not already created
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+#
+# Ports:
+#   3001  Grafana       (operator UI; expose via Cloudflare Tunnel in prod)
+#   8080  GlitchTip     (127.0.0.1 only — tunnel for remote access)
+#   9090  Prometheus    (127.0.0.1 only — internal scrape)
+#   3100  Loki          (127.0.0.1 only — internal log push)
+#
+# All services live on the `compliance-net` external network so Prometheus
+# can scrape `compliance-backend:8001/metrics` and Promtail can read
+# /var/lib/docker/containers/*.
+
+networks:
+  compliance-net:
+    external: true
+
+volumes:
+  glitchtip-pgdata:
+  glitchtip-uploads:
+  loki-data:
+  prom-data:
+  grafana-data:
+
+services:
+  # ── GlitchTip (Sentry-API-compatible error tracking) ────────────
+  glitchtip-postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: glitchtip
+      POSTGRES_USER: glitchtip
+      POSTGRES_PASSWORD: ${GLITCHTIP_PG_PASSWORD:?GLITCHTIP_PG_PASSWORD required}
+    volumes:
+      - glitchtip-pgdata:/var/lib/postgresql/data
+    networks: [compliance-net]
+
+  glitchtip-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks: [compliance-net]
+
+  glitchtip-web:
+    image: glitchtip/glitchtip:v4.1
+    restart: unless-stopped
+    depends_on: [glitchtip-postgres, glitchtip-redis]
+    environment:
+      DATABASE_URL: postgres://glitchtip:${GLITCHTIP_PG_PASSWORD:?GLITCHTIP_PG_PASSWORD required}@glitchtip-postgres:5432/glitchtip
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:?GLITCHTIP_SECRET_KEY required}
+      PORT: "8000"
+      EMAIL_URL: "consolemail://"
+      GLITCHTIP_DOMAIN: ${GLITCHTIP_DOMAIN:-http://localhost:8080}
+      DEFAULT_FROM_EMAIL: glitchtip@localhost
+      CELERY_WORKER_AUTOSCALE: "1,3"
+      REDIS_URL: redis://glitchtip-redis:6379/0
+    ports:
+      - "127.0.0.1:8080:8000"
+    volumes:
+      - glitchtip-uploads:/code/uploads
+    networks: [compliance-net]
+
+  glitchtip-worker:
+    image: glitchtip/glitchtip:v4.1
+    restart: unless-stopped
+    depends_on: [glitchtip-postgres, glitchtip-redis]
+    command: ./bin/run-celery-with-beat.sh
+    environment:
+      DATABASE_URL: postgres://glitchtip:${GLITCHTIP_PG_PASSWORD:?GLITCHTIP_PG_PASSWORD required}@glitchtip-postgres:5432/glitchtip
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:?GLITCHTIP_SECRET_KEY required}
+      REDIS_URL: redis://glitchtip-redis:6379/0
+      EMAIL_URL: "consolemail://"
+      GLITCHTIP_DOMAIN: ${GLITCHTIP_DOMAIN:-http://localhost:8080}
+    volumes:
+      - glitchtip-uploads:/code/uploads
+    networks: [compliance-net]
+
+  # ── Loki (logs) ──────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:3.2.1
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki-data:/loki
+    ports:
+      - "127.0.0.1:3100:3100"
+    networks: [compliance-net]
+
+  # ── Promtail (log shipper) ───────────────────────────────────────
+  promtail:
+    image: grafana/promtail:3.2.1
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./infrastructure/promtail/config.yml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on: [loki]
+    networks: [compliance-net]
+
+  # ── Prometheus (metrics) ─────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=14d"
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks: [compliance-net]
+
+  # ── Grafana (dashboards) ─────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD required}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Local-dev convenience: skip the login wall when reviewers click
+      # "Open ↗" from the Settings page. The admin login still works for
+      # mutating actions (create dashboards, edit datasources). Production
+      # VPS overrides this in its own override compose file.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_NAME: Main Org.
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infrastructure/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3001:3000"
+    depends_on: [loki, prometheus]
+    networks: [compliance-net]
