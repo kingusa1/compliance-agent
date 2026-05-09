@@ -11,7 +11,10 @@ dockerfilePath = "Dockerfile"
 # /readyz returns 503 when the DB is unreachable — don't use it for the
 # Railway healthcheck or you'll bounce the container during cold-DB seconds.
 healthcheckPath = "/healthz"
-healthcheckTimeout = 30
+# 30s was too tight — alembic can take 60-90s on a cold pooler connection
+# the first time. Bumped to 300s; healthz path itself responds in <1s once
+# uvicorn is up.
+healthcheckTimeout = 300
 # Restart on any non-zero exit; cap retries so a wedged process can't loop
 # forever burning Railway minutes.
 restartPolicyType = "ON_FAILURE"

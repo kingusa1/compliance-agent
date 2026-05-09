@@ -249,15 +249,21 @@ app.include_router(import_xlsx_router)
 
 # L6: rag_ingest fires on `call/finalized` and `script/changed`. Adding the
 # two new functions next to the L1 watchdog so Inngest discovers them.
-inngest.fast_api.serve(
-    app,
-    inngest_client,
-    [
-        process_call_fn,
-        process_call_reanalyze_fn,
-        redispatch_watchdog_fn,
-        rag_ingest_call_fn,
-        rag_ingest_script_fn,
-        pg_dump_nightly_fn,
-    ],
-)
+# Skip Inngest registration when no signing key is configured — the SDK
+# raises SigningKeyMissingError at import time otherwise, taking the whole
+# process down even when USE_INNGEST_PIPELINE=false.
+if os.environ.get("INNGEST_SIGNING_KEY", "").strip():
+    inngest.fast_api.serve(
+        app,
+        inngest_client,
+        [
+            process_call_fn,
+            process_call_reanalyze_fn,
+            redispatch_watchdog_fn,
+            rag_ingest_call_fn,
+            rag_ingest_script_fn,
+            pg_dump_nightly_fn,
+        ],
+    )
+else:
+    log.info("Inngest serve() skipped — INNGEST_SIGNING_KEY not set (degraded mode)")
