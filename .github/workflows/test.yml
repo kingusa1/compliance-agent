@@ -69,7 +69,11 @@ jobs:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: frontend-v3/package-lock.json
-      - run: npm ci
+      # Use `npm install` not `npm ci` so optional platform-binary deps
+       # (sharp / @emnapi/{runtime,core} on linux-x64) resolve at install
+       # time instead of demanding strict lockfile parity. The lockfile
+       # was generated on Windows where these are not installed.
+      - run: npm install --no-audit --no-fund
       - run: npm run test:unit -- --run
 
   playwright:
@@ -85,6 +89,10 @@ jobs:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: frontend-v3/package-lock.json
-      - run: npm ci
+      # Use `npm install` not `npm ci` so optional platform-binary deps
+       # (sharp / @emnapi/{runtime,core} on linux-x64) resolve at install
+       # time instead of demanding strict lockfile parity. The lockfile
+       # was generated on Windows where these are not installed.
+      - run: npm install --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
