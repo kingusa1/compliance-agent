@@ -22,6 +22,18 @@ def _clear_db_override():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _stub_storage(monkeypatch):
+    """Bypass Supabase Storage in CI: the test env points SUPABASE_URL at
+    https://stub.invalid so the real upload_audio path raises ConnectError.
+    Replace it (and signed_url) with no-op stubs so the upload route only
+    exercises DB linkage, which is what these tests are about."""
+    import app.routes as routes_mod
+    monkeypatch.setattr(routes_mod, "upload_audio", lambda *a, **kw: None)
+    monkeypatch.setattr(routes_mod, "signed_url", lambda *a, **kw: "https://stub.invalid/audio")
+    yield
+
+
 def _mini_wav() -> bytes:
     # minimal valid wav header + empty data chunk
     return (
