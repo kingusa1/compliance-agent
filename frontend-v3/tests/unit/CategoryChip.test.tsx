@@ -14,8 +14,8 @@ import {
  * the category and Watt's reviewers stop trusting the chip.
  */
 describe("CategoryChip", () => {
-  it("ships exactly 8 categories with W2-locked hex colors", () => {
-    expect(REJECTION_CATEGORIES).toHaveLength(8);
+  it("ships exactly 9 categories with W2-locked hex colors", () => {
+    expect(REJECTION_CATEGORIES).toHaveLength(9);
     expect(REJECTION_CATEGORY_COLORS.ADMIN_ERROR).toBe("#FFC000");
     expect(REJECTION_CATEGORY_COLORS.PROCESS_FAILURE).toBe("#00B0F0");
     expect(REJECTION_CATEGORY_COLORS.VERBAL_SALES_ERROR).toBe("#FF0000");
