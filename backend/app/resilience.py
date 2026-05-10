@@ -3,6 +3,7 @@ import logging
 import httpx
 from tenacity import (
     retry,
+    retry_if_exception,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -27,6 +28,22 @@ def _llm_before_sleep(retry_state):
     )
 
 
+# Permanent failures — don't retry. 402=billing, 401=bad key,
+# 403=key disabled, 404=wrong model id. 429 is throttling, DO retry.
+_LLM_PERMANENT_4XX = {400, 401, 402, 403, 404}
+
+
+def _llm_should_retry(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.TimeoutException):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if code in _LLM_PERMANENT_4XX:
+            return False  # permanent — no point retrying
+        return True
+    return False
+
+
 DEEPGRAM_RETRY = retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=30),
@@ -37,6 +54,9 @@ DEEPGRAM_RETRY = retry(
 LLM_RETRY = retry(
     stop=stop_after_attempt(7),
     wait=wait_exponential(multiplier=2, min=5, max=90),
-    retry=retry_if_exception_type((httpx.TimeoutException, httpx.HTTPStatusError)),
+    # Skip retry on permanent 4xx (402 Payment Required, 401 bad key,
+    # 403 disabled, 404 wrong model). Retrying those wastes ~3 min and
+    # never succeeds without a billing/key change.
+    retry=retry_if_exception(_llm_should_retry),
     before_sleep=_llm_before_sleep,
 )
