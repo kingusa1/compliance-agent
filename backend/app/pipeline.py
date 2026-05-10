@@ -130,6 +130,26 @@ async def process_call(call_id: str, file_path: str, db: Session, script_id: str
             log.error(f"\U0001f6a9 REJECTION_CREATE_FAILED call_id={call_id} err={rej_err!r}")
             db.rollback()
         await _trace_step(call_id, "finalize", _step_finalize, call_id, db)
+
+        # Quality AI Agent — auto-runs after every upload to merge any
+        # sibling calls of the same customer that landed on different
+        # stub deals. Failure here never breaks the call (the per-call
+        # verdict is already persisted); a stale customer-rollup is
+        # cheap to fix later via /api/admin/quality-resolve.
+        try:
+            from app.quality_agent import auto_resolve_for_call
+            change = await auto_resolve_for_call(call_id, db)
+            if change:
+                db.commit()
+                log.info(
+                    f"\U0001f916 QUALITY_AGENT auto-merged {change.get('bucket_size')} calls "
+                    f"→ deal={change.get('survivor_deal','')[:8]} "
+                    f"customer=\"{change.get('canonical_name')}\" "
+                    f"confidence={change.get('confidence')}"
+                )
+        except Exception as qe:
+            log.warning(f"quality agent skipped call_id={call_id}: {qe}")
+
         log.info(f"\U0001f4ca COMPLETE call_id={call_id} → {time.time()-pipeline_start:.1f}s total")
     except Exception as e:
         log.error(f"\U0001f4a5 ERROR call_id={call_id} → {str(e)}")

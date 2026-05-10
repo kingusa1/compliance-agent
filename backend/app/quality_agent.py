@@ -197,6 +197,169 @@ def _parse_agent_response(raw: str) -> Optional[dict]:
     return out
 
 
+def _names_token_overlap(a: str, b: str) -> bool:
+    """Token-set overlap: True when two names share ≥2 non-trivial tokens
+    (length ≥3, lowercased). Local helper so callers don't have to import
+    the pipeline module."""
+    if not a or not b:
+        return False
+    a_t = [t for t in a.lower().replace(".", " ").split() if len(t) >= 3]
+    b_t = [t for t in b.lower().replace(".", " ").split() if len(t) >= 3]
+    return len(set(a_t) & set(b_t)) >= 2
+
+
+def find_sibling_candidates(call_id: str, db) -> list:
+    """Given a target call_id, return the bucket of completed sibling
+    calls whose human customer_name overlaps with the target. Used by
+    the auto-resolve hook in the finalize step.
+    """
+    from app.models import Call
+
+    target = db.query(Call).filter_by(id=call_id).first()
+    if not target or not target.customer_name:
+        return [target] if target else []
+
+    h = (target.customer_name or "").strip().lower()
+    if not h:
+        return [target]
+
+    completed = (
+        db.query(Call)
+        .filter(
+            Call.status == "completed",
+            Call.transcript.isnot(None),
+            Call.customer_name.isnot(None),
+            Call.customer_name != "",
+        )
+        .all()
+    )
+    bucket = [target]
+    for c in completed:
+        if c.id == target.id:
+            continue
+        oh = (c.customer_name or "").strip().lower()
+        if oh and (h in oh or oh in h or _names_token_overlap(h, oh)):
+            bucket.append(c)
+    return bucket
+
+
+def apply_verdict_to_db(bucket: list, verdict: dict, db) -> Optional[dict]:
+    """Apply a Quality Agent verdict to the DB: re-point sibling calls to
+    one survivor deal, rename customer to canonical, fix agent name,
+    fill missing supplier. Idempotent. Caller owns commit.
+
+    Returns a change record or None if the verdict was rejected.
+    """
+    from app.intake.upsert import _slugify as slugify
+    from app.models import Call, Customer, CustomerDeal as _Deal
+
+    if not verdict or len(bucket) < 2:
+        return None
+    if verdict.get("confidence", 0) < 0.7:
+        return None
+    if verdict.get("stitch") != "merge_all":
+        return None
+
+    # Pick survivor = most-recent call's deal
+    survivor_call = max(bucket, key=lambda c: c.created_at or 0)
+    survivor_deal = (
+        db.query(_Deal).filter_by(id=survivor_call.deal_id).first()
+        if survivor_call.deal_id
+        else None
+    )
+    if not survivor_deal:
+        return None
+    canonical = verdict.get("canonical_customer_name") or survivor_deal.customer_name
+
+    classifications = verdict.get("call_classifications") or {}
+    agent_name_v = verdict.get("agent_name")
+    supplier_v = verdict.get("supplier")
+
+    for c in bucket:
+        if c.id == survivor_call.id:
+            continue
+        old_deal_id = c.deal_id
+        c.deal_id = survivor_deal.id
+        if old_deal_id and old_deal_id != survivor_deal.id:
+            other_count = (
+                db.query(Call)
+                .filter(Call.deal_id == old_deal_id, Call.id != c.id)
+                .count()
+            )
+            if other_count == 0:
+                old_deal = db.query(_Deal).filter_by(id=old_deal_id).first()
+                if old_deal:
+                    db.delete(old_deal)
+        ct = classifications.get(str(c.id))
+        if ct:
+            c.call_type = ct
+        if agent_name_v and (not c.agent_name or c.agent_name == c.customer_name):
+            c.agent_name = agent_name_v
+
+    sct = classifications.get(str(survivor_call.id))
+    if sct:
+        survivor_call.call_type = sct
+    if agent_name_v and (
+        not survivor_call.agent_name or survivor_call.agent_name == survivor_call.customer_name
+    ):
+        survivor_call.agent_name = agent_name_v
+
+    if canonical:
+        survivor_deal.customer_name = canonical
+    if supplier_v and supplier_v != "Unknown" and not survivor_deal.supplier:
+        survivor_deal.supplier = supplier_v
+
+    if survivor_deal.customer_id and canonical:
+        cust = db.query(Customer).filter_by(id=survivor_deal.customer_id).first()
+        if cust:
+            cust.legal_name = canonical
+            base_slug = slugify(canonical) or f"customer-{cust.id[:8]}"
+            slug = base_slug
+            n = 2
+            while db.query(Customer).filter(
+                Customer.slug == slug, Customer.id != cust.id
+            ).first():
+                slug = f"{base_slug}-{n}"
+                n += 1
+            cust.slug = slug
+
+    return {
+        "bucket_size": len(bucket),
+        "survivor_call": str(survivor_call.id),
+        "survivor_deal": str(survivor_deal.id),
+        "canonical_name": canonical,
+        "supplier": supplier_v,
+        "confidence": verdict.get("confidence"),
+        "stitch_reason": verdict.get("stitch_reason"),
+    }
+
+
+async def auto_resolve_for_call(call_id: str, db) -> Optional[dict]:
+    """One-shot: gather siblings → ask Opus → apply verdict. Used by the
+    pipeline's finalize step so every upload auto-merges with siblings
+    without operator intervention.
+    """
+    bucket = find_sibling_candidates(call_id, db)
+    if len(bucket) < 2:
+        return None
+    payload = [
+        {
+            "id": str(c.id),
+            "filename": c.filename,
+            "detected_supplier": c.detected_supplier,
+            "agent_name": c.agent_name,
+            "customer_name": c.customer_name,
+            "score": c.score,
+            "transcript": c.transcript,
+        }
+        for c in bucket
+    ]
+    verdict = await resolve_identity(payload)
+    if not verdict:
+        return None
+    return apply_verdict_to_db(bucket, verdict, db)
+
+
 @LLM_RETRY
 async def resolve_identity(calls: list[dict]) -> Optional[dict]:
     """Send a batch of candidate calls to the Quality Agent and return
