@@ -489,11 +489,14 @@ async def _step_detect_metadata(
 
     if script:
         call.script_id = script.id
-        # Keep the canonical label we already wrote ("E.ON Next") rather than
-        # downgrading it to whatever the seed row happened to use ("EON",
-        # "eon_next") — the canonical name is what every downstream consumer
-        # (rejections, tracker, RAG namespace) expects to see.
-        if not call.detected_supplier:
+        # Always render the canonical SUPPLIER_LABELS string regardless of
+        # how the seed row spelled it. Earlier runs may have persisted the
+        # raw seed value ("EON") — every downstream consumer (rejections,
+        # tracker, RAG namespace) expects "E.ON Next".
+        script_canon = canonicalize_supplier(script.supplier_name)
+        if script_canon is not None:
+            call.detected_supplier = SUPPLIER_LABELS[script_canon]
+        elif not call.detected_supplier:
             call.detected_supplier = script.supplier_name
 
     # Sprint v3-C1 — collapse stub Deal into existing open Deal when
