@@ -102,7 +102,7 @@ export function CallsList({ calls }: { calls: AdminCallRow[] }) {
             <Th>Agent</Th>
             <Th>Score</Th>
             <Th>Compliant</Th>
-            <Th></Th>
+            <Th><span className="sr-only">Actions</span></Th>
           </TableRow>
         </TableHeader>
         <TableBody>
