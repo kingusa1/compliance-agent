@@ -1681,7 +1681,11 @@ def delete_call(call_id: str, db: Session = Depends(get_db)):
     file_path = call.file_path
     deal_id = call.deal_id
 
-    # Cascade is now declared at the FK level; just delete the call.
+    # `Call.checkpoints` is a passive relationship without `passive_deletes`;
+    # ORM otherwise tries to UPDATE call_checkpoints.call_id=NULL (NOT-NULL
+    # violation). Drop the children explicitly; the DB-level CASCADE on the
+    # other 8 child tables (added in 2026_05_10 migration) handles the rest.
+    db.query(CallCheckpoint).filter_by(call_id=call_id).delete()
     db.delete(call)
     db.flush()  # so the count() below sees the deletion
 
