@@ -188,6 +188,10 @@ class Call(Base):
     file_path = Column(String, nullable=False)
     audio_storage_key = Column(String, nullable=True, index=True)
     file_size = Column(Integer)
+    # SHA-256 of the uploaded audio bytes — used to dedup re-uploads of
+    # the same recording (same content, possibly different filename).
+    # Indexed because every upload does a hash lookup before persisting.
+    file_hash = Column(String, nullable=True, index=True)
     duration_seconds = Column(Float)
     status = Column(String, default="processing")
     transcript = Column(Text)  # Deepgram transcript (fast, structured)

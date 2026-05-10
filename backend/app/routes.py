@@ -192,11 +192,32 @@ async def upload_call(
     if not _validate_audio_content(content, ext):
         raise HTTPException(400, "File content does not match a known audio format. Ensure the file is a valid audio recording.")
 
-    # Filename collision handling: auto-suffix instead of rejecting. The old
-    # 409 forced reviewers to rename the file on disk before re-uploading a
-    # previously-processed call, which was the wrong tradeoff — suppliers
-    # frequently ship calls with overlapping filenames. Append ` (2)`,
-    # ` (3)`, … until we find a free slot.
+    # ── Dedup by SHA-256 content hash ───────────────────────────────────
+    # If this exact audio (byte-for-byte) was uploaded before, skip
+    # re-processing and return the existing call so the user/UI can
+    # navigate to it. Suppliers occasionally re-send the same recording
+    # with a different filename — this catches both "same name" and
+    # "same content, different name" duplicates.
+    import hashlib
+    content_hash = hashlib.sha256(content).hexdigest()
+    existing_by_hash = (
+        db.query(Call)
+        .filter_by(file_hash=content_hash)
+        .first()
+    ) if hasattr(Call, "file_hash") else None
+    if existing_by_hash:
+        log.info(
+            f"\U0001f501 DEDUP upload sha256={content_hash[:12]} "
+            f"existing call_id={existing_by_hash.id} filename={existing_by_hash.filename!r}"
+        )
+        # Return the existing call as a 200 with a `duplicate=true` flag.
+        # The frontend can detect this and navigate the user to /calls/{id}
+        # instead of the upload-success state.
+        return existing_by_hash
+
+    # Filename collision handling: when content is NOT a dup but the
+    # filename collides, auto-suffix instead of rejecting (suppliers
+    # ship distinct calls with overlapping filenames).
     if db.query(Call).filter_by(filename=file.filename).first():
         stem, dot, ext_only = file.filename.rpartition(".")
         base = stem if dot else file.filename
@@ -331,6 +352,7 @@ async def upload_call(
         file_path=remote_key,
         audio_storage_key=remote_key,
         file_size=len(content),
+        file_hash=content_hash,  # SHA-256 from earlier in this function
         script_id=script_id,
         status="pending_stream" if stream else "processing",
         deal_id=resolved_deal_id,
