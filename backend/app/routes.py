@@ -1311,10 +1311,13 @@ def get_call_words(call_id: str, db: Session = Depends(get_db)):
     }
 
 
+# IMPORTANT: `name` MUST match exactly what the V1 analyzer persists in
+# `Call.checkpoint_results[*].name` so the frontend can pair each script
+# definition with its verdict by name. See backend/app/analysis.py:V1_PROMPT.
 _V1_TPI_FALLBACK_CHECKPOINTS = [
     {
         "section": 1,
-        "name": "Third-party disclosure",
+        "name": "The agent explicitly states the company is a third party",
         "required": "The agent explicitly states the company is a third party (e.g. \"I'm calling from <Broker>, which is a third-party intermediary\")",
         "key_phrases": ["third party", "third-party", "intermediary", "broker"],
         "customer_response_required": False,
@@ -1322,7 +1325,7 @@ _V1_TPI_FALLBACK_CHECKPOINTS = [
     },
     {
         "section": 2,
-        "name": "Not the energy supplier",
+        "name": "The agent states the company is NOT an energy supplier",
         "required": "The agent explicitly states the company is NOT an energy supplier (e.g. \"We are not a supplier ourselves\")",
         "key_phrases": ["not a supplier", "not the supplier", "not an energy supplier"],
         "customer_response_required": False,
@@ -1330,7 +1333,7 @@ _V1_TPI_FALLBACK_CHECKPOINTS = [
     },
     {
         "section": 3,
-        "name": "Independent broker / intermediary",
+        "name": "The agent identifies themselves/company as an independent broker or intermediary",
         "required": "The agent identifies themselves/their company as an independent broker or intermediary acting on behalf of the customer",
         "key_phrases": ["independent broker", "on your behalf", "act for you"],
         "customer_response_required": False,
