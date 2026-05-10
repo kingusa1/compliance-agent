@@ -1,8 +1,13 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { Trash2 } from "lucide-react";
+import { useQueryClient, useMutation } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import { formatScorePercent } from "@/lib/score";
+import { apiFetch } from "@/lib/api";
 import type { AdminCallRow } from "@/lib/queries/admin";
 import {
   Table,
@@ -13,6 +18,69 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+
+function DeleteButton({ callId, customerName }: { callId: string; customerName: string | null }) {
+  const qc = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
+  const m = useMutation({
+    mutationFn: () => apiFetch(`/api/calls/${callId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      toast.success("Call deleted");
+      qc.invalidateQueries({ queryKey: ["calls"] });
+      qc.invalidateQueries({ queryKey: ["admin", "calls"] });
+      qc.invalidateQueries({ queryKey: ["dashboard:stats"] });
+      qc.invalidateQueries({ queryKey: ["customers"] });
+      qc.invalidateQueries({ queryKey: ["deals"] });
+      setConfirming(false);
+    },
+    onError: (e) => {
+      toast.error("Couldn't delete call", {
+        description: e instanceof Error ? e.message : String(e),
+      });
+      setConfirming(false);
+    },
+  });
+  if (confirming) {
+    return (
+      <span className="flex items-center gap-1.5">
+        <button
+          type="button"
+          disabled={m.isPending}
+          onClick={(e) => {
+            e.stopPropagation();
+            m.mutate();
+          }}
+          className="rounded border border-red-500/40 bg-red-500/10 px-2 py-0.5 text-[11px] font-semibold text-red-300 hover:bg-red-500/20 disabled:opacity-50"
+        >
+          {m.isPending ? "…" : "Confirm"}
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setConfirming(false);
+          }}
+          className="rounded px-2 py-0.5 text-[11px] text-[var(--text-muted)] hover:bg-[var(--bg-elev3)]"
+        >
+          Cancel
+        </button>
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      title={`Delete this call${customerName ? ` (${customerName})` : ""}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        setConfirming(true);
+      }}
+      className="invisible rounded p-1 text-[var(--text-faint)] group-hover:visible hover:bg-[var(--bg-elev3)] hover:text-red-400"
+    >
+      <Trash2 className="size-3.5" />
+    </button>
+  );
+}
 
 /**
  * Flat call-list view (rendered when the /calls toggle = "Call-list").
@@ -34,6 +102,7 @@ export function CallsList({ calls }: { calls: AdminCallRow[] }) {
             <Th>Agent</Th>
             <Th>Score</Th>
             <Th>Compliant</Th>
+            <Th></Th>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -41,7 +110,7 @@ export function CallsList({ calls }: { calls: AdminCallRow[] }) {
             <TableRow
               key={c.id}
               onClick={() => router.push(`/calls/${c.id}`)}
-              className="cursor-pointer border-[var(--border-subtle)] hover:bg-[var(--bg-elev2)]"
+              className="group cursor-pointer border-[var(--border-subtle)] hover:bg-[var(--bg-elev2)]"
             >
               <TableCell className="whitespace-nowrap py-3 text-[13px] text-[var(--text-muted)]">
                 {formatWhen(c.created_at)}
@@ -58,6 +127,9 @@ export function CallsList({ calls }: { calls: AdminCallRow[] }) {
               </TableCell>
               <TableCell className="py-3">
                 <CompliancePill status={c.compliance_status ?? c.status} />
+              </TableCell>
+              <TableCell className="py-3 text-right">
+                <DeleteButton callId={c.id} customerName={c.customer_name ?? null} />
               </TableCell>
             </TableRow>
           ))}
