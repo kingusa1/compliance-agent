@@ -42,9 +42,64 @@ def _format_timestamp(seconds: float) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
+def _detect_agent_speaker(words: list[dict]) -> int:
+    """Heuristic-pick which Deepgram speaker id is the broker / agent.
+
+    The static "speaker_0 = Agent" rule misfires whenever the customer is
+    the one who picks up first ("hello?") — Deepgram assigns speaker 0 to
+    whoever speaks first, not to the caller.
+
+    Strategy: build a per-speaker word bag and score each speaker on
+    broker-side phrasing. The speaker whose text most strongly resembles
+    sales / disclosure language is the agent. Pure regex / counts so this
+    runs offline (no extra LLM call on the hot path).
+    """
+    if not words:
+        return 0
+
+    bags: dict[int, list[str]] = {}
+    for w in words:
+        spk = int(w.get("speaker", 0) or 0)
+        bags.setdefault(spk, []).append(str(w.get("word", "")).lower())
+
+    if len(bags) < 2:
+        return next(iter(bags), 0)
+
+    agent_signals = (
+        # Self-introductions and broker-side framing.
+        "my name is", "i'm calling from", "calling from", "third party",
+        # Energy broker domain language — only the broker says these.
+        "your electricity supply", "your gas supply", "your energy supply",
+        "your current contract", "your current supplier",
+        "renewal", "best price", "cheapest price", "quote you",
+        "i'll transfer", "transfer your call", "pricing manager",
+        "decision maker", "letter of authority", "loa",
+        "standing charge", "kwh", "p/kwh", "tariff", "fixed for",
+        "are you the decision", "are you the business owner",
+        "we work with", "we're a broker", "broker", "intermediary",
+        # Suppliers — only the broker name-drops these.
+        "british gas", "scottish power", "edf", "eon", "e.on", "npower",
+        "pozitive", "bgl", "british gas lite",
+    )
+
+    scores: dict[int, int] = {}
+    for spk, tokens in bags.items():
+        text = " ".join(tokens)
+        scores[spk] = sum(1 for s in agent_signals if s in text)
+
+    best = max(scores, key=scores.get)
+    if scores[best] == 0:
+        # No signal — fall back to "speaker who talks more is the agent"
+        # (brokers carry the call ~3:1 in our corpus).
+        best = max(bags, key=lambda k: len(bags[k]))
+    return best
+
+
 def format_diarized_transcript(words: list[dict]) -> str:
     if not words:
         return ""
+
+    agent_speaker = _detect_agent_speaker(words)
 
     lines = []
     current_speaker = None
@@ -58,7 +113,7 @@ def format_diarized_transcript(words: list[dict]) -> str:
 
         if speaker != current_speaker:
             if current_text:
-                label = "Agent" if current_speaker == 0 else "Customer"
+                label = "Agent" if current_speaker == agent_speaker else "Customer"
                 timestamp = _format_timestamp(current_start)
                 lines.append(f"[{timestamp}] {label}: {' '.join(current_text)}")
             current_speaker = speaker
@@ -68,7 +123,7 @@ def format_diarized_transcript(words: list[dict]) -> str:
             current_text.append(word)
 
     if current_text:
-        label = "Agent" if current_speaker == 0 else "Customer"
+        label = "Agent" if current_speaker == agent_speaker else "Customer"
         timestamp = _format_timestamp(current_start)
         lines.append(f"[{timestamp}] {label}: {' '.join(current_text)}")
 

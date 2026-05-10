@@ -222,6 +222,23 @@ async def _step_transcribe(call_id: str, audio_path: str, db: Session) -> dict:
         call.word_data = json.dumps(dg_result["words"])
         if dg_result.get("metadata"):
             call.deepgram_metadata = dg_result["metadata"]
+            # Authoritative duration from Deepgram's container probe — populates
+            # call.duration_seconds so the audio player uses the real value
+            # (some VBR MP3s without a Xing header report a wrong duration to
+            # the browser <audio> element). Fall back to the last word's end
+            # timestamp if Deepgram didn't expose duration on this response.
+            try:
+                dg_dur = (
+                    (dg_result["metadata"].get("metadata") or {}).get("duration")
+                    or (dg_result["metadata"].get("results") or {}).get("duration")
+                    or dg_result["metadata"].get("duration")
+                )
+                if not dg_dur and dg_result.get("words"):
+                    dg_dur = dg_result["words"][-1].get("end")
+                if isinstance(dg_dur, (int, float)) and dg_dur > 0:
+                    call.duration_seconds = float(dg_dur)
+            except Exception as e:
+                log.warning(f"DEEPGRAM duration extract failed: {e}")
         deepgram_transcript = dg_result["transcript"]
     elif dg_result:
         call.transcript = dg_result

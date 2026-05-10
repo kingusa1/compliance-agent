@@ -680,7 +680,24 @@ export default function CallDetailPage({
     return { activeLineIdx: li, activeWordIdx: wi };
   }, [currentSec, lines, words.length]);
 
-  const duration = c?.duration_seconds ?? 258;
+  // Resolve duration in priority order:
+  //   1) call.duration_seconds (populated from Deepgram's container probe)
+  //   2) Deepgram metadata duration (older calls before that field was wired)
+  //   3) end timestamp of the last transcribed word (when we have word_data)
+  //   4) 0 — explicit "unknown" rather than a misleading fixed fallback
+  const duration: number = (() => {
+    if (typeof c?.duration_seconds === "number" && c.duration_seconds > 0) {
+      return c.duration_seconds;
+    }
+    const dgDur = (c?.deepgram_metadata as { metadata?: { duration?: number } } | undefined)
+      ?.metadata?.duration;
+    if (typeof dgDur === "number" && dgDur > 0) return dgDur;
+    if (words.length > 0) {
+      const last = words[words.length - 1];
+      if (typeof last?.end === "number" && last.end > 0) return last.end;
+    }
+    return 0;
+  })();
   const playedPct = Math.min(100, Math.max(0, (currentSec / Math.max(1, duration)) * 100));
 
   // Flag tick percentages on the audio waveform (red 2×8 markers).
