@@ -4,7 +4,13 @@ updated: 2026-05-10
 tags: [state, live, ground-truth]
 ---
 
-# Live State — verified 2026-05-10 (most recent)
+# Live State — verified 2026-05-10 (audit-late, post-deploy)
+
+> Updated 2026-05-10 late: 5 bugs + 5 UX fixes shipped after a full
+> Playwright-driven sweep. Live test login created; ground-truth upload
+> validated (Bonnie Clarke = first 3/3 compliant call in DB).
+>
+> See [[../04_Sessions/2026-05-10_Session_audit_late]] for the full punch list.
 
 > Single source of truth on what's deployed and verified. Update after every deploy.
 
@@ -22,6 +28,23 @@ tags: [state, live, ground-truth]
 - **Healthcheck:** `/healthz` → 200, `/api/health` → 200, `/readyz` → 200 (`db: ok`)
 - **Service:** `compliance-agent` on project `compliance-agent-backend`
 - **Latest commit deployed:** `c087493` (frontend type fix); backend latest `4e77515` (auto Quality Agent)
+
+## Database state (post 2026-05-10 audit-late)
+- **Customers:** 4 visible (orphan stubs removed late session; +1 from Bonnie Clarke upload)
+  - `crosby grange` — 2 calls, 1 deal, supplier `E.ON Next`
+  - `new house farm` — 1 call, 1 deal, supplier `E.ON Next`
+  - `dorothy's evangelical church` — 3 calls, 1 deal, supplier `E.ON Next`
+  - `bonnie clark` — 1 call, 1 deal, supplier `E.ON Next` (first compliant call!)
+- **Calls:** 7 total, 6 non-compliant + **1 compliant** (Bonnie Clarke 3/3)
+- **Compliance rate:** 14% (1/7)
+- Orphan stub state from earlier in the day: see [[../04_Sessions/2026-05-10_Session_audit_late]]
+
+## Test login (admin)
+- Email: `admin@compliance-agent.local`
+- Password: `Audit-Pass-2026-05-10!`
+- Reset via Supabase admin API at `PUT /auth/v1/admin/users/<id>`
+
+## (legacy snapshot below — pre-audit-late)
 
 ## Database state (post 2026-05-10 audit)
 - **Customers:** 5 visible

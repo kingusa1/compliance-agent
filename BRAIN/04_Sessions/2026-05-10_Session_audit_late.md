@@ -66,3 +66,63 @@ session_date: 2026-05-10
 8. Transcribe a fresh test audio via Deepgram so I have ground truth.
 9. Upload via the UI, validate AI verdict matches ground truth.
 10. Commit, deploy, update BRAIN.
+
+---
+
+## What actually shipped (end-of-session)
+
+### Commit
+`2916043 fix(audit-late): 5 bugs + 5 UX fixes from full Playwright sweep`
+
+### Bugs closed
+- ✅ **B1** restored `/calls` flat-list page (was redirecting to `/tracker`)
+- ✅ **B2** customer slug `decodeURIComponent(rawSlug)` before passing to query helpers — Next.js 16 leaves param URL-encoded
+- ✅ **B3** `/api/queue` filter now includes `compliance_status in (pending, non_compliant)` AND `review_status != reviewed` — was dropping every non-compliant call before a human could see it
+- ✅ **B4** `POST /api/admin/backfill-tracker` ran: scanned 6 calls, filled 6 deadlines (advisor + dates already filled by upload-time pipeline)
+- ✅ **B5** deleted 2 orphan customer/deal stubs (`(auto-detect pending 42a89a59)`, `(pending audio upload)`) via Supabase REST `customer_deals?id=eq.<id>` — `204 No Content`
+
+### UX shipped
+- ✅ **UX1** Sidebar default-expanded (220px) with text labels + section headers (Work / Catalogue / Audit / System) + live queue-backlog badge (amber pill expanded, dot when collapsed). Collapse pref persisted in localStorage.
+- ✅ **UX2** PipelineTimeline collapsed-by-default with summary header ("N of 5 stages clean"); call-detail title now shows customer name primary, file/script/agent secondary
+- ✅ **UX4** Upload modal default = auto-detect ON (was manual entry — contradicted "no manual tagging" promise on dashboard)
+- ✅ **UX5** Dashboard "Review Queue" tile shows live amber "{N} pending" badge when backlog > 0; recent-calls timestamp gets absolute-date tooltip on hover
+
+### Bugs deferred
+- B6 deals lifecycle still always `open` — pipeline never sets `CustomerDeal.stage`. Surfaced in BRAIN Known_Issues.
+- B7 scripts header "12 vs 15" + "0 checkpoints" — V2 checkpoint authoring is multi-hour work, on the next-steps roadmap.
+- B8 agent name normalisation (Afak/Parat/Paras/Zach inconsistency) — needs a `customer-name + agent` specialist agent.
+- B9 status pill "Reviewing" still shows on call detail when reviewer hasn't claimed — left intentional, signals the call needs sign-off.
+
+### End-to-end validation: NEW UPLOAD with Deepgram-derived ground truth
+
+**File:** `Ms Bonnie Clarke.mp3` (1.7 MB · 611s · never uploaded before)
+
+**Ground truth (from local Deepgram transcription):**
+- Customer: Bonnie Clark (mid-call surname-correction to Hausman; reverts to Clark in formal LOA)
+- Agent: Jack Shaw, What Utilities Ltd (broker)
+- Supplier: E.ON Next
+- Verdict prediction: **COMPLIANT 3/3** because agent explicitly disclosed all three TPI checkpoints
+
+**Live AI verdict (Opus 4.7 via Railway, after upload via UI):**
+
+| Checkpoint | Verdict | Evidence quote |
+|---|---|---|
+| #1 explicitly states company is a third party | **PASS** | "We are a third-party intermediary called What Utilities Limited, working on behalf of Odeen Group Limited" |
+| #2 states company is NOT an energy supplier | **PASS** | "We are not directly employed by Eon Next" |
+| #3 identifies as independent broker / intermediary | **PASS** | "we are just a consultant that facilitates the contract for you" |
+
+**Score:** 3/3 · `compliance_status=compliant` · `customer=Bonnie Clark · agent=Jack Shaw · supplier=E.ON Next · call_type=full · duration=611.28s`
+
+**This is the first compliant call in the system.** The dashboard "Compliant" KPI just went from 0 → 1; rate from 0% → 14% (1/7).
+
+### Test creds (for next session)
+- Email: `admin@compliance-agent.local`
+- Password: `Audit-Pass-2026-05-10!`
+- Method: reset via Supabase admin API (`PUT /auth/v1/admin/users/<id>` with `password` + `email_confirm:true`)
+
+### Screenshots
+All in `audit-2026-05-10-session/shots/`:
+- `01_dashboard.png` … `14_settings.png` — initial sweep (icons-only sidebar, broken /calls, etc.)
+- `post-fix_01_dashboard.png` … `post-fix_05_customer_detail.png` — after deploy
+- `upload_07_file_selected.png`, `upload_08_call_detail_compliant.png` — Bonnie Clarke upload flow
+- `transcripts/bonnie_clarke_raw.json` — full Deepgram dump used for ground truth
