@@ -689,8 +689,8 @@ export default function CallDetailPage({
     if (typeof c?.duration_seconds === "number" && c.duration_seconds > 0) {
       return c.duration_seconds;
     }
-    const dgDur = (c?.deepgram_metadata as { metadata?: { duration?: number } } | undefined)
-      ?.metadata?.duration;
+    const dgMeta = (c as unknown as { deepgram_metadata?: { metadata?: { duration?: number } } } | undefined)?.deepgram_metadata;
+    const dgDur = dgMeta?.metadata?.duration;
     if (typeof dgDur === "number" && dgDur > 0) return dgDur;
     if (words.length > 0) {
       const last = words[words.length - 1];
