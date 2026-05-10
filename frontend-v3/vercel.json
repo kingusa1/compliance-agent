@@ -6,9 +6,14 @@
   "outputDirectory": ".next",
   "regions": ["lhr1"],
   "github": {
-    "silent": true
+    "silent": true,
+    "enabled": false
   },
-  "ignoreCommand": "bash -c 'git diff --quiet HEAD^ HEAD -- . ../package.json ../package-lock.json && exit 0 || exit 1'",
+  "git": {
+    "deploymentEnabled": {
+      "main": false
+    }
+  },
   "headers": [
     {
       "source": "/(.*)",
