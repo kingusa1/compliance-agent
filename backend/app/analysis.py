@@ -33,9 +33,9 @@ Respond ONLY with valid JSON, no other text:
   "agent_name": "The agent's name if mentioned in the call, otherwise 'Unknown'",
   "customer_name": "The customer's name if mentioned in the call, otherwise 'Unknown'",
   "checkpoints": [
-    {{ "rule": "The agent explicitly states the company is a third party", "passed": true or false, "excerpt": "exact quote from the transcript proving this, or the section where it should have occurred" }},
-    {{ "rule": "The agent states the company is NOT an energy supplier", "passed": true or false, "excerpt": "exact quote from the transcript proving this, or the section where it should have occurred" }},
-    {{ "rule": "The agent identifies themselves/company as an independent broker or intermediary", "passed": true or false, "excerpt": "exact quote from the transcript proving this, or the section where it should have occurred" }}
+    {{ "rule": "The agent explicitly states the company is a third party", "passed": true or false, "excerpt": "exact quote from the transcript proving this, or the section where it should have occurred", "notes": "1-2 sentence plain-English explanation. For pass: WHY the wording satisfies the rule. For fail: WHAT was expected and what the agent said instead." }},
+    {{ "rule": "The agent states the company is NOT an energy supplier", "passed": true or false, "excerpt": "exact quote from the transcript proving this, or the section where it should have occurred", "notes": "1-2 sentence plain-English explanation. Always populated." }},
+    {{ "rule": "The agent identifies themselves/company as an independent broker or intermediary", "passed": true or false, "excerpt": "exact quote from the transcript proving this, or the section where it should have occurred", "notes": "1-2 sentence plain-English explanation. Always populated." }}
   ]
 }}
 

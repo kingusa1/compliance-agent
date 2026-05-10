@@ -183,7 +183,7 @@ def build_tracker_rows(
                 if call and call.deal_id
                 else None
             )
-            rows.append(_rejection_row(db, rej, call, deal))
+            rows.append(_rejection_row(rej, deal, call, db))
         return rows
 
     if tab == "compliant":

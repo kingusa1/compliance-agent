@@ -87,6 +87,10 @@ class RuleCheckpoint(BaseModel):
     rule: str
     passed: bool
     excerpt: str
+    # Optional analyst reasoning. The V1 prompt now asks for it explicitly so
+    # the reviewer always has a one-line justification even when no script
+    # was matched. Older payloads without notes still parse cleanly.
+    notes: str | None = None
 
 
 class CheckpointResponse(BaseModel):

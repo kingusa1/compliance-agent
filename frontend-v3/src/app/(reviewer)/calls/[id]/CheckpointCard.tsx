@@ -282,11 +282,15 @@ export function CheckpointCard(props: CheckpointCardProps) {
         )}
       </Section>
 
-      {/* Section 2 — AI Verdict (+ W4.7 AI suggestion chip) */}
+      {/* Section 2 — AI Verdict (+ W4.7 AI suggestion chip).
+          Falls back to evidence when the analyzer didn't populate notes —
+          the older V1 path emits descriptive evidence text but no notes. */}
       <Section label="AI Verdict" accent={accent}>
         <SectionBody>
           {verdict?.notes && verdict.notes.trim() ? (
             verdict.notes
+          ) : verdict?.evidence && verdict.evidence.trim() ? (
+            <span>{verdict.evidence}</span>
           ) : verdict ? (
             <span style={{ color: "var(--text-faint, #8a857e)", fontStyle: "italic" }}>
               (No reasoning available — analyzer produced no notes.)

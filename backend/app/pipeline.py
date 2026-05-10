@@ -29,6 +29,8 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.analysis import analyze_compliance_v1, detect_names, detect_script_variant, detect_supplier
+from app.watt_compliance.script_detect import canonicalize_supplier
+from app.watt_compliance.taxonomy import SUPPLIER_LABELS
 from app.assemblyai_transcription import transcribe_audio_assemblyai
 from app.business_detect import detect_business_name, fuzzy_match_customer
 from app.checkpoint_analyzer import analyze_all_checkpoints
@@ -362,8 +364,16 @@ async def _step_detect_metadata(
     if not script:
         log.info(f"\U0001f50d DETECT start call_id={call_id}")
         t0 = time.time()
-        detected = await detect_supplier(transcript)
-        log.info(f"\U0001f50d DETECT done call_id={call_id} → supplier=\"{detected}\", {time.time()-t0:.1f}s")
+        detected_raw = await detect_supplier(transcript)
+        # Canonicalise so "E.ON Next" / "EON" / "e.on next energy" all map
+        # to Supplier.EON_NEXT and we ILIKE-match seed scripts regardless of
+        # how they were named at insert time.
+        canon = canonicalize_supplier(detected_raw)
+        detected = SUPPLIER_LABELS[canon] if canon else detected_raw
+        log.info(
+            f"\U0001f50d DETECT done call_id={call_id} → raw=\"{detected_raw}\" "
+            f"canonical=\"{detected}\", {time.time()-t0:.1f}s"
+        )
         call.detected_supplier = detected
 
         # Auto-detect backfill: if the linked CustomerDeal has no supplier
@@ -385,7 +395,25 @@ async def _step_detect_metadata(
         except Exception as e:
             log.warning(f"supplier backfill skipped: {e}")
 
-        safe_detected = _escape_ilike(detected)
+        # Build a list of candidate ILIKE keys so older seed rows that used
+        # different naming conventions ("EON" vs "E.ON Next" vs "eon_next")
+        # all match. Order matters: try the canonical label first because
+        # it's the most specific.
+        ilike_keys: list[str] = []
+        if canon:
+            ilike_keys.append(SUPPLIER_LABELS[canon])  # e.g. "E.ON Next"
+            ilike_keys.append(canon.value)              # e.g. "eon_next"
+            # First word — handles seed rows like "EON" or "EDF" or "BGL"
+            short = SUPPLIER_LABELS[canon].split()[0].rstrip(",.()")
+            if short and short not in ilike_keys:
+                ilike_keys.append(short)
+        if detected_raw and detected_raw not in ilike_keys:
+            ilike_keys.append(detected_raw)
+        # De-dup while preserving order.
+        seen: set[str] = set()
+        ilike_keys = [k for k in ilike_keys if not (k in seen or seen.add(k))]
+
+        from sqlalchemy import or_
         # L3: when the call has a known call_type, prefer Script rows
         # whose lifecycle_phase matches that phase (e.g. a 'closer'
         # call should pick the Closer script, not the Lead Gen one).
@@ -395,8 +423,12 @@ async def _step_detect_metadata(
         from app.deal_lifecycle import call_type_to_phase as _ct_to_phase
         phase = _ct_to_phase(call.call_type) if call.call_type else None
 
+        ilike_clauses = [
+            Script.supplier_name.ilike(f"%{_escape_ilike(k)}%", escape="\\")
+            for k in ilike_keys
+        ]
         base_q = db.query(Script).filter(
-            Script.supplier_name.ilike(f"%{safe_detected}%", escape="\\"),
+            or_(*ilike_clauses) if ilike_clauses else Script.supplier_name.ilike("%"),
             Script.active == True,
         )
         matching: list[Script] = []
@@ -651,8 +683,16 @@ def _step_score(call_id: str, analysis: dict, db: Session) -> dict:
             call.compliant = all(cp.passed for cp in v1.checkpoints)
             call.reason = v1.reason
             call.checkpoint_results = json.dumps([
-                {"section": i + 1, "name": cp.rule, "status": "pass" if cp.passed else "fail",
-                 "evidence": cp.excerpt, "notes": None}
+                {
+                    "section": i + 1,
+                    "name": cp.rule,
+                    "status": "pass" if cp.passed else "fail",
+                    "evidence": cp.excerpt,
+                    # Prefer the analyst's per-checkpoint reasoning when the
+                    # LLM populated it; fall back to the call-level reason so
+                    # the reviewer never sees an empty AI Verdict box.
+                    "notes": (cp.notes or "").strip() or v1.reason,
+                }
                 for i, cp in enumerate(v1.checkpoints)
             ])
         else:
