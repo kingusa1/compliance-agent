@@ -1,18 +1,20 @@
 "use client";
 
 /**
- * /dashboard — at-a-glance home for admin / lead / reviewer users.
+ * /dashboard — focused home page (redesigned 2026-05-10).
  *
- * Three sections:
- *   1) KPI strip — total calls / compliant / non-compliant / compliance rate
- *   2) Quick-start guide that auto-collapses once 1+ call has been processed
- *   3) Quick-action tiles linking into the heavy pages (Tracker, Customers,
- *      Deals, Scripts, Rejections, Observability)
+ * Three sections, top to bottom:
  *
- * Every tile has a one-sentence description so a fresh user can navigate
- * the system without prior training. The only blocking action on a fresh
- * install is "Upload your first call" — everything else is reachable from
- * here in one click.
+ *   1) KPI strip  — total / compliant / non-compliant / compliance rate.
+ *   2) Three primary action cards — Queue, Tracker, All calls.
+ *      Secondary destinations (Customers, Deals, Scripts, Rejections,
+ *      Observability, Compliant, Non-compliant) are reachable from the
+ *      left sidebar; we don't double-show them here.
+ *   3) Recent activity — last 5 uploaded calls, click-through.
+ *
+ * Goal: reduce cognitive load. The previous 10-tile grid put everything
+ * in front of every user every visit — for daily use, "what was just
+ * uploaded" matters more than "where is the scripts page".
  */
 import Link from "next/link";
 import { useState } from "react";
@@ -20,18 +22,12 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Upload,
   Inbox,
-  Users,
-  Briefcase,
-  ListChecks,
-  ShieldCheck,
-  ShieldAlert,
   Table as TableIcon,
-  Activity,
-  AlertTriangle,
+  ListVideo,
   ArrowRight,
   CheckCircle2,
   Sparkles,
-  BookOpen,
+  Clock,
 } from "lucide-react";
 
 import { apiFetch } from "@/lib/api";
@@ -49,6 +45,23 @@ interface StatsResponse {
   automated_rate?: number;
 }
 
+interface CallRow {
+  id: string;
+  filename: string;
+  customer_name: string | null;
+  agent_name: string | null;
+  detected_supplier: string | null;
+  score: string | null;
+  compliant: boolean | null;
+  created_at: string;
+  reason: string | null;
+}
+
+interface CallsListResponse {
+  calls: CallRow[];
+  total: number;
+}
+
 interface KPI {
   label: string;
   value: string | number;
@@ -57,84 +70,27 @@ interface KPI {
   tone: "neutral" | "good" | "bad" | "warn";
 }
 
-interface QuickAction {
-  href: string;
-  label: string;
-  icon: typeof Inbox;
-  description: string;
-  tone: "primary" | "neutral";
-}
-
-const QUICK_ACTIONS: QuickAction[] = [
-  {
-    href: "/guide",
-    label: "User Guide",
-    icon: BookOpen,
-    description: "Step-by-step manual: pages, pipeline, taxonomy, lifecycle, reviewer playbook, troubleshooting.",
-    tone: "primary",
-  },
+const PRIMARY_ACTIONS = [
   {
     href: "/queue",
     label: "Review Queue",
     icon: Inbox,
-    description: "Calls flagged by the AI as needing reviewer attention. Open a call, accept or override the AI verdict.",
-    tone: "primary",
+    description:
+      "Calls flagged by the AI as needing reviewer attention. Open, listen, accept or override.",
   },
   {
     href: "/tracker",
     label: "Tracker",
     icon: TableIcon,
-    description: "Full operational tracker — every call + every rejection in the Watt XLSX shape.",
-    tone: "primary",
+    description:
+      "The full operational tracker — every call and every rejection with all 16 columns.",
   },
   {
-    href: "/customers",
-    label: "Customers",
-    icon: Users,
-    description: "Customer rollup: deals + calls + lifecycle status per customer.",
-    tone: "neutral",
-  },
-  {
-    href: "/deals",
-    label: "Deals",
-    icon: Briefcase,
-    description: "Multi-call deals: Lead Gen → Closer → LOA → Confirmation.",
-    tone: "neutral",
-  },
-  {
-    href: "/scripts",
-    label: "Scripts",
-    icon: ListChecks,
-    description: "15 supplier scripts (BGL, BG, EDF, EON, Pozitive, SP) and their checkpoint sets.",
-    tone: "neutral",
-  },
-  {
-    href: "/rejections",
-    label: "Rejections",
-    icon: AlertTriangle,
-    description: "Open rejections by category, owner, supplier — track to fixed/dead.",
-    tone: "neutral",
-  },
-  {
-    href: "/observability",
-    label: "Observability",
-    icon: Activity,
-    description: "Live pipeline runs, stuck calls, audit log. Visit when something looks off.",
-    tone: "neutral",
-  },
-  {
-    href: "/compliant",
-    label: "Compliant",
-    icon: ShieldCheck,
-    description: "Clean audit trail of calls signed off as compliant.",
-    tone: "neutral",
-  },
-  {
-    href: "/non-compliant",
-    label: "Non-compliant",
-    icon: ShieldAlert,
-    description: "Calls flagged non-compliant — triage and escalate.",
-    tone: "neutral",
+    href: "/calls",
+    label: "All Calls",
+    icon: ListVideo,
+    description:
+      "Every uploaded call, newest first. Filter, search, delete. The master list of recordings.",
   },
 ];
 
@@ -152,7 +108,7 @@ const QUICK_START_STEPS = [
   {
     title: "Sign off or override on the Review Queue",
     description:
-      "If the AI flagged it, claim the call and either accept or override. Your decision is the audit-of-record.",
+      "If the AI flagged it, open the call and either accept or override. Your decision is the audit-of-record.",
   },
 ];
 
@@ -164,8 +120,30 @@ function useStats() {
   });
 }
 
+function useRecentCalls() {
+  return useQuery({
+    queryKey: ["dashboard:recent-calls"] as const,
+    queryFn: () =>
+      apiFetch<CallsListResponse>("/api/calls?limit=5&skip=0"),
+    staleTime: 30_000,
+  });
+}
+
+function relativeTime(iso: string | null): string {
+  if (!iso) return "—";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "—";
+  const diff = Math.floor((Date.now() - t) / 1000);
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
 export default function DashboardPage() {
   const stats = useStats();
+  const recent = useRecentCalls();
   const [uploadOpen, setUploadOpen] = useState(false);
   const isFreshInstall = (stats.data?.total_calls ?? 0) === 0;
 
@@ -198,7 +176,10 @@ export default function DashboardPage() {
           ? `${Math.round(stats.data.compliance_rate * 100)}%`
           : "—",
       hint: "Across all reviewed calls",
-      tone: stats.data?.compliance_rate != null && stats.data.compliance_rate >= 0.8 ? "good" : "warn",
+      tone:
+        stats.data?.compliance_rate != null && stats.data.compliance_rate >= 0.8
+          ? "good"
+          : "warn",
     },
   ];
 
@@ -220,11 +201,15 @@ export default function DashboardPage() {
         </button>
       </header>
 
-      <HelpBanner id="dashboard" title="How the system works" href="/guide">
-        Upload a call (green button, top-right) → the pipeline runs Deepgram (transcribe + speaker labels) → matches a supplier script (E.ON, BG, EDF, BGL, Pozitive, Scottish Power) → Opus 4.7 scores every checkpoint → flagged calls land in <strong>Review Queue</strong>, clean ones in <strong>Compliant</strong>. Every step is auto-detected from the audio — no manual tagging needed.
+      <HelpBanner id="dashboard" title="How it works" href="/guide">
+        Upload a call (green button, top-right). The pipeline auto-runs:
+        Deepgram transcribes &amp; labels speakers → Opus 4.7 detects supplier,
+        matches script, scores every checkpoint → flagged calls land in the{" "}
+        <strong>Review Queue</strong>, clean ones in <strong>Compliant</strong>.
+        No manual tagging — just upload and review.
       </HelpBanner>
 
-      <div className="px-6 py-6 space-y-6">
+      <div className="space-y-6 px-6 py-6">
         {/* KPI strip */}
         <section
           className="grid gap-4"
@@ -269,10 +254,12 @@ export default function DashboardPage() {
             <div className="flex items-start gap-3">
               <Sparkles className="mt-1 size-4 text-emerald-300" />
               <div className="flex-1">
-                <h2 className="text-[15px] font-semibold text-emerald-200">Welcome — three steps to get going</h2>
+                <h2 className="text-[15px] font-semibold text-emerald-200">
+                  Welcome — three steps to get going
+                </h2>
                 <p className="mt-1 text-[12.5px] text-emerald-200/80">
-                  No calls have been processed yet. Once you upload one, this guide auto-hides
-                  and the KPIs above light up.
+                  No calls have been processed yet. Once you upload one, this guide
+                  auto-hides and the KPIs above light up.
                 </p>
                 <ol className="mt-4 space-y-3">
                   {QUICK_START_STEPS.map((s, i) => (
@@ -281,8 +268,12 @@ export default function DashboardPage() {
                         {i + 1}
                       </span>
                       <div>
-                        <div className="text-[13.5px] font-medium text-emerald-100">{s.title}</div>
-                        <div className="text-[12.5px] text-emerald-200/80">{s.description}</div>
+                        <div className="text-[13.5px] font-medium text-emerald-100">
+                          {s.title}
+                        </div>
+                        <div className="text-[12.5px] text-emerald-200/80">
+                          {s.description}
+                        </div>
                       </div>
                     </li>
                   ))}
@@ -307,48 +298,125 @@ export default function DashboardPage() {
           </section>
         ) : null}
 
-        {/* "What's where" grid */}
+        {/* Three primary action cards */}
         <section>
           <div className="mb-3 flex items-center gap-2">
-            <h2 className="text-[15px] font-semibold text-[var(--text-primary)]">Where to go next</h2>
-            <span className="text-[12px] text-[var(--text-muted)]">— click any card</span>
+            <h2 className="text-[15px] font-semibold text-[var(--text-primary)]">
+              What do you want to do?
+            </h2>
           </div>
           <div
-            className="grid gap-3"
+            className="grid gap-4"
             style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}
           >
-            {QUICK_ACTIONS.map((a) => {
+            {PRIMARY_ACTIONS.map((a) => {
               const Icon = a.icon;
               return (
                 <Link
                   key={a.href}
                   href={a.href}
-                  className="group rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-4 transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-elev2)]"
+                  className="group rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-5 transition-colors hover:border-emerald-500/50 hover:bg-[var(--bg-elev2)]"
                 >
                   <div className="flex items-start justify-between">
-                    <div className="grid size-9 place-items-center rounded-lg bg-[var(--bg-elev3)]">
-                      <Icon className="size-4 text-[var(--emerald-400)]" />
+                    <div className="grid size-10 place-items-center rounded-lg bg-emerald-500/10">
+                      <Icon className="size-5 text-emerald-300" />
                     </div>
-                    <ArrowRight className="size-4 text-[var(--text-dim)] transition-transform group-hover:translate-x-0.5 group-hover:text-[var(--text-muted)]" />
+                    <ArrowRight className="size-4 text-[var(--text-dim)] transition-transform group-hover:translate-x-0.5 group-hover:text-emerald-300" />
                   </div>
-                  <div className="mt-3 text-[14px] font-semibold text-[var(--text-primary)]">
+                  <div className="mt-4 text-[16px] font-semibold text-[var(--text-primary)]">
                     {a.label}
                   </div>
-                  <div className="mt-1 text-[12.5px] leading-snug text-[var(--text-muted)]">
+                  <div className="mt-1.5 text-[12.5px] leading-relaxed text-[var(--text-muted)]">
                     {a.description}
                   </div>
                 </Link>
               );
             })}
           </div>
+          <div className="mt-3 text-[12px] text-[var(--text-muted)]">
+            More pages (Customers, Deals, Scripts, Rejections, Observability,
+            Compliant, Non-compliant) are in the left sidebar.
+          </div>
         </section>
 
+        {/* Recent activity */}
+        {!isFreshInstall ? (
+          <section>
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-[15px] font-semibold text-[var(--text-primary)]">
+                Recent calls
+              </h2>
+              <Link
+                href="/calls"
+                className="inline-flex items-center gap-1 text-[12.5px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+              >
+                View all <ArrowRight className="size-3.5" />
+              </Link>
+            </div>
+            <div className="overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elev1)]">
+              {recent.isLoading ? (
+                <div className="p-6 text-center text-[12.5px] text-[var(--text-muted)]">
+                  Loading…
+                </div>
+              ) : (recent.data?.calls.length ?? 0) === 0 ? (
+                <div className="p-6 text-center text-[12.5px] text-[var(--text-muted)]">
+                  No calls yet.
+                </div>
+              ) : (
+                recent.data!.calls.map((c, i) => (
+                  <Link
+                    key={c.id}
+                    href={`/calls/${c.id}`}
+                    className={`flex items-center gap-4 px-4 py-3 text-[12.5px] transition-colors hover:bg-[var(--bg-elev2)] ${
+                      i === 0 ? "" : "border-t border-[var(--border-subtle)]"
+                    }`}
+                  >
+                    <Clock className="size-3.5 shrink-0 text-[var(--text-dim)]" />
+                    <div className="w-20 shrink-0 text-[var(--text-muted)] tabular-nums">
+                      {relativeTime(c.created_at)}
+                    </div>
+                    <div className="min-w-0 flex-1 truncate text-[var(--text-primary)]">
+                      {c.customer_name ?? c.filename}
+                    </div>
+                    <div className="hidden w-32 shrink-0 truncate text-[var(--text-muted)] md:block">
+                      {c.detected_supplier ?? "—"}
+                    </div>
+                    <div className="hidden w-24 shrink-0 truncate text-[var(--text-muted)] md:block">
+                      {c.agent_name ?? "—"}
+                    </div>
+                    <div className="w-14 shrink-0 text-right tabular-nums text-[var(--text-muted)]">
+                      {c.score ?? "—"}
+                    </div>
+                    <div className="w-24 shrink-0 text-right">
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                          c.compliant === true
+                            ? "bg-emerald-500/10 text-emerald-300"
+                            : c.compliant === false
+                              ? "bg-red-500/10 text-red-300"
+                              : "bg-[var(--bg-elev3)] text-[var(--text-muted)]"
+                        }`}
+                      >
+                        {c.compliant === true
+                          ? "compliant"
+                          : c.compliant === false
+                            ? "non-compliant"
+                            : "pending"}
+                      </span>
+                    </div>
+                  </Link>
+                ))
+              )}
+            </div>
+          </section>
+        ) : null}
+
         {/* System state footer */}
-        <section className="flex items-center gap-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-4 text-[12.5px] text-[var(--text-muted)]">
-          <CheckCircle2 className="size-4 text-emerald-400" />
+        <section className="flex items-center gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-3 text-[11.5px] text-[var(--text-muted)]">
+          <CheckCircle2 className="size-3.5 text-emerald-400" />
           <div>
-            System operational · Frontend on Vercel · Backend on Railway · Postgres on Supabase ·
-            Opus 4.7 via OpenRouter · Deepgram Nova-3 (en-GB, EU region).
+            System operational · Vercel · Railway · Supabase · Opus 4.7 ·
+            Deepgram Nova-3 (en-GB).
           </div>
         </section>
       </div>

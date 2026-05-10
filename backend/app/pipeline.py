@@ -131,6 +131,63 @@ async def process_call(call_id: str, file_path: str, db: Session, script_id: str
             db.rollback()
         await _trace_step(call_id, "finalize", _step_finalize, call_id, db)
 
+        # Tracker-autofill specialist agents (2026-05-10):
+        # 1. DateExtractorAgent  — fills CustomerDeal.expected_live_date
+        # 2. RejectionAdvisorAgent — fills Rejection.category + fix_required
+        # 3. DeadlineComputerAgent — fills Rejection.deadline (uses #2's severity)
+        # All wrapped in try/except so a transient agent failure NEVER breaks
+        # a successfully-scored call. Stale autofill is cheap to backfill.
+        try:
+            from app.agents.date_extractor import DateExtractorAgent
+            await DateExtractorAgent(call_id, db)
+        except Exception as agent_err:
+            log.warning(f"date_extractor skipped call_id={call_id}: {agent_err}")
+
+        try:
+            from app.agents.rejection_advisor import (
+                RejectionAdvisorAgent,
+                advise_rejection,
+            )
+            from app.agents.deadline_computer import DeadlineComputerAgent
+            from app.models import Rejection as _Rej, CustomerDeal as _Deal
+
+            # Cache the call's verdict once (instead of re-running per Rejection)
+            call_for_advice = db.query(Call).filter_by(id=call_id).first()
+            advisor_verdict: dict = {}
+            if call_for_advice and call_for_advice.compliant is False:
+                advisor_verdict = await advise_rejection(call_for_advice) or {}
+
+            rejs = db.query(_Rej).filter_by(call_id=call_id).all()
+            for rej in rejs:
+                # Apply RejectionAdvisor's verdict to fields that are NULL.
+                if advisor_verdict and not (rej.category and rej.fix_required):
+                    rej.category = advisor_verdict.get("category", rej.category)
+                    rej.fix_required = advisor_verdict.get(
+                        "fix_required", rej.fix_required
+                    )
+                # Compute deadline from severity + expected_live_date.
+                if not rej.deadline and rej.rejected_at:
+                    sev = advisor_verdict.get("severity") or "MEDIUM"
+                    parent_deal = (
+                        db.query(_Deal)
+                        .filter_by(id=call_for_advice.deal_id)
+                        .first()
+                        if call_for_advice and call_for_advice.deal_id
+                        else None
+                    )
+                    expected_live = (
+                        parent_deal.expected_live_date if parent_deal else None
+                    )
+                    rej.deadline = DeadlineComputerAgent(
+                        rejected_at=rej.rejected_at,
+                        severity=sev,
+                        expected_live_date=expected_live,
+                    )
+            db.commit()
+        except Exception as agent_err:
+            log.warning(f"rejection_advisor/deadline skipped call_id={call_id}: {agent_err}")
+            db.rollback()
+
         # Quality AI Agent — auto-runs after every upload to merge any
         # sibling calls of the same customer that landed on different
         # stub deals. Failure here never breaks the call (the per-call

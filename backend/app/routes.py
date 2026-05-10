@@ -1417,6 +1417,92 @@ async def reanalyze_call(
     return await _reanalyze_call(call_id, db, actor_id=actor_id)
 
 
+@router.post("/api/admin/backfill-tracker", status_code=200)
+async def admin_backfill_tracker(db: Session = Depends(get_db)):
+    """Backfill tracker columns on legacy calls + rejections.
+
+    Walks every completed call missing one of:
+      - CustomerDeal.expected_live_date  (DateExtractorAgent)
+      - Rejection.category / fix_required (RejectionAdvisorAgent)
+      - Rejection.deadline (DeadlineComputerAgent)
+    and runs the agent to fill it. Idempotent — already-filled rows are
+    skipped. Safe to run multiple times.
+    """
+    from app.agents.date_extractor import DateExtractorAgent as _Date
+    from app.agents.rejection_advisor import (
+        RejectionAdvisorAgent as _Adv,
+        advise_rejection,
+    )
+    from app.agents.deadline_computer import DeadlineComputerAgent as _Deadline
+    from app.models import Rejection as _Rej, CustomerDeal as _CDeal
+
+    completed = (
+        db.query(Call)
+        .filter(Call.status == "completed", Call.transcript.isnot(None))
+        .order_by(Call.created_at.asc())
+        .all()
+    )
+
+    dates_filled = 0
+    advisor_filled = 0
+    deadlines_filled = 0
+
+    for c in completed:
+        # 1. expected_live_date
+        if c.deal_id:
+            deal = db.query(_CDeal).filter_by(id=c.deal_id).first()
+            if deal and not deal.expected_live_date:
+                v = await _Date(c.id, db)
+                if v.get("expected_live_date"):
+                    dates_filled += 1
+
+        # 2 & 3. category / fix_required / deadline
+        rejs = db.query(_Rej).filter_by(call_id=c.id).all()
+        if not rejs:
+            continue
+        # Run advisor once per call (cheaper than per-rejection)
+        advisor_verdict = {}
+        if any(not (r.category and r.fix_required) for r in rejs):
+            advisor_verdict = await advise_rejection(c) or {}
+
+        for rej in rejs:
+            changed = False
+            if advisor_verdict and not (rej.category and rej.fix_required):
+                rej.category = advisor_verdict.get("category", rej.category)
+                rej.fix_required = advisor_verdict.get(
+                    "fix_required", rej.fix_required
+                )
+                changed = True
+                advisor_filled += 1
+
+            if not rej.deadline and rej.rejected_at:
+                sev = advisor_verdict.get("severity") or "MEDIUM"
+                parent_deal = (
+                    db.query(_CDeal).filter_by(id=c.deal_id).first()
+                    if c.deal_id
+                    else None
+                )
+                rej.deadline = _Deadline(
+                    rejected_at=rej.rejected_at,
+                    severity=sev,
+                    expected_live_date=(
+                        parent_deal.expected_live_date if parent_deal else None
+                    ),
+                )
+                changed = True
+                deadlines_filled += 1
+            if changed:
+                db.flush()
+
+    db.commit()
+    return {
+        "scanned_calls": len(completed),
+        "dates_filled": dates_filled,
+        "advisor_filled": advisor_filled,
+        "deadlines_filled": deadlines_filled,
+    }
+
+
 @router.post("/api/admin/quality-resolve", status_code=200)
 async def admin_quality_resolve(db: Session = Depends(get_db)):
     """Run the Quality AI Agent across all completed calls and apply its
@@ -1573,19 +1659,73 @@ def _bucket_token_overlap(a: str, b: str) -> bool:
 
 @router.delete("/api/calls/{call_id}")
 def delete_call(call_id: str, db: Session = Depends(get_db)):
-    """Delete a call + its checkpoint rows + its audio file.
-    Required so users can re-upload after a failed run (duplicate-filename
-    check otherwise blocks re-upload)."""
+    """Delete a call and clean up orphan parents.
+
+    After the 2026-05-10 migration adds ON DELETE CASCADE to the 9 child
+    tables (CallCheckpoint, ReviewSession, VerdictHistory, TranscriptEdit,
+    ClaimLock, ComplianceDecision, VerdictSuggestion, VerdictResponse,
+    AgentTrace), `db.delete(call)` cascades through them automatically \u2014
+    no manual child cleanup needed.
+
+    Additionally: if removing this call leaves its parent CustomerDeal
+    with zero remaining calls, delete the deal too. If THAT in turn
+    leaves the parent Customer with zero remaining deals, delete the
+    Customer. This stops the "(auto-detect pending \u2026)" / "(pending audio
+    upload)" stub rows that used to accumulate forever.
+    """
     call = db.query(Call).filter_by(id=call_id).first()
     if not call:
         raise HTTPException(404, "Call not found")
 
     filename = call.filename
     file_path = call.file_path
+    deal_id = call.deal_id
 
-    # Drop any CallCheckpoint rows that reference this call
-    db.query(CallCheckpoint).filter_by(call_id=call_id).delete()
+    # Cascade is now declared at the FK level; just delete the call.
     db.delete(call)
+    db.flush()  # so the count() below sees the deletion
+
+    # \u2500\u2500 parent cleanup \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    deal_deleted = False
+    customer_deleted = False
+    if deal_id:
+        from app.models import CustomerDeal, Customer
+        deal = db.query(CustomerDeal).filter_by(id=deal_id).first()
+        if deal:
+            remaining_calls = (
+                db.query(Call).filter_by(deal_id=deal_id).count()
+            )
+            if remaining_calls == 0:
+                customer_id = getattr(deal, "customer_id", None)
+                db.delete(deal)
+                db.flush()
+                deal_deleted = True
+
+                # If the deal's parent Customer now has no deals at all,
+                # delete the Customer row too. CustomerDeal.customer_id
+                # FK has ondelete=CASCADE going Customer\u2192Deal but not
+                # the other way, so we must clean up explicitly.
+                if customer_id is not None:
+                    try:
+                        remaining_deals = (
+                            db.query(CustomerDeal)
+                            .filter_by(customer_id=customer_id)
+                            .count()
+                        )
+                        if remaining_deals == 0:
+                            cust = (
+                                db.query(Customer)
+                                .filter_by(id=customer_id)
+                                .first()
+                            )
+                            if cust:
+                                db.delete(cust)
+                                customer_deleted = True
+                    except Exception as e:  # noqa: BLE001
+                        log.warning(
+                            f"\U0001f5d1\ufe0f DELETE customer cleanup skipped: {e}"
+                        )
+
     db.commit()
 
     # Best-effort remove the audio file on disk
@@ -1595,8 +1735,16 @@ def delete_call(call_id: str, db: Session = Depends(get_db)):
         except OSError as e:
             log.warning(f"\U0001f5d1\ufe0f DELETE audio file removal failed call_id={call_id}: {e}")
 
-    log.info(f"\U0001f5d1\ufe0f DELETE call_id={call_id} filename=\"{filename}\"")
-    return {"status": "ok", "deleted": call_id}
+    log.info(
+        f"\U0001f5d1\ufe0f DELETE call_id={call_id} filename=\"{filename}\" "
+        f"deal_deleted={deal_deleted} customer_deleted={customer_deleted}"
+    )
+    return {
+        "status": "ok",
+        "deleted": call_id,
+        "deal_deleted": deal_deleted,
+        "customer_deleted": customer_deleted,
+    }
 
 
 # \u2500\u2500 W1 (v3-watt-coverage): risk_tags toggle \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500

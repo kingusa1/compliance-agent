@@ -314,6 +314,41 @@ def agent_drilldown(agent_name: str, db: Session = Depends(get_db)) -> dict:
         except (OperationalError, ProgrammingError):
             pass
 
+    # Recent calls for this agent — surfaced in the drilldown so the page
+    # has SOMETHING to show even when dead_rejections is empty (the previous
+    # behavior was a blank page on every agent without dead-flag history).
+    from app.models import Call as _Call
+    recent_call_rows = (
+        db.query(
+            _Call.id, _Call.filename, _Call.customer_name,
+            _Call.detected_supplier, _Call.score, _Call.compliant,
+            _Call.compliance_status, _Call.created_at, _Call.completed_at,
+            _Call.reason, _Call.duration_seconds,
+        )
+        .filter(_Call.agent_name == agent_name)
+        .order_by(_Call.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    recent_calls = [
+        {
+            "id": r.id,
+            "filename": r.filename,
+            "customer_name": r.customer_name,
+            "detected_supplier": r.detected_supplier,
+            "score": r.score,
+            "compliant": r.compliant,
+            "compliance_status": r.compliance_status,
+            "created_at": (r.created_at.isoformat() if r.created_at else None),
+            "completed_at": (r.completed_at.isoformat() if r.completed_at else None),
+            "reason": r.reason,
+            "duration_seconds": (
+                float(r.duration_seconds) if r.duration_seconds is not None else None
+            ),
+        }
+        for r in recent_call_rows
+    ]
+
     return {
         "agent_name": agent_name,
         "critical_count_7d": critical_count_7d,
@@ -323,6 +358,7 @@ def agent_drilldown(agent_name: str, db: Session = Depends(get_db)) -> dict:
         "retraining_assigned": retraining_assigned,
         "retraining_reason": retraining_reason,
         "dead_rejections": dead_rejections,
+        "recent_calls": recent_calls,
     }
 
 

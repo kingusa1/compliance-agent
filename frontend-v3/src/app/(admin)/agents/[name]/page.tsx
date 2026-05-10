@@ -35,6 +35,7 @@ export default function AgentDrilldownPage({
 
   const data = drill.data;
   const flags = data?.dead_rejections ?? [];
+  const recentCalls = data?.recent_calls ?? [];
 
   const retrainingMutation = useMutation({
     mutationFn: (next: boolean) =>
@@ -228,7 +229,7 @@ export default function AgentDrilldownPage({
       >
         {(
           [
-            { key: "flags", label: "Recent flags", count: flags.length },
+            { key: "flags", label: "Recent calls", count: recentCalls.length },
             { key: "directives", label: "Open directives", count: data?.open_directives ?? 0 },
             { key: "rejections", label: "Dead rejections", count: flags.length },
             { key: "similar", label: "Similar failures", count: 0 },
@@ -271,96 +272,151 @@ export default function AgentDrilldownPage({
       </div>
 
       <div style={{ flex: 1, overflowY: "auto" }} className="ca-scroll">
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "100px 90px 1.4fr 1.6fr 110px 110px",
-            gap: 12,
-            padding: "10px 24px",
-            borderBottom: "1px solid var(--border-subtle)",
-            background: "var(--bg-elev1)",
-          }}
-        >
-          {["When", "Severity", "Rule", "Evidence", "Fix Status", "Rejection"].map((h) => (
-            <div
-              key={h}
-              style={{
-                fontSize: 11,
-                fontWeight: 500,
-                color: "var(--text-faint)",
-                textTransform: "uppercase",
-                letterSpacing: "0.06em",
-              }}
-            >
-              {h}
-            </div>
-          ))}
-        </div>
-        {flags.length === 0 ? (
-          <div
-            style={{
-              padding: 32,
-              fontSize: 13,
-              color: "var(--text-muted)",
-              textAlign: "center",
-            }}
-          >
-            No flags in this window.
-          </div>
+        {tab === "flags" ? (
+          <RecentCallsTable calls={recentCalls} />
+        ) : tab === "rejections" ? (
+          <DeadRejectionsTable flags={flags} />
         ) : (
-          flags.map((r, i) => (
-            <div
-              key={`${r.deal_id}-${i}`}
-              style={{
-                display: "grid",
-                gridTemplateColumns: "100px 90px 1.4fr 1.6fr 110px 110px",
-                gap: 12,
-                alignItems: "center",
-                padding: "12px 24px",
-                borderBottom: "1px solid var(--border-subtle)",
-                fontSize: 13,
-              }}
-            >
-              <div style={{ color: "var(--text-muted)", fontVariantNumeric: "tabular-nums" }}>
-                {r.rejected_at
-                  ? new Date(r.rejected_at).toLocaleDateString()
-                  : "—"}
-              </div>
-              <div>
-                <Pill tone="red" dot>
-                  HIGH
-                </Pill>
-              </div>
-              <div style={{ color: "var(--text-primary)" }}>
-                {r.dead_reason ?? "—"}
-              </div>
-              <div
-                style={{
-                  color: "var(--text-muted)",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 12,
-                }}
-              >
-                {r.customer_name ?? "—"}
-              </div>
-              <div>
-                <Pill tone="amber" dot>
-                  open
-                </Pill>
-              </div>
-              <div
-                style={{
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 12,
-                  color: "var(--red)",
-                }}
-              >
-                {r.deal_id.slice(0, 8)}
-              </div>
-            </div>
-          ))
+          <div style={{ padding: 32, fontSize: 13, color: "var(--text-muted)", textAlign: "center" }}>
+            {tab === "directives" ? "Directives view — coming soon." : "Similar-failures view — coming soon."}
+          </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── Tab content components ─────────────────────────────────────────
+
+import type { AgentRecentCall, AgentDeadRejection } from "@/lib/queries/aggregator";
+
+const COLS_RECENT = "120px 1.4fr 1.2fr 90px 110px 110px";
+const HEADERS_RECENT = ["When", "Customer", "Supplier", "Score", "Status", "Call ID"];
+
+function RecentCallsTable({ calls }: { calls: AgentRecentCall[] }) {
+  return (
+    <>
+      <TableHeaderRow cols={COLS_RECENT} headers={HEADERS_RECENT} />
+      {calls.length === 0 ? (
+        <EmptyRow text="No calls for this agent yet." />
+      ) : (
+        calls.map((c) => (
+          <Link
+            key={c.id}
+            href={`/calls/${c.id}`}
+            style={{
+              display: "grid",
+              gridTemplateColumns: COLS_RECENT,
+              gap: 12,
+              alignItems: "center",
+              padding: "12px 24px",
+              borderBottom: "1px solid var(--border-subtle)",
+              fontSize: 13,
+              color: "var(--text-primary)",
+              textDecoration: "none",
+              cursor: "pointer",
+            }}
+            className="ca-row-hover"
+          >
+            <div style={{ color: "var(--text-muted)", fontVariantNumeric: "tabular-nums" }}>
+              {c.created_at ? new Date(c.created_at).toLocaleDateString() : "—"}
+            </div>
+            <div>{c.customer_name ?? "—"}</div>
+            <div style={{ color: "var(--text-muted)" }}>{c.detected_supplier ?? "—"}</div>
+            <div style={{ fontVariantNumeric: "tabular-nums" }}>{c.score ?? "—"}</div>
+            <div>
+              <Pill tone={c.compliant ? "emerald" : "red"} dot>
+                {c.compliant ? "compliant" : "non-compliant"}
+              </Pill>
+            </div>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-faint)" }}>
+              {c.id.slice(0, 8)}
+            </div>
+          </Link>
+        ))
+      )}
+    </>
+  );
+}
+
+const COLS_DEAD = "100px 90px 1.4fr 1.6fr 110px 110px";
+const HEADERS_DEAD = ["When", "Severity", "Rule", "Customer", "Fix Status", "Deal"];
+
+function DeadRejectionsTable({ flags }: { flags: AgentDeadRejection[] }) {
+  return (
+    <>
+      <TableHeaderRow cols={COLS_DEAD} headers={HEADERS_DEAD} />
+      {flags.length === 0 ? (
+        <EmptyRow text="No dead rejections in this window." />
+      ) : (
+        flags.map((r, i) => (
+          <div
+            key={`${r.deal_id}-${i}`}
+            style={{
+              display: "grid",
+              gridTemplateColumns: COLS_DEAD,
+              gap: 12,
+              alignItems: "center",
+              padding: "12px 24px",
+              borderBottom: "1px solid var(--border-subtle)",
+              fontSize: 13,
+            }}
+          >
+            <div style={{ color: "var(--text-muted)", fontVariantNumeric: "tabular-nums" }}>
+              {r.rejected_at ? new Date(r.rejected_at).toLocaleDateString() : "—"}
+            </div>
+            <div>
+              <Pill tone="red" dot>HIGH</Pill>
+            </div>
+            <div style={{ color: "var(--text-primary)" }}>{r.dead_reason ?? "—"}</div>
+            <div style={{ color: "var(--text-muted)" }}>{r.customer_name ?? "—"}</div>
+            <div>
+              <Pill tone="amber" dot>open</Pill>
+            </div>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--red)" }}>
+              {r.deal_id.slice(0, 8)}
+            </div>
+          </div>
+        ))
+      )}
+    </>
+  );
+}
+
+function TableHeaderRow({ cols, headers }: { cols: string; headers: string[] }) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: cols,
+        gap: 12,
+        padding: "10px 24px",
+        borderBottom: "1px solid var(--border-subtle)",
+        background: "var(--bg-elev1)",
+      }}
+    >
+      {headers.map((h) => (
+        <div
+          key={h}
+          style={{
+            fontSize: 11,
+            fontWeight: 500,
+            color: "var(--text-faint)",
+            textTransform: "uppercase",
+            letterSpacing: "0.06em",
+          }}
+        >
+          {h}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function EmptyRow({ text }: { text: string }) {
+  return (
+    <div style={{ padding: 32, fontSize: 13, color: "var(--text-muted)", textAlign: "center" }}>
+      {text}
     </div>
   );
 }

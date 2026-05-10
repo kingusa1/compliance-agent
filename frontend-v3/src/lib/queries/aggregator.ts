@@ -177,6 +177,20 @@ export type AgentDeadRejection = {
   rejected_at: string | null;
 };
 
+export type AgentRecentCall = {
+  id: string;
+  filename: string | null;
+  customer_name: string | null;
+  detected_supplier: string | null;
+  score: string | null;
+  compliant: boolean | null;
+  compliance_status: string | null;
+  created_at: string | null;
+  completed_at: string | null;
+  reason: string | null;
+  duration_seconds: number | null;
+};
+
 export type AgentDrilldown = {
   agent_name: string;
   critical_count_7d: number;
@@ -186,6 +200,7 @@ export type AgentDrilldown = {
   retraining_assigned: boolean;
   retraining_reason: string | null;
   dead_rejections: AgentDeadRejection[];
+  recent_calls?: AgentRecentCall[]; // optional for old API responses
 };
 
 export function getAgentsListQuery() {
