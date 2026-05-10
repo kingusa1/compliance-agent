@@ -31,6 +31,26 @@ from sqlalchemy.orm import Session
 from app.analysis import analyze_compliance_v1, detect_names, detect_script_variant, detect_supplier
 from app.watt_compliance.script_detect import canonicalize_supplier
 from app.watt_compliance.taxonomy import SUPPLIER_LABELS
+
+
+def _names_overlap(a: str, b: str) -> bool:
+    """Token-set overlap heuristic for human names.
+
+    Two names "match" when they share at least 2 non-trivial tokens
+    (length >= 3, lowercased) in the same order. Catches:
+      "Christopher Neil Bank"  ↔ "Christopher Neil Banks"   (3 shared)
+      "Jay Fitzsimons"         ↔ "J. Fitzsimons"            (1 shared = no match — too risky)
+      "John Smith"             ↔ "Johnson Smith"            (1 shared = no match)
+    Returns False on weak signals so we don't over-merge unrelated calls.
+    """
+    if not a or not b:
+        return False
+    a_toks = [t for t in a.lower().replace(".", " ").split() if len(t) >= 3]
+    b_toks = [t for t in b.lower().replace(".", " ").split() if len(t) >= 3]
+    if not a_toks or not b_toks:
+        return False
+    shared = set(a_toks) & set(b_toks)
+    return len(shared) >= 2
 from app.assemblyai_transcription import transcribe_audio_assemblyai
 from app.business_detect import detect_business_name, fuzzy_match_customer
 from app.checkpoint_analyzer import analyze_all_checkpoints
@@ -391,23 +411,52 @@ async def _step_detect_metadata(
         # Sibling-supplier inheritance — when the LLM can't identify a
         # supplier on this call (Closer / LOA-only calls often skip the
         # "with E.ON" intro because the customer already knows), borrow
-        # it from any other call on the SAME deal that DID identify it.
-        # Stops a multi-call deal from ending up with mixed
-        # supplier=E.ON Next / supplier=Unknown rows.
-        if (canon is None or detected_raw in ("Unknown", "", None)) and call.deal_id:
+        # from another call. Two passes:
+        #   1) any other call on the SAME deal (cheap, certain)
+        #   2) any other call sharing the same HUMAN customer name (catches
+        #      pre-stitching uploads where 3 sibling calls each landed on
+        #      their own stub deal — without this, the supplier=Unknown
+        #      sticks until manual cleanup).
+        if canon is None or detected_raw in ("Unknown", "", None):
             try:
-                sibling = (
-                    db.query(Call)
-                    .filter(
-                        Call.deal_id == call.deal_id,
-                        Call.id != call.id,
-                        Call.detected_supplier.isnot(None),
-                        Call.detected_supplier != "Unknown",
-                        Call.detected_supplier != "",
+                sibling = None
+                if call.deal_id:
+                    sibling = (
+                        db.query(Call)
+                        .filter(
+                            Call.deal_id == call.deal_id,
+                            Call.id != call.id,
+                            Call.detected_supplier.isnot(None),
+                            Call.detected_supplier != "Unknown",
+                            Call.detected_supplier != "",
+                        )
+                        .order_by(Call.created_at.desc())
+                        .first()
                     )
-                    .order_by(Call.created_at.desc())
-                    .first()
-                )
+                if sibling is None and call.customer_name and len(call.customer_name.strip()) >= 4:
+                    human = call.customer_name.strip()
+                    candidates = (
+                        db.query(Call)
+                        .filter(
+                            Call.id != call.id,
+                            Call.customer_name.isnot(None),
+                            Call.customer_name != "",
+                            Call.detected_supplier.isnot(None),
+                            Call.detected_supplier != "Unknown",
+                            Call.detected_supplier != "",
+                        )
+                        .order_by(Call.created_at.desc())
+                        .limit(50)
+                        .all()
+                    )
+                    h_lower = human.lower()
+                    for cand in candidates:
+                        cn = (cand.customer_name or "").lower().strip()
+                        if cn and (
+                            h_lower in cn or cn in h_lower or _names_overlap(h_lower, cn)
+                        ):
+                            sibling = cand
+                            break
                 if sibling and sibling.detected_supplier:
                     inherited_canon = canonicalize_supplier(sibling.detected_supplier)
                     if inherited_canon:
@@ -576,22 +625,41 @@ async def _step_detect_metadata(
                 if not matched and call.customer_name and call.customer_name.strip():
                     human = call.customer_name.strip()
                     if len(human) >= 4:
-                        # Find any other Call carrying this human name on a
-                        # different deal — that deal's customer is our
-                        # stitch target. ILIKE-contains so partial-name
-                        # variants ("Christopher Neil Bank" vs "Christopher
-                        # Neil Banks") still merge.
-                        sibling_call = (
+                        # Bidirectional human-name match — find any other
+                        # Call whose customer_name CONTAINS or IS CONTAINED
+                        # IN this one. Catches near-equal variants:
+                        #   "Christopher Neil Bank" ↔ "Christopher Neil Banks"
+                        #   "Jay" ↔ "J. Fitzsimons"
+                        # Uses Python-side comparison after a coarse first-3
+                        # word ILIKE filter to keep the SQL cheap.
+                        first_three = " ".join(human.split()[:3])
+                        coarse = first_three[:30]  # cap for ILIKE perf
+                        candidates = (
                             db.query(Call)
                             .filter(
-                                Call.customer_name.ilike(f"%{human}%"),
+                                Call.customer_name.isnot(None),
+                                Call.customer_name != "",
                                 Call.id != call.id,
                                 Call.deal_id.isnot(None),
                                 Call.deal_id != current_deal.id,
+                                Call.customer_name.ilike(f"%{coarse.split()[0] if coarse else human[:8]}%"),
                             )
                             .order_by(Call.created_at.desc())
-                            .first()
+                            .limit(50)
+                            .all()
                         )
+                        h_lower = human.lower()
+                        sibling_call = None
+                        for cand in candidates:
+                            cand_name = (cand.customer_name or "").strip().lower()
+                            # Bidirectional substring match
+                            if cand_name and (
+                                h_lower in cand_name
+                                or cand_name in h_lower
+                                or _names_overlap(h_lower, cand_name)
+                            ):
+                                sibling_call = cand
+                                break
                         if sibling_call and sibling_call.deal_id:
                             sibling_deal = (
                                 db.query(_Deal)
