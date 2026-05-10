@@ -489,7 +489,12 @@ async def _step_detect_metadata(
 
     if script:
         call.script_id = script.id
-        call.detected_supplier = script.supplier_name
+        # Keep the canonical label we already wrote ("E.ON Next") rather than
+        # downgrading it to whatever the seed row happened to use ("EON",
+        # "eon_next") — the canonical name is what every downstream consumer
+        # (rejections, tracker, RAG namespace) expects to see.
+        if not call.detected_supplier:
+            call.detected_supplier = script.supplier_name
 
     # Sprint v3-C1 — collapse stub Deal into existing open Deal when
     # (detected supplier + customer name) match. Wrapped so a merge
@@ -562,14 +567,27 @@ async def _step_analyze_checkpoints(
     db.query(CallCheckpoint).filter_by(call_id=call_id).delete()
     db.flush()
 
+    script = None
+    checkpoints_def: list = []
     if call.script_id:
         script = db.query(Script).filter_by(id=call.script_id).first()
         if script:
-            checkpoints_def = json.loads(script.checkpoints)
+            checkpoints_def = json.loads(script.checkpoints) or []
             log.info(
                 f"\U0001f4cb SCRIPT matched call_id={call_id} → "
                 f"\"{script.script_name}\" ({len(checkpoints_def)} checkpoints)"
             )
+            if not checkpoints_def:
+                # The script row is metadata-only (e.g. seeded before the
+                # markdown extracts shipped). Don't return 0/0 — drop into
+                # the V1 third-party-disclosure analyzer so the reviewer
+                # still sees a real verdict.
+                log.warning(
+                    f"\U0001f4cb SCRIPT empty-checkpoints call_id={call_id} → "
+                    "falling through to V1 third-party-disclosure analyzer"
+                )
+                script = None  # signals the fallback path below
+        if script and checkpoints_def:
             parsed_word_data = []
             if call.word_data:
                 try:
