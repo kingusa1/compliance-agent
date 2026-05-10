@@ -124,9 +124,60 @@ function StatCard({
   );
 }
 
-function WorkflowBar({ steps, current }: { steps: string[]; current: number }) {
+// Human-readable label for each lifecycle phase. Surfaces "Lead Gen" /
+// "Closer" / "Standalone LOA" instead of the snake-case backend names.
+const _PHASE_LABEL: Record<string, string> = {
+  lead_gen: "Lead Gen",
+  closer: "Closer",
+  standalone_loa: "Standalone LOA",
+  amendment: "Amendment",
+  c_call: "C-Call",
+};
+
+// Per-supplier phase tooltip explaining WHY this customer has 2 vs 3 stages.
+function _stageBlurb(supplier: string | null | undefined, count: number): string {
+  if (count === 2) {
+    return `${supplier ?? "This supplier"} bundles the LOA into the Closer call, so this deal needs 2 stages: Lead Gen → Closer.`;
+  }
+  if (count === 3) {
+    return `${supplier ?? "This supplier"} requires a separate LOA call after the Closer, so this deal needs 3 stages: Lead Gen → Closer → Standalone LOA.`;
+  }
+  return `${count} lifecycle stages required for this deal.`;
+}
+
+function WorkflowBar({
+  steps,
+  current,
+  supplier,
+}: {
+  steps: string[];
+  current: number;
+  supplier?: string | null;
+}) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 10 }}>
+    <div style={{ marginTop: 10 }}>
+      <div
+        style={{
+          fontSize: 11,
+          color: "var(--text-muted)",
+          marginBottom: 6,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+        }}
+        title={_stageBlurb(supplier, steps.length)}
+      >
+        <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>
+          {steps.length}-stage workflow
+        </span>
+        <span>·</span>
+        <span>{supplier ?? "Unknown supplier"}</span>
+        <span style={{ flex: 1 }} />
+        <span style={{ fontSize: 10, color: "var(--text-faint)" }}>
+          hover for explanation
+        </span>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
       {steps.map((s, i) => {
         const done = i < current;
         const active = i === current;
@@ -172,7 +223,7 @@ function WorkflowBar({ steps, current }: { steps: string[]; current: number }) {
                       : "var(--border-strong)",
                 }}
               />
-              {s}
+              {_PHASE_LABEL[s] ?? s}
             </div>
             {i < steps.length - 1 && (
               <div
@@ -187,6 +238,7 @@ function WorkflowBar({ steps, current }: { steps: string[]; current: number }) {
           </div>
         );
       })}
+      </div>
     </div>
   );
 }
@@ -488,7 +540,7 @@ export default function CustomerDetailPage({
                       {deal.calls.length} of {supplierAwareSteps.length} steps · {stepIdx} done
                     </span>
                   </div>
-                  <WorkflowBar steps={supplierAwareSteps} current={stepIdx} />
+                  <WorkflowBar steps={supplierAwareSteps} current={stepIdx} supplier={deal.supplier} />
                 </Link>
               );
             })}

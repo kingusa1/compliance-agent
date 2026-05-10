@@ -38,6 +38,7 @@ import { Pill } from "@/components/design/Pill";
 import { FilterChip } from "@/components/design/FilterChip";
 import { EmptyState } from "@/components/design/EmptyState";
 import { Waveform } from "@/components/design/Waveform";
+import { HelpBanner } from "@/components/design/HelpBanner";
 
 import type { QueueCall } from "@/lib/api";
 
@@ -586,6 +587,7 @@ export default function QueuePage() {
             margin: 0,
             color: "var(--text-primary)",
           }}
+          title="Calls flagged by the AI as needing human sign-off. Claim a call to lock it to you, then accept or override the AI verdict."
         >
           Review Queue
         </h1>
@@ -679,6 +681,10 @@ export default function QueuePage() {
           <ChevronDown size={14} style={{ color: "var(--text-muted)" }} />
         </button>
       </div>
+
+      <HelpBanner id="queue" title="How to work the Queue" href="/guide#review-queue">
+        Each card is a call the AI thinks needs human sign-off. Click <strong>Claim</strong> to lock it to you, then open the call to accept or override the AI verdict. The reviewer&rsquo;s verdict is the audit-of-record — your decision overrides the AI on conflict.
+      </HelpBanner>
 
       {/* Error banner */}
       {queue.isError ? (

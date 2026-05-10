@@ -6,6 +6,7 @@ import { TrackerSidePanel } from "./TrackerSidePanel";
 import { CATEGORY_KEYS, CATEGORY_LABEL, CATEGORY_HEX } from "./CategoryChip";
 import { useTrackerRowsQuery, trackerExportUrl, type TrackerRow, type TrackerTab } from "@/lib/queries/tracker";
 import { UploadModal } from "@/app/(admin)/calls/UploadModal";
+import { HelpBanner } from "@/components/design/HelpBanner";
 
 const TABS: TrackerTab[] = ["awaiting_review", "active", "fixed", "dead", "compliant"];
 
@@ -78,6 +79,10 @@ export default function TrackerPage() {
             </a>
           </div>
         </header>
+
+        <HelpBanner id="tracker" title="What is the Tracker?" href="/guide#tracker">
+          One row per <strong>rejection</strong> on the Active / Fixed / Dead tabs, one row per <strong>compliant call</strong> on the Compliant tab. Click any row to see the full call detail on the right. Use the tabs to filter by lifecycle: <em>Awaiting Review</em> (AI flagged, needs human sign-off) → <em>Active</em> (rejection open) → <em>Fixed</em> or <em>Dead</em>.
+        </HelpBanner>
 
         <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border-subtle)] bg-[var(--surface-1)] px-6 py-2">
           {TABS.map((t) => {
