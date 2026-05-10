@@ -24,11 +24,52 @@ function wattPortalUrl(siteId: number | null | undefined): string | null {
   return `https://api.wattutilities.co.uk:4433/sites/${siteId}`;
 }
 
-// Watt deal lifecycle phases — matches backend deal_lifecycle.py
-// _CALL_TYPE_TO_PHASE keys (lead_gen → passover → closer → standalone_loa
-// → c_call → amendment). The customer page surfaces the workflow as a
-// progress bar so reviewers see which calls a deal is missing.
-const WORKFLOW_STEPS = ["lead_gen", "passover", "closer", "loa", "c_call", "amendment"];
+// Watt deal lifecycle phases — matches backend
+// deal_lifecycle.SUPPLIER_PHASE_MATRIX. Per the supplier-spec-handout
+// audit, E.ON only requires lead_gen + closer (LOA bundled into closer);
+// every other supplier requires lead_gen + closer + standalone_loa.
+// `c_call` and `amendment` are corrective steps available to all
+// suppliers and never block "verified" — we always render them at the
+// end of the bar so reviewers can see whether a corrective happened.
+const _CORRECTIVE_STEPS = ["c_call", "amendment"] as const;
+
+const _SUPPLIER_REQUIRED_PHASES: Record<string, string[]> = {
+  // Keys mirror the canonical supplier names the backend matrix uses.
+  "E.ON":           ["lead_gen", "closer"],
+  "E.ON Next":      ["lead_gen", "closer"],
+  "EON":            ["lead_gen", "closer"],
+  "EON Next":       ["lead_gen", "closer"],
+  "British Gas":    ["lead_gen", "closer", "standalone_loa"],
+  "British Gas Lite": ["lead_gen", "closer", "standalone_loa"],
+  "BGL":            ["lead_gen", "closer", "standalone_loa"],
+  "BG Core":        ["lead_gen", "closer", "standalone_loa"],
+  "Scottish Power": ["lead_gen", "closer", "standalone_loa"],
+  "EDF Energy":     ["lead_gen", "closer", "standalone_loa"],
+  "EDF":            ["lead_gen", "closer", "standalone_loa"],
+  "Pozitive":       ["lead_gen", "closer", "standalone_loa"],
+};
+
+function workflowStepsFor(supplier: string | null | undefined): string[] {
+  const required = supplier
+    ? (_SUPPLIER_REQUIRED_PHASES[supplier] ?? ["lead_gen", "closer", "standalone_loa"])
+    : ["lead_gen", "closer", "standalone_loa"];
+  return [...required, ..._CORRECTIVE_STEPS];
+}
+
+function completedPhaseCount(deal: { calls: { call_type?: string | null }[] }, steps: string[]): number {
+  // Count distinct workflow phases that this deal's calls have covered.
+  // call_type "loa" maps to "standalone_loa" per backend
+  // _CALL_TYPE_TO_PHASE; we collapse here too.
+  const seen = new Set<string>();
+  for (const c of deal.calls) {
+    let p = (c.call_type ?? "").toLowerCase();
+    if (p === "loa") p = "standalone_loa";
+    if (steps.includes(p)) seen.add(p);
+  }
+  // For the progress-bar position we treat every distinct workflow
+  // phase covered as one step done. Order is preserved by `steps`.
+  return seen.size;
+}
 
 function StatCard({
   label,
@@ -391,7 +432,8 @@ export default function CustomerDetailPage({
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {deals.map((deal) => {
-              const stepIdx = Math.min(deal.calls.length, WORKFLOW_STEPS.length);
+              const supplierAwareSteps = workflowStepsFor(deal.supplier);
+              const stepIdx = completedPhaseCount(deal, supplierAwareSteps);
               return (
                 <Link
                   key={deal.id}
@@ -443,10 +485,10 @@ export default function CustomerDetailPage({
                     </Pill>
                     <div style={{ flex: 1 }} />
                     <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                      {deal.calls.length} of {WORKFLOW_STEPS.length} calls received
+                      {deal.calls.length} of {supplierAwareSteps.length} steps · {stepIdx} done
                     </span>
                   </div>
-                  <WorkflowBar steps={WORKFLOW_STEPS} current={stepIdx} />
+                  <WorkflowBar steps={supplierAwareSteps} current={stepIdx} />
                 </Link>
               );
             })}

@@ -31,6 +31,7 @@ import {
   ArrowRight,
   CheckCircle2,
   Sparkles,
+  BookOpen,
 } from "lucide-react";
 
 import { apiFetch } from "@/lib/api";
@@ -64,6 +65,13 @@ interface QuickAction {
 }
 
 const QUICK_ACTIONS: QuickAction[] = [
+  {
+    href: "/guide",
+    label: "User Guide",
+    icon: BookOpen,
+    description: "Step-by-step manual: pages, pipeline, taxonomy, lifecycle, reviewer playbook, troubleshooting.",
+    tone: "primary",
+  },
   {
     href: "/queue",
     label: "Review Queue",
@@ -283,10 +291,10 @@ export default function DashboardPage() {
                     <Upload className="size-3.5" /> Upload your first call
                   </button>
                   <Link
-                    href="/scripts"
+                    href="/guide"
                     className="inline-flex items-center gap-2 text-[12.5px] text-emerald-200/90 hover:text-emerald-100"
                   >
-                    Browse the 15 supplier scripts <ArrowRight className="size-3.5" />
+                    Read the full user guide <ArrowRight className="size-3.5" />
                   </Link>
                 </div>
               </div>

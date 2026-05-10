@@ -25,6 +25,7 @@ import {
   Send,
   Table as TableIcon,
   LayoutDashboard,
+  BookOpen,
   type LucideIcon,
 } from "lucide-react";
 
@@ -67,6 +68,7 @@ const NAV_ITEMS: NavItem[] = [
 
   // ── System — configuration ────────────────────────────────────
   { key: "settings",      label: "Settings",      icon: SettingsIcon, href: "/settings",       roles: ["admin", "lead"], section: "System" },
+  { key: "guide",         label: "User Guide",    icon: BookOpen,     href: "/guide",          roles: ["reviewer", "lead", "admin"] },
 ];
 
 function activeKey(path: string): string {
