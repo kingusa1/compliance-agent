@@ -36,6 +36,7 @@ import {
 
 import { apiFetch } from "@/lib/api";
 import { UploadModal } from "@/app/(admin)/calls/UploadModal";
+import { HelpBanner } from "@/components/design/HelpBanner";
 
 interface StatsResponse {
   total_calls: number;
@@ -218,6 +219,10 @@ export default function DashboardPage() {
           <Upload className="size-4" /> Upload Call
         </button>
       </header>
+
+      <HelpBanner id="dashboard" title="How the system works" href="/guide">
+        Upload a call (green button, top-right) → the pipeline runs Deepgram (transcribe + speaker labels) → matches a supplier script (E.ON, BG, EDF, BGL, Pozitive, Scottish Power) → Opus 4.7 scores every checkpoint → flagged calls land in <strong>Review Queue</strong>, clean ones in <strong>Compliant</strong>. Every step is auto-detected from the audio — no manual tagging needed.
+      </HelpBanner>
 
       <div className="px-6 py-6 space-y-6">
         {/* KPI strip */}
