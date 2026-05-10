@@ -44,6 +44,7 @@ tags: [index, brain]
 - [[03_AI_Pipeline/Speaker_Detection]] — signal-based agent vs customer
 - [[03_AI_Pipeline/Quality_Agent]] — cross-call identity resolver (the headline feature)
 - [[03_AI_Pipeline/Future_Agents]] — roadmap of multi-agent expansion
+- [[03_AI_Pipeline/Tracker_Autofill_Plan]] — 3 new specialist agents to AI-fill every tracker column (Date / Rejection-Advisor / Deadline)
 
 ### 04 Sessions
 - [[04_Sessions/2026-05-10_Session]] — morning: Quality Agent + Brain bootstrap

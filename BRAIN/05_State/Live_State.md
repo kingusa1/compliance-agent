@@ -54,6 +54,8 @@ tags: [state, live, ground-truth]
 - `USE_INNGEST_PIPELINE=false` ← intentionally; asyncio path is the live one
 
 ## Recent commits (most-recent first)
+- `44f0201` — fix(ux): always-visible delete + reason column + script-text fallback + remove claim flow
+- `4d3ae1a` — docs(brain): create Obsidian vault
 - `c087493` — fix: Th component empty children TypeScript error
 - `786e5e5` — feat(ux): trash-icon delete on calls list
 - `4e77515` — feat(agents): auto-run Quality AI Agent on every upload
@@ -61,6 +63,22 @@ tags: [state, live, ground-truth]
 - `d8e2502` — fix(pipeline): bidirectional human-name match + cross-deal supplier inheritance
 - `c5bca2f` — fix(pipeline): human-name stitch searches Call.customer_name
 - `5e48f70` — fix(pipeline): allow stitch on retries
+
+## What shipped 2026-05-10 (evening — fixes pass)
+
+Backend (Railway, deployed via GitHub auto-deploy on push to `main`):
+- `CallSummary.reason` field added → /non-compliant table now shows AI reason instead of "—"
+- `/api/calls/{id}/script-checkpoints` falls back to V1 TPI rules when matched script has empty `checkpoints` (which is true for ALL 15 seeded scripts) — stops `(Script text unavailable …)` empty state
+
+Frontend (Vercel, deployed via API trigger to `prj_eHIyIFyxusNdCd6mR9Ff469NrcKO`, deploy id `dpl_tqUvcoWHP5toL9p9TMRGCiC7qPjv`):
+- `/calls` trash icon always visible (was hidden behind `group-hover:visible`)
+- Claim/Unclaim workflow removed from UI:
+  - `/queue` filter chips simplified to All / Pending / Reviewed (was: All / Unclaimed / In review / Reviewed today)
+  - `/queue` CTA changed from "Claim & review" to plain "Open & review" link
+  - `useClaimCall` hook no longer imported by any UI (kept in lib for legacy)
+  - `CallPreviewPanel` (used by /non-compliant rail) — status pill collapses unclaimed + in_review to "Pending"
+  - `QueueDetailPanel` — same pill simplification + Open & review CTA
+  - Dashboard description updated
 
 ## Known limits (not bugs)
 See [[05_State/Known_Issues]].
