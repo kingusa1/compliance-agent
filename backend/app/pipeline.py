@@ -387,6 +387,39 @@ async def _step_detect_metadata(
         # how they were named at insert time.
         canon = canonicalize_supplier(detected_raw)
         detected = SUPPLIER_LABELS[canon] if canon else detected_raw
+
+        # Sibling-supplier inheritance — when the LLM can't identify a
+        # supplier on this call (Closer / LOA-only calls often skip the
+        # "with E.ON" intro because the customer already knows), borrow
+        # it from any other call on the SAME deal that DID identify it.
+        # Stops a multi-call deal from ending up with mixed
+        # supplier=E.ON Next / supplier=Unknown rows.
+        if (canon is None or detected_raw in ("Unknown", "", None)) and call.deal_id:
+            try:
+                sibling = (
+                    db.query(Call)
+                    .filter(
+                        Call.deal_id == call.deal_id,
+                        Call.id != call.id,
+                        Call.detected_supplier.isnot(None),
+                        Call.detected_supplier != "Unknown",
+                        Call.detected_supplier != "",
+                    )
+                    .order_by(Call.created_at.desc())
+                    .first()
+                )
+                if sibling and sibling.detected_supplier:
+                    inherited_canon = canonicalize_supplier(sibling.detected_supplier)
+                    if inherited_canon:
+                        detected = SUPPLIER_LABELS[inherited_canon]
+                        canon = inherited_canon
+                        log.info(
+                            f"\U0001f504 SUPPLIER_INHERITED call_id={call_id} "
+                            f"from sibling call={sibling.id} → \"{detected}\""
+                        )
+            except Exception as e:
+                log.warning(f"sibling-supplier inherit skipped: {e}")
+
         log.info(
             f"\U0001f50d DETECT done call_id={call_id} → raw=\"{detected_raw}\" "
             f"canonical=\"{detected}\", {time.time()-t0:.1f}s"
@@ -527,6 +560,42 @@ async def _step_detect_metadata(
 
             if business_name:
                 matched = fuzzy_match_customer(business_name, db, threshold=0.6)
+
+                # Customer-human-name stitch: if business-name fuzzy didn't
+                # find a match, try matching by the HUMAN customer name
+                # (the person who answered, e.g. "Christopher Neil Banks").
+                # This catches the case where an LLM extracts slightly
+                # different business names from sibling calls of the SAME
+                # physical customer ("Evangelical Church" / "The Church" /
+                # "St. Peter's Benfleet Church"). The human name is far
+                # more stable across calls than the business name.
+                if not matched and call.customer_name and call.customer_name.strip():
+                    human = call.customer_name.strip()
+                    if len(human) >= 4:
+                        # Look for an existing customer whose deals already
+                        # carry this human name (case-insensitive contains).
+                        sibling_deal = (
+                            db.query(_Deal)
+                            .filter(
+                                _Deal.customer_name.ilike(f"%{human}%"),
+                                _Deal.id != current_deal.id,
+                                _Deal.status != "closed",
+                            )
+                            .order_by(_Deal.created_at.desc())
+                            .first()
+                        )
+                        if sibling_deal and sibling_deal.customer_id:
+                            matched = (
+                                db.query(_Customer)
+                                .filter_by(id=sibling_deal.customer_id)
+                                .first()
+                            )
+                            if matched:
+                                log.info(
+                                    f"\U0001f50d HUMAN_NAME_MATCH call_id={call_id} "
+                                    f"human=\"{human}\" → customer={matched.id}"
+                                )
+
                 if matched:
                     # Find the matched customer's most-recent open deal
                     target = (
