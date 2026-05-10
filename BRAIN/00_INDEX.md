@@ -48,7 +48,8 @@ tags: [index, brain]
 
 ### 04 Sessions
 - [[04_Sessions/2026-05-10_Session]] — morning: Quality Agent + Brain bootstrap
-- [[04_Sessions/2026-05-10_Session_audit]] — evening: end-to-end audit (Playwright + API)
+- [[04_Sessions/2026-05-10_Session_audit]] — afternoon: end-to-end audit pass
+- [[04_Sessions/2026-05-10_Session_evening_sweep]] — evening: agents + dashboard + dedup + delete-cascade
 - [[04_Sessions/Decisions]] — running list of architectural decisions
 
 ### 05 State
