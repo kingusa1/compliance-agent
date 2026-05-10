@@ -567,39 +567,49 @@ async def _step_detect_metadata(
                 matched = fuzzy_match_customer(business_name, db, threshold=0.6)
 
                 # Customer-human-name stitch: if business-name fuzzy didn't
-                # find a match, try matching by the HUMAN customer name
-                # (the person who answered, e.g. "Christopher Neil Banks").
-                # This catches the case where an LLM extracts slightly
-                # different business names from sibling calls of the SAME
-                # physical customer ("Evangelical Church" / "The Church" /
-                # "St. Peter's Benfleet Church"). The human name is far
-                # more stable across calls than the business name.
+                # find a match, look up *Calls* (not Deals) carrying the same
+                # human customer name (e.g. "Christopher Neil Banks"). The
+                # human name lives on Call.customer_name; deal.customer_name
+                # is the BUSINESS name and the LLM often returns slightly
+                # different business names per call ("The Church" vs
+                # "Evangelical Church"). The human name is far more stable.
                 if not matched and call.customer_name and call.customer_name.strip():
                     human = call.customer_name.strip()
                     if len(human) >= 4:
-                        # Look for an existing customer whose deals already
-                        # carry this human name (case-insensitive contains).
-                        sibling_deal = (
-                            db.query(_Deal)
+                        # Find any other Call carrying this human name on a
+                        # different deal — that deal's customer is our
+                        # stitch target. ILIKE-contains so partial-name
+                        # variants ("Christopher Neil Bank" vs "Christopher
+                        # Neil Banks") still merge.
+                        sibling_call = (
+                            db.query(Call)
                             .filter(
-                                _Deal.customer_name.ilike(f"%{human}%"),
-                                _Deal.id != current_deal.id,
-                                _Deal.status != "closed",
+                                Call.customer_name.ilike(f"%{human}%"),
+                                Call.id != call.id,
+                                Call.deal_id.isnot(None),
+                                Call.deal_id != current_deal.id,
                             )
-                            .order_by(_Deal.created_at.desc())
+                            .order_by(Call.created_at.desc())
                             .first()
                         )
-                        if sibling_deal and sibling_deal.customer_id:
-                            matched = (
-                                db.query(_Customer)
-                                .filter_by(id=sibling_deal.customer_id)
+                        if sibling_call and sibling_call.deal_id:
+                            sibling_deal = (
+                                db.query(_Deal)
+                                .filter_by(id=sibling_call.deal_id)
                                 .first()
                             )
-                            if matched:
-                                log.info(
-                                    f"\U0001f50d HUMAN_NAME_MATCH call_id={call_id} "
-                                    f"human=\"{human}\" → customer={matched.id}"
+                            if sibling_deal and sibling_deal.customer_id:
+                                matched = (
+                                    db.query(_Customer)
+                                    .filter_by(id=sibling_deal.customer_id)
+                                    .first()
                                 )
+                                if matched:
+                                    log.info(
+                                        f"\U0001f50d HUMAN_NAME_MATCH call_id={call_id} "
+                                        f"human=\"{human}\" → sibling_call={sibling_call.id} "
+                                        f"customer={matched.id}"
+                                    )
 
                 if matched:
                     # Find the matched customer's most-recent open deal
