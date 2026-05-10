@@ -263,7 +263,17 @@ export default function CustomerDetailPage({
 }: {
   params: Promise<{ slug: string }>;
 }) {
-  const { slug } = use(params);
+  const { slug: rawSlug } = use(params);
+  // Next.js 16 leaves dynamic-route params URI-encoded. Decode once here so
+  // the slug we send to query helpers matches the DB key (LOWER(TRIM(name))),
+  // and the helper's encodeURIComponent doesn't double-encode (e.g. `%20` → `%2520`).
+  const slug = (() => {
+    try {
+      return decodeURIComponent(rawSlug);
+    } catch {
+      return rawSlug;
+    }
+  })();
   const detail = useCustomerDetailQuery(slug);
   const rollup = useCustomerRollupQuery(slug);
   const timeline = useCustomerTimelineQuery(slug);

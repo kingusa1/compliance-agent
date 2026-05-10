@@ -967,9 +967,35 @@ export default function CallDetailPage({
           Queue
         </button>
         <div style={{ width: 1, height: 18, background: "var(--border-subtle)" }} />
-        <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--text-primary)" }}>
-          {c?.filename ?? id}
-        </span>
+        <div style={{ display: "flex", flexDirection: "column", minWidth: 0, maxWidth: 360 }}>
+          <span
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              color: "var(--text-primary)",
+              letterSpacing: "-0.01em",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+            title={c?.filename ?? id}
+          >
+            {c?.customer_name ?? c?.filename ?? id}
+          </span>
+          <span
+            style={{
+              fontSize: 11,
+              color: "var(--text-muted)",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {[c?.detected_supplier, c?.agent_name && `agent ${c.agent_name}`, c?.filename]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+        </div>
         {committed ? (
           <Pill tone="emerald" dot>
             Committed
@@ -988,9 +1014,6 @@ export default function CallDetailPage({
           ✎ Edit metadata
         </button>
         <ReanalyzeButton callId={id} />
-        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          {c?.customer_name ?? ""} {c?.agent_name ? `· ${c.agent_name}` : ""}
-        </span>
         <div style={{ flex: 1 }} />
         <div
           style={{

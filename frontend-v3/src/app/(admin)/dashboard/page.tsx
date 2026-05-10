@@ -33,6 +33,7 @@ import {
 import { apiFetch } from "@/lib/api";
 import { UploadModal } from "@/app/(admin)/calls/UploadModal";
 import { HelpBanner } from "@/components/design/HelpBanner";
+import { fetchQueue } from "@/lib/queries/reviewer";
 
 interface StatsResponse {
   total_calls: number;
@@ -129,6 +130,14 @@ function useRecentCalls() {
   });
 }
 
+function useQueueBacklog() {
+  return useQuery({
+    queryKey: ["dashboard:queue-backlog"] as const,
+    queryFn: () => fetchQueue("unclaimed"),
+    staleTime: 30_000,
+  });
+}
+
 function relativeTime(iso: string | null): string {
   if (!iso) return "—";
   const t = new Date(iso).getTime();
@@ -144,8 +153,10 @@ function relativeTime(iso: string | null): string {
 export default function DashboardPage() {
   const stats = useStats();
   const recent = useRecentCalls();
+  const queueBacklog = useQueueBacklog();
   const [uploadOpen, setUploadOpen] = useState(false);
   const isFreshInstall = (stats.data?.total_calls ?? 0) === 0;
+  const backlog = queueBacklog.data?.metrics?.backlog ?? 0;
 
   const kpis: KPI[] = [
     {
@@ -311,6 +322,8 @@ export default function DashboardPage() {
           >
             {PRIMARY_ACTIONS.map((a) => {
               const Icon = a.icon;
+              const isQueue = a.href === "/queue";
+              const showBadge = isQueue && backlog > 0;
               return (
                 <Link
                   key={a.href}
@@ -321,7 +334,13 @@ export default function DashboardPage() {
                     <div className="grid size-10 place-items-center rounded-lg bg-emerald-500/10">
                       <Icon className="size-5 text-emerald-300" />
                     </div>
-                    <ArrowRight className="size-4 text-[var(--text-dim)] transition-transform group-hover:translate-x-0.5 group-hover:text-emerald-300" />
+                    {showBadge ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-semibold text-amber-300 ring-1 ring-amber-500/30">
+                        {backlog} pending
+                      </span>
+                    ) : (
+                      <ArrowRight className="size-4 text-[var(--text-dim)] transition-transform group-hover:translate-x-0.5 group-hover:text-emerald-300" />
+                    )}
                   </div>
                   <div className="mt-4 text-[16px] font-semibold text-[var(--text-primary)]">
                     {a.label}
@@ -372,7 +391,10 @@ export default function DashboardPage() {
                     }`}
                   >
                     <Clock className="size-3.5 shrink-0 text-[var(--text-dim)]" />
-                    <div className="w-20 shrink-0 text-[var(--text-muted)] tabular-nums">
+                    <div
+                      className="w-20 shrink-0 text-[var(--text-muted)] tabular-nums"
+                      title={c.created_at ? new Date(c.created_at).toLocaleString() : undefined}
+                    >
                       {relativeTime(c.created_at)}
                     </div>
                     <div className="min-w-0 flex-1 truncate text-[var(--text-primary)]">

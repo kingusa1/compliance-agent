@@ -1,16 +1,20 @@
 "use client";
 
 /**
- * Global sidebar rail — ported pixel-perfect from
- * design/handoff-bundle/project/hifi/tokens-hifi.jsx HFSidebar.
+ * Global sidebar rail.
  *
- * Always visible on every authenticated page (mounted in (reviewer)
- * and (admin) layouts). 56px collapsed → 220px expanded on hover.
- * Bottom user pill shows "<email> · <role>".
+ * Default-expanded (220px) so labels are always visible — the
+ * icon-only collapsed mode is a power-user toggle, not the default,
+ * because new users could not tell what each of 13 unlabelled icons
+ * meant (audit-late 2026-05-10 UX1).
  */
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
+import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
+
+import { useQuery } from "@tanstack/react-query";
+import { fetchQueue } from "@/lib/queries/reviewer";
 import {
   Inbox,
   Users,
@@ -90,8 +94,29 @@ function initialsOf(email: string | undefined): string {
   return (local.slice(0, 2) || "S").toUpperCase();
 }
 
+const SIDEBAR_PREF_KEY = "ca:sidebar:collapsed";
+
 export function Sidebar() {
-  const [hover, setHover] = useState(false);
+  const [collapsed, setCollapsed] = useState<boolean>(false);
+
+  // Persist collapsed pref so it survives navigation. Default = expanded.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const v = window.localStorage.getItem(SIDEBAR_PREF_KEY);
+      if (v === "1") setCollapsed(true);
+    } catch {
+      // ignore
+    }
+  }, []);
+  const toggleCollapsed = () => {
+    setCollapsed((v) => {
+      const next = !v;
+      try { window.localStorage.setItem(SIDEBAR_PREF_KEY, next ? "1" : "0"); } catch { /* ignore */ }
+      return next;
+    });
+  };
+
   const path = usePathname() || "/";
   const { session } = useAuth();
   const me = useMe();
@@ -99,15 +124,21 @@ export function Sidebar() {
   const email = me.data?.email ?? session?.user?.email ?? "you@example.com";
   const items = NAV_ITEMS.filter((it) => it.roles.includes(role));
   const active = activeKey(path);
-  const queueBadge = role === "reviewer" || role === "lead" || role === "admin" ? null : null;
 
-  const expanded = hover;
-  const width = expanded ? 220 : 56;
+  // Live queue count badge — refreshes every 30s, like the queue page itself.
+  const queueQ = useQuery({
+    queryKey: ["sidebar", "queue-backlog"],
+    queryFn: () => fetchQueue("unclaimed"),
+    staleTime: 10_000,
+    refetchInterval: 30_000,
+  });
+  const queueBadge = queueQ.data?.metrics?.backlog ?? null;
+
+  const expanded = !collapsed;
+  const width = expanded ? 220 : 60;
 
   return (
     <aside
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
       style={{
         width,
         flexShrink: 0,
@@ -124,13 +155,13 @@ export function Sidebar() {
         zIndex: 30,
       }}
     >
-      {/* Logo */}
+      {/* Logo + collapse toggle */}
       <div
         style={{
           height: 32,
           display: "flex",
           alignItems: "center",
-          padding: "0 16px",
+          padding: "0 12px",
           marginBottom: 16,
           gap: 10,
         }}
@@ -138,17 +169,63 @@ export function Sidebar() {
         <BrandMark size={24} priority />
 
         {expanded && (
-          <div
+          <>
+            <div
+              style={{
+                fontSize: 14,
+                fontWeight: 600,
+                letterSpacing: "-0.018em",
+                whiteSpace: "nowrap",
+                color: "var(--text-primary)",
+                flex: 1,
+              }}
+            >
+              ComplianceAI
+            </div>
+            <button
+              type="button"
+              onClick={toggleCollapsed}
+              aria-label="Collapse sidebar"
+              title="Collapse sidebar"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 24,
+                height: 24,
+                borderRadius: 4,
+                background: "transparent",
+                border: "none",
+                color: "var(--text-muted)",
+                cursor: "pointer",
+              }}
+            >
+              <PanelLeftClose size={14} />
+            </button>
+          </>
+        )}
+        {!expanded && (
+          <button
+            type="button"
+            onClick={toggleCollapsed}
+            aria-label="Expand sidebar"
+            title="Expand sidebar"
             style={{
-              fontSize: 14,
-              fontWeight: 600,
-              letterSpacing: "-0.018em",
-              whiteSpace: "nowrap",
-              color: "var(--text-primary)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 24,
+              height: 24,
+              borderRadius: 4,
+              background: "transparent",
+              border: "none",
+              color: "var(--text-muted)",
+              cursor: "pointer",
+              marginLeft: -4,
             }}
           >
-            ComplianceAI
-          </div>
+            <PanelLeftOpen size={14} />
+          </button>
         )}
       </div>
 
@@ -187,6 +264,7 @@ export function Sidebar() {
             {sectionHeader}
             <Link
               href={item.href}
+              title={!expanded ? item.label : undefined}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -201,6 +279,7 @@ export function Sidebar() {
                 letterSpacing: "-0.003em",
                 textDecoration: "none",
                 whiteSpace: "nowrap",
+                position: "relative",
               }}
             >
               <span
@@ -213,20 +292,33 @@ export function Sidebar() {
                 <Icon size={16} strokeWidth={1.75} />
               </span>
               {expanded && <span style={{ flex: 1 }}>{item.label}</span>}
-              {expanded && item.badgeKey === "queue" && queueBadge != null && (
+              {expanded && item.badgeKey === "queue" && queueBadge != null && queueBadge > 0 && (
                 <span
                   style={{
                     fontSize: 10,
                     fontWeight: 600,
                     fontVariantNumeric: "tabular-nums",
                     padding: "1px 6px",
-                    background: isActive ? "var(--emerald-bg-strong)" : "var(--bg-elev3)",
-                    color: isActive ? "var(--emerald-400)" : "var(--text-muted)",
+                    background: "var(--amber-bg)",
+                    color: "var(--amber)",
                     borderRadius: 999,
                   }}
                 >
                   {queueBadge}
                 </span>
+              )}
+              {!expanded && item.badgeKey === "queue" && queueBadge != null && queueBadge > 0 && (
+                <span
+                  style={{
+                    position: "absolute",
+                    top: 4,
+                    right: 6,
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    background: "var(--amber)",
+                  }}
+                />
               )}
             </Link>
             </Fragment>

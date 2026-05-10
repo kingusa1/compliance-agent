@@ -60,7 +60,9 @@ export function UploadModal({
             {customerName ? `Upload call to ${customerName}` : "Upload & process call"}
           </DialogTitle>
           <DialogDescription>
-            L7 metadata form · 22 fields across 3 sections
+            Drop the recording — the AI fills supplier, agent, customer, and
+            call type from the audio. Toggle off auto-detect to enter metadata
+            manually.
           </DialogDescription>
         </DialogHeader>
         <L7Form

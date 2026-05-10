@@ -1306,9 +1306,16 @@ def get_queue(
     name_map = {p.id: p.name for p in db.query(Profile).all()}
 
     # ─── Metrics ─────────────────────────────────────────────────────────
+    # Backlog = anything the reviewer still needs to sign off. That includes
+    # calls the AI flagged non-compliant ("agent failed X") and calls still
+    # mid-pipeline. A reviewer-signed-off call leaves the queue when
+    # review_status flips to "reviewed".
     backlog = (
         db.query(Call)
-        .filter(Call.review_status == "unclaimed", Call.compliance_status == "pending")
+        .filter(
+            Call.review_status != "reviewed",
+            Call.compliance_status.in_(("pending", "non_compliant")),
+        )
         .count()
     )
 
@@ -1363,11 +1370,17 @@ def get_queue(
     ]
 
     # ─── Call list ───────────────────────────────────────────────────────
+    # "Pending" surface = anything not signed off by a reviewer that the AI
+    # already produced a verdict for OR is still finishing. Non-compliant
+    # AI verdicts are explicitly part of this set — they are the reviewer's
+    # core workload. (Pre-2026-05-10 the queue only included
+    # compliance_status == 'pending', so a non-compliant call dropped out
+    # before a human could see it. Bug B3 in audit-late.)
     q = db.query(Call)
     if filter == "unclaimed":
         q = q.filter(
             Call.review_status == "unclaimed",
-            Call.compliance_status == "pending",
+            Call.compliance_status.in_(("pending", "non_compliant")),
         )
     elif filter == "in_review":
         q = q.filter(Call.review_status == "in_review")
@@ -1378,7 +1391,10 @@ def get_queue(
         )
     else:  # "all"
         q = q.filter(
-            (Call.compliance_status == "pending")
+            (
+                (Call.review_status != "reviewed")
+                & Call.compliance_status.in_(("pending", "non_compliant"))
+            )
             | (Call.review_status == "in_review")
             | ((Call.review_status == "reviewed") & (Call.reviewed_at >= today))
         )

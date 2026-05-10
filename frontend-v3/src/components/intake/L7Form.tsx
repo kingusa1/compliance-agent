@@ -151,7 +151,10 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
         duration_seconds: undefined,
         language: "en",
       },
-      dev_auto_detect: false,
+      // Auto-detect ON by default — the AI extracts customer/supplier/agent
+      // from the audio. Manual fill is one click away if reviewers prefer.
+      // (audit-late 2026-05-10 UX4: hide L7 metadata fields by default.)
+      dev_auto_detect: true,
     },
   });
 
