@@ -508,16 +508,23 @@ async def _step_detect_metadata(
     except Exception as e:
         log.warning(f"deal merge skipped: {e}")
 
-    # ── Phase A: business-name detection + stub-merge ─────────
+    # ── Phase A: business-name detection + stub-merge / stub-rename ───
     # detect_supplier already wrote call.detected_supplier above. If this
     # call is auto-detect (deal name starts with "(auto-detect pending"),
-    # try to merge the stub onto an existing customer. We only run this
-    # for stub deals — explicit-deal uploads keep their assignment.
+    # try to merge the stub onto an existing customer. If no existing
+    # customer matches, RENAME the stub to the detected business name so
+    # the customer rollup stops showing "(auto-detect pending xxx)".
     try:
         from app.models import Customer as _Customer, CustomerDeal as _Deal
+        from app.intake.upsert import _slugify as slugify
         current_deal = db.query(_Deal).filter_by(id=call.deal_id).first() if call.deal_id else None
         if current_deal and (current_deal.customer_name or "").startswith("(auto-detect pending"):
             business_name = await detect_business_name(transcript)
+            # Last-resort fallback: when no business name surfaces, fall back to
+            # the detected customer's name so we never leave the stub label.
+            if not business_name and call.customer_name and call.customer_name.strip():
+                business_name = call.customer_name.strip()
+
             if business_name:
                 matched = fuzzy_match_customer(business_name, db, threshold=0.6)
                 if matched:
@@ -540,8 +547,37 @@ async def _step_detect_metadata(
                         other = db.query(Call).filter(Call.deal_id == old_stub_id, Call.id != call.id).count()
                         if other == 0:
                             db.delete(current_deal)
+                else:
+                    # No existing customer match — rename this stub in place so
+                    # it stops showing "(auto-detect pending …)" in the UI.
+                    current_deal.customer_name = business_name
+                    set_source(current_deal, "customer_name", "ai")
+                    log.info(
+                        f"\U0001f504 STUB_RENAME deal={current_deal.id} → \"{business_name}\""
+                    )
+                    if current_deal.customer_id:
+                        cust = db.query(_Customer).filter_by(id=current_deal.customer_id).first()
+                        if cust:
+                            if not cust.legal_name or cust.legal_name.strip() == "":
+                                cust.legal_name = business_name
+                            if (cust.slug or "").startswith("(auto-detect pending"):
+                                # Re-slug from the canonical business name; fall
+                                # back to a uniqued variant if the new slug
+                                # collides with an existing row.
+                                base = slugify(business_name) or f"customer-{cust.id[:8]}"
+                                slug = base
+                                n = 2
+                                while db.query(_Customer).filter(
+                                    _Customer.slug == slug, _Customer.id != cust.id
+                                ).first():
+                                    slug = f"{base}-{n}"
+                                    n += 1
+                                cust.slug = slug
+                                log.info(
+                                    f"\U0001f504 CUSTOMER_RESLUG cust={cust.id} → \"{slug}\""
+                                )
     except Exception as e:
-        log.warning(f"stub-merge skipped call_id={call_id}: {e}")
+        log.warning(f"stub-merge/rename skipped call_id={call_id}: {e}")
 
     db.commit()
 
@@ -897,6 +933,49 @@ def _write_extraction_outputs(call: Call, db: Session) -> None:
         f"pricing_flags={pricing_flag_count} entities={len(entities)} "
         f"vulnerable={'yes' if vuln_flag is not None else 'no'}"
     )
+
+    # ── Deal-attribute backfill from extracted entities ──────────────
+    # The tracker columns are useless when MPAN/MPRN/deal-value sit on
+    # ExtractedEntity rows but never propagate to CustomerDeal. Lift the
+    # high-confidence (regex/LLM-confirmed) values across so the tracker
+    # row populates without manual edits.
+    try:
+        from app.models import CustomerDeal as _DealEnt
+        if call.deal_id and entities:
+            deal_e = db.query(_DealEnt).filter_by(id=call.deal_id).first()
+            if deal_e:
+                # Pick the highest-confidence MPAN or MPRN (either lights up
+                # the tracker's "MPAN/MPRN" column).
+                meter_ents = [
+                    e for e in entities
+                    if getattr(e, "kind", None) in ("mpan", "mprn")
+                    and getattr(e, "value", None)
+                ]
+                if meter_ents and not deal_e.mpan_or_mprn:
+                    best = max(meter_ents, key=lambda e: getattr(e, "confidence", 0) or 0)
+                    if can_overwrite(deal_e, "mpan_or_mprn", "ai"):
+                        deal_e.mpan_or_mprn = best.value
+                        set_source(deal_e, "mpan_or_mprn", "ai")
+
+                # Same for deal value when extractor surfaced a £ figure.
+                value_ents = [
+                    e for e in entities
+                    if getattr(e, "kind", None) in ("deal_value", "value_gbp", "amount_gbp")
+                    and getattr(e, "value", None)
+                ]
+                if value_ents and deal_e.deal_value_gbp is None:
+                    best = max(value_ents, key=lambda e: getattr(e, "confidence", 0) or 0)
+                    try:
+                        cleaned = (
+                            str(best.value).replace(",", "").replace("£", "").strip()
+                        )
+                        if cleaned:
+                            deal_e.deal_value_gbp = float(cleaned)
+                            set_source(deal_e, "deal_value_gbp", "ai")
+                    except (ValueError, TypeError):
+                        pass
+    except Exception as e:
+        log.warning(f"deal backfill skipped call_id={call.id}: {e}")
 
 
 # ── Sprint A5: rejection auto-create helpers ────────────────────────────
