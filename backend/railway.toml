@@ -5,6 +5,13 @@
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
+# Only auto-deploy when backend/ files actually change. Stops
+# frontend-only commits from triggering a Railway rebuild that would
+# never produce a different image — and stops the noisy "Build image
+# FAILED" notifications when the Railway build runner hits a transient
+# network blip on what would have been a no-op rebuild. Manual
+# `railway up --service=compliance-agent --ci` still works regardless.
+watchPatterns = ["backend/**"]
 
 [deploy]
 # /healthz is liveness only (returns 200 always once the process is up).
