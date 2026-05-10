@@ -542,16 +542,21 @@ async def _step_detect_metadata(
         log.warning(f"deal merge skipped: {e}")
 
     # ── Phase A: business-name detection + stub-merge / stub-rename ───
-    # detect_supplier already wrote call.detected_supplier above. If this
-    # call is auto-detect (deal name starts with "(auto-detect pending"),
-    # try to merge the stub onto an existing customer. If no existing
-    # customer matches, RENAME the stub to the detected business name so
-    # the customer rollup stops showing "(auto-detect pending xxx)".
+    # detect_supplier already wrote call.detected_supplier above. The merge
+    # branch runs ALWAYS so re-runs can stitch sibling calls that the LLM
+    # gave slightly different business names ("The Church" / "Evangelical
+    # Church" / "St. Peter's Benfleet Church" — all the same physical
+    # customer). The rename branch only runs while the deal name still
+    # carries the stub label.
     try:
         from app.models import Customer as _Customer, CustomerDeal as _Deal
         from app.intake.upsert import _slugify as slugify
         current_deal = db.query(_Deal).filter_by(id=call.deal_id).first() if call.deal_id else None
-        if current_deal and (current_deal.customer_name or "").startswith("(auto-detect pending"):
+        is_stub = bool(
+            current_deal
+            and (current_deal.customer_name or "").startswith("(auto-detect pending")
+        )
+        if current_deal:
             business_name = await detect_business_name(transcript)
             # Last-resort fallback: when no business name surfaces, fall back to
             # the detected customer's name so we never leave the stub label.
@@ -616,9 +621,11 @@ async def _step_detect_metadata(
                         other = db.query(Call).filter(Call.deal_id == old_stub_id, Call.id != call.id).count()
                         if other == 0:
                             db.delete(current_deal)
-                else:
-                    # No existing customer match — rename this stub in place so
-                    # it stops showing "(auto-detect pending …)" in the UI.
+                elif is_stub:
+                    # No existing customer match AND the deal still carries
+                    # the auto-detect stub label — rename it in place so it
+                    # stops showing "(auto-detect pending …)" in the UI.
+                    # On retries the deal is already named, so we skip.
                     current_deal.customer_name = business_name
                     set_source(current_deal, "customer_name", "ai")
                     log.info(
