@@ -1368,6 +1368,160 @@ async def reanalyze_call(
     return await _reanalyze_call(call_id, db, actor_id=actor_id)
 
 
+@router.post("/api/admin/quality-resolve", status_code=200)
+async def admin_quality_resolve(db: Session = Depends(get_db)):
+    """Run the Quality AI Agent across all completed calls and apply its
+    canonical-identity verdict — merges duplicate Church/X customers,
+    fixes agent==customer mix-ups, fills missing suppliers via cross-call
+    inference. Idempotent: safe to run multiple times.
+
+    Returns a list of changes applied so the operator can audit.
+    """
+    from app.quality_agent import resolve_identity
+    from app.intake.upsert import _slugify as slugify
+    from app.models import Customer, CustomerDeal as _Deal
+
+    completed = (
+        db.query(Call)
+        .filter(Call.status == "completed", Call.transcript.isnot(None))
+        .order_by(Call.created_at.asc())
+        .all()
+    )
+    if not completed:
+        return {"resolved": 0, "changes": []}
+
+    # Bucket calls by overlapping human customer name OR business name.
+    # Each bucket gets ONE Quality Agent call; the agent then tells us
+    # whether the bucket should merge (yes for sibling calls of the
+    # same customer; no for accidental name collisions).
+    buckets: list[list[Call]] = []
+    for c in completed:
+        placed = False
+        h = (c.customer_name or "").strip().lower()
+        for b in buckets:
+            for other in b:
+                oh = (other.customer_name or "").strip().lower()
+                if h and oh and (h in oh or oh in h or _bucket_token_overlap(h, oh)):
+                    b.append(c)
+                    placed = True
+                    break
+            if placed:
+                break
+        if not placed:
+            buckets.append([c])
+
+    changes: list[dict] = []
+    for bucket in buckets:
+        if len(bucket) < 2:
+            continue  # singleton — nothing to resolve, current state is fine
+        payload = [
+            {
+                "id": str(c.id),
+                "filename": c.filename,
+                "detected_supplier": c.detected_supplier,
+                "agent_name": c.agent_name,
+                "customer_name": c.customer_name,
+                "score": c.score,
+                "transcript": c.transcript,
+            }
+            for c in bucket
+        ]
+        verdict = await resolve_identity(payload)
+        if not verdict or verdict.get("confidence", 0) < 0.7:
+            continue
+        if verdict.get("stitch") != "merge_all":
+            continue
+
+        # Pick the most-recent deal as the survivor and re-point sibling
+        # calls to it. Apply the canonical customer name + slug.
+        survivor_call = max(bucket, key=lambda c: c.created_at or 0)
+        survivor_deal = (
+            db.query(_Deal).filter_by(id=survivor_call.deal_id).first()
+            if survivor_call.deal_id
+            else None
+        )
+        if not survivor_deal:
+            continue
+        canonical = verdict["canonical_customer_name"] or survivor_deal.customer_name
+
+        for c in bucket:
+            if c.id == survivor_call.id:
+                continue
+            old_deal_id = c.deal_id
+            c.deal_id = survivor_deal.id
+            other = (
+                db.query(Call)
+                .filter(Call.deal_id == old_deal_id, Call.id != c.id)
+                .count()
+            )
+            if other == 0 and old_deal_id != survivor_deal.id:
+                old_deal = db.query(_Deal).filter_by(id=old_deal_id).first()
+                if old_deal:
+                    db.delete(old_deal)
+            # Quality Agent's call_type wins
+            ct = (verdict.get("call_classifications") or {}).get(str(c.id))
+            if ct:
+                c.call_type = ct
+            # Fix agent name when the per-call detect_names was confused
+            an = verdict.get("agent_name")
+            if an and (not c.agent_name or c.agent_name == c.customer_name):
+                c.agent_name = an
+        # Survivor too gets the agent + call_type fix
+        sct = (verdict.get("call_classifications") or {}).get(str(survivor_call.id))
+        if sct:
+            survivor_call.call_type = sct
+        san = verdict.get("agent_name")
+        if san and (not survivor_call.agent_name or survivor_call.agent_name == survivor_call.customer_name):
+            survivor_call.agent_name = san
+
+        # Apply canonical business name + supplier on the survivor deal
+        if canonical:
+            survivor_deal.customer_name = canonical
+        sup = verdict.get("supplier")
+        if sup and sup != "Unknown" and not survivor_deal.supplier:
+            survivor_deal.supplier = sup
+
+        # Re-slug + rename Customer if survivor has one
+        if survivor_deal.customer_id and canonical:
+            cust = db.query(Customer).filter_by(id=survivor_deal.customer_id).first()
+            if cust:
+                cust.legal_name = canonical
+                base_slug = slugify(canonical) or f"customer-{cust.id[:8]}"
+                slug = base_slug
+                n = 2
+                while db.query(Customer).filter(
+                    Customer.slug == slug, Customer.id != cust.id
+                ).first():
+                    slug = f"{base_slug}-{n}"
+                    n += 1
+                cust.slug = slug
+
+        changes.append(
+            {
+                "bucket_size": len(bucket),
+                "survivor_call": str(survivor_call.id),
+                "survivor_deal": str(survivor_deal.id),
+                "canonical_name": canonical,
+                "supplier": sup,
+                "confidence": verdict.get("confidence"),
+                "stitch_reason": verdict.get("stitch_reason"),
+            }
+        )
+
+    db.commit()
+    return {"resolved": len(changes), "changes": changes}
+
+
+def _bucket_token_overlap(a: str, b: str) -> bool:
+    """Same as pipeline._names_overlap but inlined here to avoid an import
+    cycle. Returns True when two names share ≥2 tokens of length ≥3."""
+    if not a or not b:
+        return False
+    a_t = [t for t in a.replace(".", " ").split() if len(t) >= 3]
+    b_t = [t for t in b.replace(".", " ").split() if len(t) >= 3]
+    return len(set(a_t) & set(b_t)) >= 2
+
+
 @router.delete("/api/calls/{call_id}")
 def delete_call(call_id: str, db: Session = Depends(get_db)):
     """Delete a call + its checkpoint rows + its audio file.
