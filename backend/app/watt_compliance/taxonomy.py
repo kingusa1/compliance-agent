@@ -231,3 +231,146 @@ class CallClass(str, Enum):
     NHH = "nhh"
     HH = "hh"
     ANY = "any"
+
+
+# ─── Rejection origin (where the defect comes from) ─────────────────────
+# Source: supplier-spec-handout.pdf §3.6a. ~50% of corpus rejections are
+# non-audio (DocuSign, BACS, debt, meter, Companies House, credit check,
+# COT) and the categoriser must record the origin so the tracker can
+# route the right fix workflow. The pipeline cannot detect these from
+# transcript alone — the external_state_check node (Wave 6) will query
+# supplier portal + DNO API + Companies House.
+class RejectionOrigin(str, Enum):
+    AUDIO_SCRIPT = "audio_script"               # Script-line breach detected in the call
+    DOCUSIGN = "docusign"                        # DocuSign price defect / submission channel
+    BACS = "bacs"                                # BACS denied / DD setup failed
+    PORTAL_STATE = "portal_state"                # Supplier portal flagged (BG Lite vs Core mismatch, etc.)
+    METER_ELIGIBILITY = "meter_eligibility"      # CT / domestic / deenergised / wrong meter type
+    CUSTOMER_STATE = "customer_state"            # Customer changed mind / unreachable
+    COMPANIES_HOUSE = "companies_house"          # Dissolved / name change
+    CREDIT_CHECK = "credit_check"                # Credit-vet failed
+    COT = "cot"                                  # Change of Tenancy needed
+    WRONG_PRODUCT = "wrong_product"              # Wrong product picked (BG Lite vs Core)
+    WRONG_START_DATE = "wrong_start_date"        # Start date out of window
+    IN_CONTRACT = "in_contract"                  # Already in contract with supplier
+    ADDRESS_MISMATCH = "address_mismatch"        # Supply / billing address mismatch
+    AUTHORITY = "authority"                      # LOA / DM authority defect
+    VULNERABILITY = "vulnerability"              # Vulnerable customer signal — agent continued
+    CHARITY_NUMBER = "charity_number"            # Charity number missing
+    RENEWABLE_DISCLOSURE = "renewable_disclosure"  # Renewable / Zero Carbon disclosure missing
+
+
+# ─── Fix action enum (15 actions) ───────────────────────────────────────
+# Source: supplier-spec-handout.pdf §3.6a, derived from 123 unique fix
+# strings in the rejection corpus. The categoriser writes a default fix
+# action per RejectionOrigin (mapping below) and the reviewer can override
+# in the side panel.
+class FixAction(str, Enum):
+    NEW_LOA = "new_loa"
+    NEW_DOCUSIGN = "new_docusign"
+    AMENDMENT_CALL = "amendment_call"
+    CONFIRMATION_CALL = "confirmation_call"
+    REPRICE = "reprice"
+    RESEND_PDF = "resend_pdf"
+    COT = "cot"
+    RESELL_OTHER_SUPPLIER = "resell_other_supplier"
+    RESIGN_SISTER_PRODUCT = "resign_sister_product"
+    OBTAIN_DD_DETAILS = "obtain_dd_details"
+    CLEAR_DEBT = "clear_debt"
+    MANUAL_ADMIN_SUBMISSION = "manual_admin_submission"
+    ENERGISE_METER = "energise_meter"
+    OBTAIN_BANK_REG_ADDRESS = "obtain_bank_reg_address"
+    KILL_DEAD = "kill_dead"
+
+
+# Default mapping — categoriser writes this; reviewer can override.
+DEFAULT_FIX_ACTION_FOR_ORIGIN: dict[RejectionOrigin, FixAction] = {
+    RejectionOrigin.AUDIO_SCRIPT: FixAction.AMENDMENT_CALL,
+    RejectionOrigin.DOCUSIGN: FixAction.NEW_DOCUSIGN,
+    RejectionOrigin.BACS: FixAction.OBTAIN_DD_DETAILS,
+    RejectionOrigin.PORTAL_STATE: FixAction.MANUAL_ADMIN_SUBMISSION,
+    RejectionOrigin.METER_ELIGIBILITY: FixAction.ENERGISE_METER,
+    RejectionOrigin.CUSTOMER_STATE: FixAction.KILL_DEAD,
+    RejectionOrigin.COMPANIES_HOUSE: FixAction.OBTAIN_BANK_REG_ADDRESS,
+    RejectionOrigin.CREDIT_CHECK: FixAction.RESELL_OTHER_SUPPLIER,
+    RejectionOrigin.COT: FixAction.COT,
+    RejectionOrigin.WRONG_PRODUCT: FixAction.RESIGN_SISTER_PRODUCT,
+    RejectionOrigin.WRONG_START_DATE: FixAction.REPRICE,
+    RejectionOrigin.IN_CONTRACT: FixAction.KILL_DEAD,
+    RejectionOrigin.ADDRESS_MISMATCH: FixAction.AMENDMENT_CALL,
+    RejectionOrigin.AUTHORITY: FixAction.NEW_LOA,
+    RejectionOrigin.VULNERABILITY: FixAction.KILL_DEAD,
+    RejectionOrigin.CHARITY_NUMBER: FixAction.NEW_LOA,
+    RejectionOrigin.RENEWABLE_DISCLOSURE: FixAction.AMENDMENT_CALL,
+}
+
+
+# ─── Workflow state machine ─────────────────────────────────────────────
+# Source: supplier-spec-handout.pdf §3.6a. The tracker corpus has 7
+# real states; the categoriser initialises NOT_STARTED and the reviewer
+# advances via Claim/Mark Fixed/Submit/Mark Dead buttons.
+class WorkflowState(str, Enum):
+    NOT_STARTED = "not_started"
+    IN_PROGRESS = "in_progress"
+    FIXED = "fixed"
+    BATCHED_TO_PORTAL = "batched_to_portal"
+    SUBMITTED_TO_PORTAL = "submitted_to_portal"
+    FIXED_AND_APPROVED = "fixed_and_approved"
+    DEAD = "dead"
+
+
+# DEAD is terminal; everything else has at least one outgoing edge.
+ALLOWED_WORKFLOW_TRANSITIONS: dict[WorkflowState, set[WorkflowState]] = {
+    WorkflowState.NOT_STARTED: {WorkflowState.IN_PROGRESS, WorkflowState.DEAD},
+    WorkflowState.IN_PROGRESS: {WorkflowState.FIXED, WorkflowState.DEAD},
+    WorkflowState.FIXED: {WorkflowState.BATCHED_TO_PORTAL, WorkflowState.SUBMITTED_TO_PORTAL, WorkflowState.DEAD},
+    WorkflowState.BATCHED_TO_PORTAL: {WorkflowState.SUBMITTED_TO_PORTAL, WorkflowState.DEAD},
+    WorkflowState.SUBMITTED_TO_PORTAL: {WorkflowState.FIXED_AND_APPROVED, WorkflowState.DEAD},
+    WorkflowState.FIXED_AND_APPROVED: set(),
+    WorkflowState.DEAD: set(),
+}
+
+
+# ─── Categoriser normalization ──────────────────────────────────────────
+# Source: supplier-spec-handout.pdf §3.6a. Tracker corpus contains typo
+# variants ("priocess failure", "DOCUISGN ERROR") that must collapse to
+# the canonical RejectionCategory enum before storage.
+_CATEGORY_ALIAS_MAP: dict[str, RejectionCategory] = {
+    # PROCESS_FAILURE variants
+    "process failure": RejectionCategory.PROCESS_FAILURE,
+    "priocess failure": RejectionCategory.PROCESS_FAILURE,  # tracker typo
+    "process_failure": RejectionCategory.PROCESS_FAILURE,
+    # VERBAL_SALES_ERROR variants
+    "verbal sales error": RejectionCategory.VERBAL_SALES_ERROR,
+    "verbal_sales_error": RejectionCategory.VERBAL_SALES_ERROR,
+    "verbal sales": RejectionCategory.VERBAL_SALES_ERROR,
+    # ADMIN_ERROR variants
+    "admin error": RejectionCategory.ADMIN_ERROR,
+    "admin_error": RejectionCategory.ADMIN_ERROR,
+    "docusign error": RejectionCategory.ADMIN_ERROR,
+    "docuisgn error": RejectionCategory.ADMIN_ERROR,        # tracker typo
+    "doc error": RejectionCategory.ADMIN_ERROR,
+    # COMPLIANCE_ISSUE variants
+    "compliance issue": RejectionCategory.COMPLIANCE_ISSUE,
+    "compliance_issue": RejectionCategory.COMPLIANCE_ISSUE,
+    "compliance error": RejectionCategory.COMPLIANCE_ISSUE,
+    "compliance_error": RejectionCategory.COMPLIANCE_ISSUE,
+}
+
+
+def normalize_category(raw: str | None) -> RejectionCategory | None:
+    """Map a free-text or typo'd category string to the canonical enum.
+
+    Returns ``None`` for unknown / unparseable inputs so the caller can
+    route to OTHER / leave the row uncategorised for reviewer triage.
+    """
+    if not raw:
+        return None
+    key = raw.strip().lower()
+    if key in _CATEGORY_ALIAS_MAP:
+        return _CATEGORY_ALIAS_MAP[key]
+    # Try the upper-cased enum value directly.
+    try:
+        return RejectionCategory(raw.strip().upper().replace(" ", "_").replace("-", "_"))
+    except ValueError:
+        return None

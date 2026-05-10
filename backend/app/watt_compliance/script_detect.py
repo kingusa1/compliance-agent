@@ -99,3 +99,66 @@ def supplier_namespace(supplier: Supplier, script_type: ScriptType,
                        call_class: CallClass) -> str:
     """Compute the pgvector / RAG namespace per D-supplier-scripts.md §4."""
     return f"scripts:{supplier.value}:{script_type.value}:{call_class.value}"
+
+
+# Tracker / CRM-input alias map → canonical Supplier enum.
+# Source: supplier-spec-handout.pdf §3.5a — variants observed in the
+# operations tracker that today's three alias maps don't all capture.
+# Canonicalise BEFORE the (supplier × call_type) matrix lookup.
+_SUPPLIER_ALIAS_MAP: dict[str, Supplier] = {
+    # British Gas Lite (BG Lite / BGL)
+    "bgl": Supplier.BGL,
+    "bg lite": Supplier.BGL,
+    "british gas lite": Supplier.BGL,
+    # British Gas (Core / Business)
+    "bg core": Supplier.BRITISH_GAS,
+    "bg business": Supplier.BRITISH_GAS,
+    "british gas core": Supplier.BRITISH_GAS,
+    "british gas business": Supplier.BRITISH_GAS,
+    "british gas buisness": Supplier.BRITISH_GAS,  # tracker typo
+    "british gas": Supplier.BRITISH_GAS,
+    # E.ON Next casing variants
+    "eon": Supplier.EON_NEXT,
+    "e.on": Supplier.EON_NEXT,
+    "e on": Supplier.EON_NEXT,
+    "eon next": Supplier.EON_NEXT,
+    "e.on next": Supplier.EON_NEXT,
+    "e.on next energy": Supplier.EON_NEXT,
+    "e.on energy solutions": Supplier.EON_NEXT,
+    "e.on energy solutions ltd": Supplier.EON_NEXT,
+    # EDF
+    "edf": Supplier.EDF,
+    "edf energy": Supplier.EDF,
+    # Pozitive
+    "pozitive": Supplier.POZITIVE,
+    "pozitive energy": Supplier.POZITIVE,
+    # Scottish Power
+    "sp": Supplier.SCOTTISH_POWER,
+    "scottish power": Supplier.SCOTTISH_POWER,
+    "scottishpower": Supplier.SCOTTISH_POWER,
+}
+
+
+def canonicalize_supplier(raw: str | None) -> Supplier | None:
+    """Map a free-text supplier name (LLM output, CRM string, tracker cell)
+    to the canonical ``Supplier`` enum.
+
+    Returns ``None`` for unknown / empty values so the caller can route to
+    the universal-floor fallback. Whitespace + casing + punctuation are
+    normalised before lookup.
+    """
+    if not raw:
+        return None
+    key = re.sub(r"\s+", " ", raw.strip().lower())
+    key = key.replace(".", ".").replace(",", "").replace("ltd", "").strip()
+    # Try exact, then progressive fallback strips
+    if key in _SUPPLIER_ALIAS_MAP:
+        return _SUPPLIER_ALIAS_MAP[key]
+    # Trim trailing single words ("ltd", "limited", "energy", "uk")
+    parts = key.split()
+    while parts:
+        cand = " ".join(parts)
+        if cand in _SUPPLIER_ALIAS_MAP:
+            return _SUPPLIER_ALIAS_MAP[cand]
+        parts.pop()
+    return None

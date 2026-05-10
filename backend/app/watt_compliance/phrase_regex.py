@@ -150,6 +150,78 @@ PHRASE_RULES: tuple[PhraseRule, ...] = (
         mode=PatternMode.PRESENCE,
         why='High-pressure / urgency framing.',
     ),
+    # ── Vulnerability / Standard 2 ───────────────────────────────
+    # Phrase Detection Dataset Table 4 — agent must cease contact when
+    # the customer signals illness / language barrier / cognitive
+    # difficulty. Currently no auto-fail in the §3.2 floor.
+    PhraseRule(
+        rule_id="C2-01",
+        reason_code="R07",
+        severity=Severity.CRITICAL,
+        pattern=_r(
+            r"\b(?:i'?m\s+(?:not\s+well|sick|ill|in\s+hospital)|"
+            r"i\s+don'?t\s+understand\s+english|"
+            r"my\s+english\s+is\s+(?:bad|poor|not\s+good)|"
+            r"i\s+can'?t\s+(?:hear|understand)\s+you|"
+            r"i'?m\s+(?:elderly|old|confused)|"
+            r"(?:dementia|alzheimer))\b"
+        ),
+        mode=PatternMode.PRESENCE,
+        why="Customer signalled vulnerability — agent must cease contact (Sales Guide Standard 2).",
+    ),
+    # ── 4 new Critical patterns (gap analysis 2026-05-10) ─────────
+    # Source: supplier-spec-handout.pdf §3.5b round-4 fix.
+    PhraseRule(
+        rule_id="CP-IDENTITY-FALSE-EMPLOY",
+        reason_code="R20",
+        severity=Severity.CRITICAL,
+        # "we have a direct agreement with E.ON" / "we have a partnership with British Gas"
+        pattern=_r(
+            r"\b(?:we|i)\s+have\s+(?:a\s+)?(?:direct\s+)?(?:agreement|partnership|contract|arrangement)\s+with\s+"
+            r"(?:E\.?\s*ON(?:\s+Next)?|British\s+Gas|EDF|Pozitive|Scottish\s+Power|Scottish\s+Gas|the\s+supplier)\b"
+        ),
+        mode=PatternMode.PRESENCE,
+        why="False employment / direct-agreement claim — TPI inverse identity violation.",
+    ),
+    PhraseRule(
+        rule_id="CP-PRICE-VAT-INCLUSION-MIS",
+        reason_code="R08",
+        severity=Severity.CRITICAL,
+        # "prices include VAT" / "rate is inclusive of CCL" / "Green deal included"
+        pattern=_r(
+            r"\b(?:prices?|rates?)\s+(?:include|are\s+inclusive\s+of|cover)\s+"
+            r"(?:VAT|CCL|Climate\s+Change\s+Levy|Green\s+Deal)\b"
+        ),
+        mode=PatternMode.PRESENCE,
+        why="Agent stated price is inclusive of VAT/CCL/Green Deal — typically contracts are exclusive (tariff misrepresentation).",
+    ),
+    PhraseRule(
+        rule_id="CP-MISSELL-SAVINGS-MISREP",
+        reason_code="R04",
+        severity=Severity.CRITICAL,
+        # "most of the savings will come from the standing charge" — implies the
+        # unit rate doesn't matter
+        pattern=_r(
+            r"\b(?:most\s+of\s+(?:the\s+)?savings|the\s+savings\s+(?:are|come))\s+(?:will\s+)?(?:come\s+)?from\s+"
+            r"(?:the\s+)?(?:standing\s+charge|unit\s+rate)\b|"
+            r"\bunit\s+rate\s+(?:wont|won'?t|doesn'?t)\s+matter\b"
+        ),
+        mode=PatternMode.PRESENCE,
+        why="Savings misrepresentation — singling out one charge component as the saving driver.",
+    ),
+    PhraseRule(
+        rule_id="CP-MISSELL-GUARANTEED-RATES",
+        reason_code="R09",
+        severity=Severity.CRITICAL,
+        # "rates guaranteed fixed for 3 years" used on a variable-rate contract
+        # (Scottish Power has a quarterly-variable component)
+        pattern=_r(
+            r"\b(?:rates?|prices?|unit\s+rates?)\s+(?:are\s+)?(?:guarantee[ds]?|locked)\s+"
+            r"(?:fixed\s+)?(?:for\s+)?(?:\d+\s+(?:years?|months?)|the\s+(?:full\s+)?term)\b"
+        ),
+        mode=PatternMode.PRESENCE,
+        why="Guaranteed-fixed-rates language — invalid when contract has variable components.",
+    ),
 )
 
 
