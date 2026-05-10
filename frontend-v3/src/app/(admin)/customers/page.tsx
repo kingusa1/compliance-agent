@@ -17,6 +17,7 @@ import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import { useUrlState } from "@/lib/hooks/useUrlState";
 import { Pill, type PillTone } from "@/components/design/Pill";
 import { EmptyState } from "@/components/design/EmptyState";
+import { HelpBanner } from "@/components/design/HelpBanner";
 import { CursorPagination } from "@/components/shared/CursorPagination";
 import { AddCustomerDialog } from "./AddCustomerDialog";
 
@@ -203,6 +204,10 @@ export default function CustomersListPage() {
           onCreated={(slug) => router.push(`/customers/${encodeURIComponent(slug)}`)}
         />
       </div>
+
+      <HelpBanner id="customers" title="Customer rollup" href="/guide#customers">
+        Each row is a customer (legal name) with a count of deals + calls. Click a row to see every deal grouped by lifecycle stage and the supplier-specific workflow (E.ON = 2 stages, others = 3 stages). Suppliers and agent names are auto-detected from the call audio.
+      </HelpBanner>
 
       {/* Table */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>

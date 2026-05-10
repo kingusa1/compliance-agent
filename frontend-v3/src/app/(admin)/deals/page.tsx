@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { CursorPagination } from "@/components/shared/CursorPagination";
 import { DealsTable } from "./DealsTable";
+import { HelpBanner } from "@/components/design/HelpBanner";
 
 type LifecycleFilter =
   | "all"
@@ -102,6 +103,10 @@ function DealsPageBody() {
           )}
         </div>
       </header>
+
+      <HelpBanner id="deals" title="What is a Deal?" href="/guide#deals">
+        A Deal groups all the calls for one supply contract — typically Lead Gen + Closer + (for non-E.ON) Standalone LOA. The system auto-detects which call is which from the audio (decision-maker confirmation, LOA wording, etc.) and stitches them into a single Deal row. Click a Deal to see every call + its compliance verdict in one place.
+      </HelpBanner>
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="relative">
