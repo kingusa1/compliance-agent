@@ -58,6 +58,7 @@ import { VerdictTab } from "./VerdictTab";
 import { VulnerabilityBanner } from "./VulnerabilityBanner";
 import { EditMetadataDialog } from "./EditMetadataDialog";
 import { ReanalyzeButton } from "./ReanalyzeButton";
+import { PipelineTimeline } from "@/components/design/PipelineTimeline";
 import type { ChatMessage } from "@/lib/queries/reviewer";
 
 type TranscriptLine = {
@@ -1338,7 +1339,13 @@ export default function CallDetailPage({
           >
             {wordsForPlayer.length === 0 ? (
               <ProcessingStepper call={c} checkpointsCount={checkpoints.length} />
-            ) : (
+            ) : null}
+            {c ? (
+              <div style={{ padding: "0 16px 12px" }}>
+                <PipelineTimeline call={c as never} />
+              </div>
+            ) : null}
+            {wordsForPlayer.length > 0 ? (
               <TranscriptPlayer
                 words={wordsForPlayer}
                 currentTime={currentSec}
@@ -1351,7 +1358,7 @@ export default function CallDetailPage({
                   void detail.refetch();
                 }}
               />
-            )}
+            ) : null}
           </div>
         </div>
 
