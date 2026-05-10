@@ -412,25 +412,6 @@ async def _step_detect_metadata(
         except Exception as e:
             log.warning(f"supplier backfill skipped: {e}")
 
-        # Build a list of candidate ILIKE keys so older seed rows that used
-        # different naming conventions ("EON" vs "E.ON Next" vs "eon_next")
-        # all match. Order matters: try the canonical label first because
-        # it's the most specific.
-        ilike_keys: list[str] = []
-        if canon:
-            ilike_keys.append(SUPPLIER_LABELS[canon])  # e.g. "E.ON Next"
-            ilike_keys.append(canon.value)              # e.g. "eon_next"
-            # First word — handles seed rows like "EON" or "EDF" or "BGL"
-            short = SUPPLIER_LABELS[canon].split()[0].rstrip(",.()")
-            if short and short not in ilike_keys:
-                ilike_keys.append(short)
-        if detected_raw and detected_raw not in ilike_keys:
-            ilike_keys.append(detected_raw)
-        # De-dup while preserving order.
-        seen: set[str] = set()
-        ilike_keys = [k for k in ilike_keys if not (k in seen or seen.add(k))]
-
-        from sqlalchemy import or_
         # L3: when the call has a known call_type, prefer Script rows
         # whose lifecycle_phase matches that phase (e.g. a 'closer'
         # call should pick the Closer script, not the Lead Gen one).
@@ -440,25 +421,40 @@ async def _step_detect_metadata(
         from app.deal_lifecycle import call_type_to_phase as _ct_to_phase
         phase = _ct_to_phase(call.call_type) if call.call_type else None
 
-        ilike_clauses = [
-            Script.supplier_name.ilike(f"%{_escape_ilike(k)}%", escape="\\")
-            for k in ilike_keys
-        ]
-        base_q = db.query(Script).filter(
-            or_(*ilike_clauses) if ilike_clauses else Script.supplier_name.ilike("%"),
-            Script.active == True,
+        # Match on the CANONICAL Supplier enum so seed rows like "EON" /
+        # "E.ON" / "E.ON Next" / "eon_next" all resolve to the same set.
+        # SQL ILIKE alone can't bridge these (the punctuation set differs)
+        # so we pull the active scripts and canonicalise in Python — the
+        # supplier table is at most a few dozen rows so the cost is trivial.
+        all_active: list[Script] = (
+            db.query(Script).filter(Script.active == True).all()
         )
-        matching: list[Script] = []
-        if phase and hasattr(Script, "lifecycle_phase"):
-            from sqlalchemy import or_
-            matching = base_q.filter(
-                or_(
-                    Script.lifecycle_phase == phase,
-                    Script.lifecycle_phase.is_(None),
-                )
-            ).all()
-        if not matching:
-            matching = base_q.all()
+
+        def _matches_canon(s: "Script") -> bool:
+            if canon is None:
+                return False
+            return canonicalize_supplier(s.supplier_name) == canon
+
+        matching: list[Script] = [s for s in all_active if _matches_canon(s)]
+
+        # Fallback path for unknown / unmapped suppliers — keep the prior
+        # ILIKE behaviour so anything outside the alias map still gets a
+        # chance to match (e.g. a freshly-added supplier the alias map
+        # hasn't learned yet).
+        if not matching and detected_raw:
+            safe = _escape_ilike(detected_raw)
+            matching = [
+                s for s in all_active
+                if s.supplier_name and safe.lower() in s.supplier_name.lower()
+            ]
+
+        if phase and matching and hasattr(Script, "lifecycle_phase"):
+            phase_filtered = [
+                s for s in matching
+                if getattr(s, "lifecycle_phase", None) in (phase, None)
+            ]
+            if phase_filtered:
+                matching = phase_filtered
 
         if len(matching) == 1:
             script = matching[0]
