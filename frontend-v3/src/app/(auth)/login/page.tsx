@@ -46,13 +46,14 @@ export default function LoginPage() {
     }
     try {
       const me = await getMe();
-      if (me.role === "reviewer" || me.role === "lead") {
+      if (me.role === "reviewer") {
         router.replace("/queue");
       } else {
-        router.replace("/calls");
+        // admin + lead land on the at-a-glance dashboard
+        router.replace("/dashboard");
       }
     } catch {
-      router.replace("/calls");
+      router.replace("/dashboard");
     }
   }
 

@@ -10,7 +10,7 @@
  */
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import {
   Inbox,
   Users,
@@ -24,6 +24,7 @@ import {
   AlertTriangle,
   Send,
   Table as TableIcon,
+  LayoutDashboard,
   type LucideIcon,
 } from "lucide-react";
 
@@ -38,33 +39,45 @@ type NavItem = {
   href: string;
   roles: Array<"reviewer" | "lead" | "admin">;
   badgeKey?: "queue";
+  /** Section header to show ABOVE this item when expanded. */
+  section?: "Work" | "Catalogue" | "Audit" | "System";
 };
 
+// Items are grouped by section so the rail tells the user *what* to do
+// (Work), *what to manage* (Catalogue), *what to verify* (Audit), and
+// *where to configure* (System). The Dashboard sits above any section.
 const NAV_ITEMS: NavItem[] = [
-  { key: "queue",         label: "Review Queue",  icon: Inbox,        href: "/queue",          roles: ["reviewer", "lead", "admin"], badgeKey: "queue" },
-  // Hidden for v1 demo (re-enable by uncommenting):
-  // { key: "rejections",    label: "Rejections",    icon: AlertTriangle, href: "/rejections",    roles: ["admin", "lead"] },
-  // { key: "portal-batches", label: "Portal batches", icon: Send,         href: "/portal-batches", roles: ["admin", "lead"] },
+  { key: "dashboard",     label: "Dashboard",     icon: LayoutDashboard, href: "/dashboard",  roles: ["reviewer", "lead", "admin"] },
+
+  // ── Work — daily review surface ───────────────────────────────
+  { key: "queue",         label: "Review Queue",  icon: Inbox,        href: "/queue",          roles: ["reviewer", "lead", "admin"], badgeKey: "queue", section: "Work" },
   { key: "tracker",       label: "Tracker",       icon: TableIcon,    href: "/tracker",        roles: ["admin", "lead"] },
-  { key: "customers",     label: "Customers",     icon: Users,        href: "/customers",      roles: ["admin", "lead"] },
+  { key: "rejections",    label: "Rejections",    icon: AlertTriangle, href: "/rejections",    roles: ["admin", "lead"] },
+
+  // ── Catalogue — operational data ──────────────────────────────
+  { key: "customers",     label: "Customers",     icon: Users,        href: "/customers",      roles: ["admin", "lead"], section: "Catalogue" },
   { key: "deals",         label: "Deals",         icon: Briefcase,    href: "/deals",          roles: ["admin", "lead"] },
   { key: "agents",        label: "Agents",        icon: BarChart3,    href: "/agents",         roles: ["admin", "lead"] },
-  { key: "compliant",     label: "Compliant",     icon: ShieldCheck,  href: "/compliant",      roles: ["admin", "lead"] },
-  { key: "non-compliant", label: "Non-compliant", icon: ShieldAlert,  href: "/non-compliant",  roles: ["admin", "lead"] },
   { key: "scripts",       label: "Scripts",       icon: ListChecks,   href: "/scripts",        roles: ["admin", "lead"] },
-  // { key: "observability", label: "Observability", icon: Activity,     href: "/observability",  roles: ["admin", "lead"] },
-  { key: "settings",      label: "Settings",      icon: SettingsIcon, href: "/settings",       roles: ["admin", "lead"] },
+
+  // ── Audit — verdict trails ────────────────────────────────────
+  { key: "compliant",     label: "Compliant",     icon: ShieldCheck,  href: "/compliant",      roles: ["admin", "lead"], section: "Audit" },
+  { key: "non-compliant", label: "Non-compliant", icon: ShieldAlert,  href: "/non-compliant",  roles: ["admin", "lead"] },
+  { key: "observability", label: "Observability", icon: Activity,     href: "/observability",  roles: ["admin", "lead"] },
+
+  // ── System — configuration ────────────────────────────────────
+  { key: "settings",      label: "Settings",      icon: SettingsIcon, href: "/settings",       roles: ["admin", "lead"], section: "System" },
 ];
 
 function activeKey(path: string): string {
-  if (path === "/" || path === "") return "queue";
+  if (path === "/" || path === "") return "dashboard";
   // /calls/[id] is a reviewer-deep link, but the sidebar should still highlight Queue when reviewing.
   if (path.startsWith("/calls/") && path !== "/calls") return "queue";
   for (const item of NAV_ITEMS) {
     if (path === item.href) return item.key;
     if (path.startsWith(item.href + "/")) return item.key;
   }
-  return "queue";
+  return "dashboard";
 }
 
 function initialsOf(email: string | undefined): string {
@@ -153,9 +166,24 @@ export function Sidebar() {
         {items.map((item) => {
           const isActive = item.key === active;
           const Icon = item.icon;
+          const sectionHeader = expanded && item.section ? (
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "var(--text-dim)",
+                padding: "10px 10px 4px",
+              }}
+            >
+              {item.section}
+            </div>
+          ) : null;
           return (
+            <Fragment key={item.key}>
+            {sectionHeader}
             <Link
-              key={item.key}
               href={item.href}
               style={{
                 display: "flex",
@@ -199,6 +227,7 @@ export function Sidebar() {
                 </span>
               )}
             </Link>
+            </Fragment>
           );
         })}
       </nav>

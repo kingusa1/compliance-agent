@@ -158,12 +158,37 @@ export default function TrackerPage() {
         </div>
 
         <div className="flex-1 overflow-auto px-6 py-3">
-          <TrackerTable
-            rows={rows}
-            tab={tab}
-            selectedRowId={selectedRow ? (selectedRow.rejection_id ?? selectedRow.call_id) : null}
-            onSelect={setSelectedRow}
-          />
+          {!q.isLoading && rows.length === 0 ? (
+            <div className="m-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-6 text-center">
+              <div className="mx-auto mb-3 grid size-10 place-items-center rounded-full bg-[var(--bg-elev3)]">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--emerald-400)]"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 4v5h5"/></svg>
+              </div>
+              <p className="text-[14px] font-medium text-[var(--text-primary)]">
+                Nothing in the {tab.replace("_", " ")} tab yet
+              </p>
+              <p className="mx-auto mt-1 max-w-[440px] text-[12.5px] text-[var(--text-muted)]">
+                {tab === "compliant"
+                  ? "Calls signed off as compliant land here. Upload a clean call to populate the audit trail."
+                  : tab === "awaiting_review"
+                    ? "Calls flagged by the AI sit here until a reviewer claims them. Upload a call or wait for the next pipeline run."
+                    : "Once a call processes through the pipeline its rejections (if any) populate this tab. Upload your first call to get started."}
+              </p>
+              <button
+                type="button"
+                onClick={() => setUploadOpen(true)}
+                className="mt-4 inline-flex items-center gap-2 rounded-md bg-emerald-600 px-3.5 py-2 text-[12.5px] font-medium text-white hover:bg-emerald-700"
+              >
+                + Upload Call
+              </button>
+            </div>
+          ) : (
+            <TrackerTable
+              rows={rows}
+              tab={tab}
+              selectedRowId={selectedRow ? (selectedRow.rejection_id ?? selectedRow.call_id) : null}
+              onSelect={setSelectedRow}
+            />
+          )}
         </div>
       </div>
 
