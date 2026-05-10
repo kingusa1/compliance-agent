@@ -136,22 +136,39 @@ Consider the call context: Is this a new customer acquisition, a renewal, an upg
 Respond with ONLY the number of the best matching script (e.g., "1" or "2"). If truly uncertain, respond "1"."""
 
 
-DETECT_NAMES_PROMPT = """Read the start of this energy brokerage call transcript and extract two names:
+DETECT_NAMES_PROMPT = """Read the start of this energy brokerage call transcript and extract two names.
 
-1. AGENT name — the broker/sales agent making the call (their own name, not the company)
-2. CUSTOMER name — the person being called (the business owner/decision maker)
+The transcript is labeled with `Agent:` and `Customer:` per turn (a broker
+calls a business owner about their energy contract). The AGENT is the
+person from the brokerage (says "my name is …", "calling from …",
+"your electricity supply"). The CUSTOMER is the person on the line who
+owns or runs the business.
+
+EXTRACT:
+1. AGENT name — the broker / sales agent's OWN name (the speaker tagged
+   `Agent:` who says "my name is X" or whose first name follows that
+   pattern). NEVER the customer's name.
+2. CUSTOMER name — the person tagged `Customer:`. Often introduced when
+   the agent says "speaking with [name]?" and the customer confirms, or
+   when the customer self-identifies. NEVER the agent's name.
+
+CRITICAL RULES:
+- The two names MUST be different people. If you only see one name, put
+  it on the line that matches the speaker tag and "Unknown" on the other.
+- If the transcript shows "Agent: hi jay my name is paris" then
+  AGENT=Paris and CUSTOMER=Jay (the agent is greeting the customer by
+  name then introducing themselves).
+- Full name if given, first name if only first given.
+- "Unknown" if truly unclear.
+- Do NOT include titles (Mr, Mrs) or company names.
+- Do NOT mix up customer ↔ agent. Re-read the speaker tags before answering.
 
 TRANSCRIPT START:
 {transcript_start}
 
 Respond with ONLY a single line in this exact format (no JSON, no prose):
 AGENT: <name or Unknown>
-CUSTOMER: <name or Unknown>
-
-Rules:
-- Full name if given, first name if only first given
-- "Unknown" if truly unclear
-- Do NOT include titles (Mr, Mrs) or company names"""
+CUSTOMER: <name or Unknown>"""
 
 
 PROVIDERS = ("openrouter", "gemini", "anthropic", "openai")
@@ -352,6 +369,21 @@ async def detect_names(transcript: str) -> tuple[str, str]:
             agent = line.split(":", 1)[1].strip().strip('"') or "Unknown"
         elif line.upper().startswith("CUSTOMER:"):
             customer = line.split(":", 1)[1].strip().strip('"') or "Unknown"
+
+    # Sanity: if agent and customer collapsed to the same name (LLM
+    # confusion), trust the customer (which gets cross-validated downstream
+    # against the Customer table) and clear the agent so the reviewer
+    # doesn't see a misleading attribution.
+    if (
+        agent != "Unknown"
+        and customer != "Unknown"
+        and agent.strip().lower() == customer.strip().lower()
+    ):
+        log.warning(
+            f"\u26a0\ufe0f DETECT names collision \u2192 agent=customer=\"{agent}\"; clearing agent"
+        )
+        agent = "Unknown"
+
     log.info(f"\U0001f464 DETECT names \u2192 agent=\"{agent}\", customer=\"{customer}\"")
     return agent, customer
 
