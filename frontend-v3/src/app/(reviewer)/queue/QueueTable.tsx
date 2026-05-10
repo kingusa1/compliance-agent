@@ -123,25 +123,18 @@ function QueueRow({
 
 function StatusPill({ status }: { status: string }) {
   const s = (status || "").toLowerCase();
-  if (s === "unclaimed")
-    return (
-      <Badge variant="outline" className="border-[var(--border-strong)] text-[var(--text-muted)]">
-        ● Unclaimed
-      </Badge>
-    );
-  if (s === "in_review" || s === "in-review")
-    return (
-      <Badge className="border-amber-500/30 bg-amber-500/10 text-[var(--amber-review)]">
-        ● In review
-      </Badge>
-    );
   if (s === "reviewed" || s === "completed")
     return (
       <Badge className="border-emerald-500/30 bg-emerald-500/10 text-[var(--emerald-pass)]">
         ● Reviewed
       </Badge>
     );
-  return <Badge variant="outline">{status || "—"}</Badge>;
+  // unclaimed / in_review legacy values collapse to "Pending".
+  return (
+    <Badge variant="outline" className="border-[var(--border-strong)] text-[var(--text-muted)]">
+      ● Pending
+    </Badge>
+  );
 }
 
 function formatWhen(iso: string | null): string {

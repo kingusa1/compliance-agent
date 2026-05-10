@@ -1,14 +1,16 @@
 "use client";
 
 /**
- * /queue — ported pixel-perfect from
- * design/handoff-bundle/project/screens/queue.jsx.
+ * /queue — calls flagged by the AI as needing reviewer attention.
  *
  * Master-detail 60/40. Top bar: H1 + count chip + filter chips +
  * search input + saved-views dropdown. Left = comfortable-density
  * 6-col table (When | Customer/filename | Supplier | Agent | Score
  * | Status pill). Right = preview panel with mini waveform, snippet
- * and "Claim & review" CTA.
+ * and "Open & review" CTA.
+ *
+ * Claim/unclaim flow was removed 2026-05-10 — every reviewer can open
+ * any pending call directly. Per-user lock no longer required.
  */
 import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
@@ -30,7 +32,6 @@ import {
   useCallAudioUrlQuery,
   type QueueFilter,
 } from "@/lib/queries/reviewer";
-import { useClaimCall } from "@/lib/mutations/reviewer";
 import { ApiError } from "@/lib/api";
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import { useUrlState } from "@/lib/hooks/useUrlState";
@@ -42,11 +43,13 @@ import { HelpBanner } from "@/components/design/HelpBanner";
 
 import type { QueueCall } from "@/lib/api";
 
+// Visible filter values are simplified to {all, pending, reviewed}.
+// The backend still understands the legacy "unclaimed/in_review/today"
+// values; we map at the boundary so the API contract stays unchanged.
 const QUEUE_FILTERS: readonly QueueFilter[] = [
   "all",
-  "unclaimed",
-  "in_review",
-  "today",
+  "unclaimed", // surfaced as "Pending"
+  "today",     // surfaced as "Reviewed"
 ] as const;
 
 function parseQueueFilter(raw: string): QueueFilter {
@@ -57,11 +60,10 @@ function parseQueueFilter(raw: string): QueueFilter {
 
 function statusPill(status: string) {
   const s = (status || "").toLowerCase();
-  if (s === "in_review" || s === "in-review")
-    return <Pill tone="amber" dot>In review</Pill>;
   if (s === "reviewed")
     return <Pill tone="emerald" dot>Reviewed</Pill>;
-  return <Pill tone="neutral" dot>Unclaimed</Pill>;
+  // Everything else (unclaimed, in_review legacy) renders as Pending.
+  return <Pill tone="neutral" dot>Pending</Pill>;
 }
 
 function formatRelative(iso: string | null | undefined): string {
@@ -198,7 +200,6 @@ function HeaderCell({ children }: { children: React.ReactNode }) {
 }
 
 function PreviewPanel({ row }: { row: QueueCall | null }) {
-  const claim = useClaimCall();
   const detail = useCallDetailQuery(row?.id ?? "");
   const wordsQuery = useCallWordsQuery(row?.id ?? "");
   const audioUrlQuery = useCallAudioUrlQuery(row?.id ?? "");
@@ -455,14 +456,6 @@ function PreviewPanel({ row }: { row: QueueCall | null }) {
       >
         <Link
           href={`/calls/${encodeURIComponent(row.id)}`}
-          onClick={(e) => {
-            e.preventDefault();
-            claim.mutate(row.id, {
-              onSettled: () => {
-                window.location.href = `/calls/${encodeURIComponent(row.id)}`;
-              },
-            });
-          }}
           style={{
             flex: 1,
             height: 38,
@@ -481,7 +474,7 @@ function PreviewPanel({ row }: { row: QueueCall | null }) {
             boxShadow: "var(--shadow-sm)",
           }}
         >
-          {claim.isPending ? "Claiming…" : "Claim & review"}
+          Open &amp; review
         </Link>
         <button
           type="button"
@@ -587,12 +580,12 @@ export default function QueuePage() {
             margin: 0,
             color: "var(--text-primary)",
           }}
-          title="Calls flagged by the AI as needing human sign-off. Claim a call to lock it to you, then accept or override the AI verdict."
+          title="Calls flagged by the AI as needing reviewer attention. Open a call to read the AI verdict and override if needed — your decision is the audit-of-record."
         >
           Review Queue
         </h1>
         <Pill tone="emerald" mono>
-          {unclaimedCount} unclaimed
+          {unclaimedCount} pending
         </Pill>
         <div
           style={{
@@ -611,21 +604,14 @@ export default function QueuePage() {
             onClick={() => setFilter("unclaimed")}
             count={unclaimedCount}
           >
-            Unclaimed
-          </FilterChip>
-          <FilterChip
-            active={filter === "in_review"}
-            onClick={() => setFilter("in_review")}
-            count={inReviewCount}
-          >
-            In review
+            Pending
           </FilterChip>
           <FilterChip
             active={filter === "today"}
             onClick={() => setFilter("today")}
-            count={reviewedTodayCount}
+            count={reviewedTodayCount + inReviewCount}
           >
-            Reviewed today
+            Reviewed
           </FilterChip>
         </div>
         <div style={{ flex: 1 }} />
@@ -683,7 +669,7 @@ export default function QueuePage() {
       </div>
 
       <HelpBanner id="queue" title="How to work the Queue" href="/guide#review-queue">
-        Each card is a call the AI thinks needs human sign-off. Click <strong>Claim</strong> to lock it to you, then open the call to accept or override the AI verdict. The reviewer&rsquo;s verdict is the audit-of-record — your decision overrides the AI on conflict.
+        Each card is a call the AI thinks needs reviewer attention. Open a call to see the AI verdict, listen to the audio, then accept or override. Your verdict is the audit-of-record — it overrides the AI on conflict. No claim/lock step — anyone can pick up any pending call.
       </HelpBanner>
 
       {/* Error banner */}

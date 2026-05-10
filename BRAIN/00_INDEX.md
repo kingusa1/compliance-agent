@@ -46,7 +46,8 @@ tags: [index, brain]
 - [[03_AI_Pipeline/Future_Agents]] — roadmap of multi-agent expansion
 
 ### 04 Sessions
-- [[04_Sessions/2026-05-10_Session]] — today's full work log
+- [[04_Sessions/2026-05-10_Session]] — morning: Quality Agent + Brain bootstrap
+- [[04_Sessions/2026-05-10_Session_audit]] — evening: end-to-end audit (Playwright + API)
 - [[04_Sessions/Decisions]] — running list of architectural decisions
 
 ### 05 State

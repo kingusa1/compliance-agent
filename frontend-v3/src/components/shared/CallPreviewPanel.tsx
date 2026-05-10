@@ -139,25 +139,18 @@ export function CallPreviewPanel({ callId, primaryAction }: CallPreviewPanelProp
 
 function StatusPill({ status }: { status: string | null | undefined }) {
   const s = (status || "").toLowerCase();
-  if (s === "unclaimed")
-    return (
-      <Badge variant="outline" className="border-[var(--border-strong)]">
-        ● Unclaimed
-      </Badge>
-    );
-  if (s === "in_review" || s === "in-review")
-    return (
-      <Badge className="border-amber-500/30 bg-amber-500/10 text-[var(--amber-review)]">
-        ● In review
-      </Badge>
-    );
   if (s === "reviewed" || s === "completed")
     return (
       <Badge className="border-emerald-500/30 bg-emerald-500/10 text-[var(--emerald-pass)]">
         ● Reviewed
       </Badge>
     );
-  return <Badge variant="outline">{status ?? "—"}</Badge>;
+  // unclaimed / in_review legacy values collapse to "Pending".
+  return (
+    <Badge variant="outline" className="border-[var(--border-strong)]">
+      ● Pending
+    </Badge>
+  );
 }
 
 function formatDuration(secs: number | null): string {

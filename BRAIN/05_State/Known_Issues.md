@@ -6,6 +6,37 @@ tags: [state, issues, gotchas]
 
 # Known issues / gotchas
 
+## 🐛 Bugs (verified 2026-05-10 audit)
+
+### DELETE on completed calls returns HTTP 500
+**Reproduced:** `DELETE /api/calls/190868a8-…` (a completed Korner Kutz call) → 500. Same endpoint on the older `failed` call `42a89a59-…` → 200.
+
+**Root cause:** `routes.py:1525-1550` only cascades `CallCheckpoint` and the `Call`. There are 9 other tables in `models.py` with `ForeignKey("calls.id")` and **no `ondelete="CASCADE"`**:
+
+| Line | Class |
+|---|---|
+| 295 | CallCheckpoint *(already cascaded manually)* |
+| 363 | ReviewSession |
+| 375 | VerdictHistory |
+| 397 | TranscriptEdit |
+| 412 | ClaimLock |
+| 422 | ComplianceDecision |
+| 440 | VerdictSuggestion |
+| 457 | VerdictResponse |
+| 506 | AgentTrace |
+
+Failed calls don't have rows in any of these so they delete cleanly. Completed calls do, so PostgreSQL fires the FK violation on commit.
+
+**Fix:** add `ondelete="CASCADE"` on those 9 FKs and ship a migration (see CASCADE-correct examples at lines 632/661/678/708/756/930/1028).
+
+### Orphan customer/deal stubs after call delete
+After deleting `42a89a59-…`, its parent customer `(auto-detect pending 42a89a59)` still has 1 deal and 0 calls — the Customer + CustomerDeal rows were never cleaned up. Same pattern: `(pending audio upload)` (1 deal, 0 calls).
+
+**Fix:** in the delete endpoint, after `db.delete(call)` and re-checking, if the parent CustomerDeal has zero remaining calls → delete it; if its Customer has zero remaining deals → delete it.
+
+### Every deal returns `stage: null`
+`GET /api/deals` returns `stage: null` for every row. Per BRAIN's lifecycle doc the stage should be one of `lead_gen / closer / loa / amendment / c_call`. Either the pipeline never sets `CustomerDeal.stage` or the field is dead code. Worth tracing the Customer-Deal lifecycle path.
+
 ## High signal — fix later
 
 ### LLM occasionally extracts wrong customer name
@@ -18,7 +49,7 @@ Multiple seed scripts in DB have `checkpoints: "[]"`. Pipeline auto-falls-throug
 `format_diarized_transcript` only runs during Step 2 (`_step_transcribe`). On `/retry`, the cached `Call.transcript` is reused. So OLD calls that were transcribed BEFORE the speaker-label fix still show wrong labels. Workaround: clear `Call.transcript` (and `Call.word_data`) before retry to force re-transcription. Lower priority: most users will never see this since fresh uploads work correctly.
 
 ### Failed call still shows as "(auto-detect pending 42a89a59)"
-The early Crosby grange call from before the OpenRouter key fix failed during pipeline and never got a customer rename. Trash it via the new delete button (`/calls` → hover row → trash icon), or it'll sit there cosmetically.
+The early Crosby grange call from before the OpenRouter key fix failed during pipeline and never got a customer rename. **2026-05-10: deleted in audit** — 200 OK from the API. But the parent customer + deal stubs persisted (see "Orphan customer/deal stubs after call delete" above).
 
 ## Low signal — be aware
 

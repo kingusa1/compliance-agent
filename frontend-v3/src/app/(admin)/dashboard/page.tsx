@@ -77,7 +77,7 @@ const QUICK_ACTIONS: QuickAction[] = [
     href: "/queue",
     label: "Review Queue",
     icon: Inbox,
-    description: "Calls waiting for human sign-off. Claim a call, accept or override the AI verdict.",
+    description: "Calls flagged by the AI as needing reviewer attention. Open a call, accept or override the AI verdict.",
     tone: "primary",
   },
   {

@@ -530,7 +530,7 @@ def list_calls(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
             Call.status, Call.compliant, Call.agent_name, Call.customer_name,
             Call.script_id, Call.score, Call.detected_supplier, Call.rule_id,
             Call.created_at, Call.completed_at, Call.compliance_status,
-            Call.review_status,
+            Call.review_status, Call.reason,
         )
         .order_by(Call.created_at.desc())
         .offset(skip)
@@ -1311,24 +1311,70 @@ def get_call_words(call_id: str, db: Session = Depends(get_db)):
     }
 
 
+_V1_TPI_FALLBACK_CHECKPOINTS = [
+    {
+        "section": 1,
+        "name": "Third-party disclosure",
+        "required": "The agent explicitly states the company is a third party (e.g. \"I'm calling from <Broker>, which is a third-party intermediary\")",
+        "key_phrases": ["third party", "third-party", "intermediary", "broker"],
+        "customer_response_required": False,
+        "strictness": "mandatory",
+    },
+    {
+        "section": 2,
+        "name": "Not the energy supplier",
+        "required": "The agent explicitly states the company is NOT an energy supplier (e.g. \"We are not a supplier ourselves\")",
+        "key_phrases": ["not a supplier", "not the supplier", "not an energy supplier"],
+        "customer_response_required": False,
+        "strictness": "mandatory",
+    },
+    {
+        "section": 3,
+        "name": "Independent broker / intermediary",
+        "required": "The agent identifies themselves/their company as an independent broker or intermediary acting on behalf of the customer",
+        "key_phrases": ["independent broker", "on your behalf", "act for you"],
+        "customer_response_required": False,
+        "strictness": "mandatory",
+    },
+]
+
+
 @router.get("/api/calls/{call_id}/script-checkpoints")
 def get_call_script_checkpoints(call_id: str, db: Session = Depends(get_db)):
     """Return the script's checkpoint definitions matched to this call so the
-    UI can show Expected vs Actual ('what the agent should have said')."""
+    UI can show Expected vs Actual ('what the agent should have said').
+
+    When the matched script has empty `checkpoints` (seed-only metadata), the
+    pipeline falls through to the V1 third-party-disclosure analyzer — so we
+    return those V1 rules here too. This stops the UI from showing
+    "Script text unavailable" when the AI did, in fact, evaluate the call
+    against a known rule set.
+    """
     call = db.query(Call).filter_by(id=call_id).first()
     if not call:
         raise HTTPException(404, "Call not found")
     if not call.script_id:
-        return {"call_id": call_id, "checkpoints": []}
+        return {"call_id": call_id, "checkpoints": _V1_TPI_FALLBACK_CHECKPOINTS}
 
     script = db.query(Script).filter_by(id=call.script_id).first()
-    if not script or not script.checkpoints:
-        return {"call_id": call_id, "checkpoints": []}
 
-    try:
-        defs = json.loads(script.checkpoints)
-    except Exception:
-        defs = []
+    defs: list = []
+    if script and script.checkpoints:
+        try:
+            defs = json.loads(script.checkpoints) or []
+        except Exception:
+            defs = []
+
+    if not defs:
+        # Match what the pipeline actually did at line 793-802 of pipeline.py:
+        # empty script.checkpoints → V1 TPI analyzer → 3 universal rules.
+        return {
+            "call_id": call_id,
+            "script_name": (script.script_name if script else None),
+            "supplier": (script.supplier_name if script else None),
+            "mode": (script.mode if script else "v1_fallback"),
+            "checkpoints": _V1_TPI_FALLBACK_CHECKPOINTS,
+        }
 
     return {
         "call_id": call_id,

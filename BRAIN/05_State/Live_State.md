@@ -13,7 +13,8 @@ tags: [state, live, ground-truth]
 - **Current deployment:** `compliance-agent-lbmlgbzj9-mohamed-hishams-projects-0b4feda9.vercel.app`
 - **Project rootDirectory:** `frontend-v3` ✓
 - **Project framework:** `nextjs` ✓
-- **17 routes verified 200/307:** `/` (307→/dashboard), `/login`, `/dashboard`, `/queue`, `/calls`, `/tracker`, `/customers`, `/customers/<slug>`, `/deals`, `/rejections`, `/scripts`, `/agents`, `/agents/Parat`, `/compliant`, `/non-compliant`, `/observability`, `/guide`, `/settings`
+- **17 routes HTTP-status verified 200/307** (desktop+mobile, 36 runs): `/` (307→/dashboard), `/login`, `/dashboard`, `/queue`, `/calls`, `/tracker`, `/customers`, `/customers/<slug>`, `/deals`, `/rejections`, `/scripts`, `/agents`, `/agents/Parat`, `/compliant`, `/non-compliant`, `/observability`, `/guide`, `/settings`
+- ⚠️ **Content NOT verified:** for an unauthenticated visitor every protected route renders the **Sign In** form, not the page content. The HTTP code is 200 because Next.js renders the layout shell first then the auth guard hijacks. **Future visual audits need a working test login on prod Supabase.** See `audit-2026-05-10/AUDIT_REPORT.md` and `audit-2026-05-10/shots/dashboard_desktop.png`.
 - **Branded 404:** `/some-bad-path` returns the `not-found.tsx` page (contains "ComplianceAI" header + quick-links). NOT the raw Vercel `bom1::xxx` page.
 
 ## Backend (Railway)
@@ -22,14 +23,15 @@ tags: [state, live, ground-truth]
 - **Service:** `compliance-agent` on project `compliance-agent-backend`
 - **Latest commit deployed:** `c087493` (frontend type fix); backend latest `4e77515` (auto Quality Agent)
 
-## Database state
-- **Customers:** 4 visible
+## Database state (post 2026-05-10 audit)
+- **Customers:** 5 visible
   - `dorothy's evangelical church` — 3 calls, 1 deal, suppliers `[E.ON Next]` (Quality Agent merge result)
   - `crosby garage` — 1 call, 1 deal, suppliers `[E.ON Next]`
-  - `(auto-detect pending 42a89a59)` — 1 failed call, 1 deal (stub never resolved because pipeline failed)
+  - `korner kutz (audit upload)` — 1 call, 1 deal, suppliers `[E.ON Next]` (added 2026-05-10 audit)
+  - `(auto-detect pending 42a89a59)` — **0 calls** (call was deleted), 1 orphan deal stub (delete endpoint doesn't cascade up)
   - `(pending audio upload)` — 0 calls, 1 stub deal
-- **Calls:** 5 total (4 completed, 1 failed)
-- **Deals:** 4 total
+- **Calls:** 5 total — all `completed`. Failed `42a89a59` was deleted in the audit. Audit's own `190868a8-…` could NOT be deleted (HTTP 500 — see Known_Issues "DELETE on completed calls").
+- **Deals:** 5 total
 - **Scripts:** 15 active (E.ON × 5, Scottish Power × 3, BG × 2, BGL × 2, EDF × 2, Pozitive × 1)
 
 ## Auto-running agents

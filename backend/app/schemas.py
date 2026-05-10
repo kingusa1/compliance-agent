@@ -191,6 +191,7 @@ class CallSummary(BaseModel):
     completed_at: datetime | None
     compliance_status: str | None = None
     review_status: str | None = None
+    reason: str | None = None
 
     class Config:
         from_attributes = True

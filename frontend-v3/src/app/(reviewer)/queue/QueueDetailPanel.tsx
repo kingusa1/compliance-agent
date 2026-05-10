@@ -1,13 +1,11 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Inbox, Play } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCallDetailQuery } from "@/lib/queries/reviewer";
-import { useClaimCall } from "@/lib/mutations/reviewer";
 import { ScoreBar } from "@/components/reviewer/ScoreBar";
 
 /**
@@ -17,12 +15,10 @@ import { ScoreBar } from "@/components/reviewer/ScoreBar";
  * fetches /api/calls/{id} for richer details (transcript snippet, agent
  * name, score breakdown) the queue list endpoint doesn't include.
  *
- * Primary CTA is "Claim & review" — fires POST /api/calls/{id}/claim and
- * routes to /calls/{id} on success. Empty state when no row is selected.
+ * Primary CTA is "Open & review" — routes to /calls/{id}. Claim/lock
+ * step removed 2026-05-10 per product direction (no per-user lock).
  */
 export function QueueDetailPanel({ callId }: { callId: string | null }) {
-  const router = useRouter();
-  const claim = useClaimCall();
   const detail = useCallDetailQuery(callId ?? "");
 
   if (!callId) {
@@ -108,20 +104,12 @@ export function QueueDetailPanel({ callId }: { callId: string | null }) {
       </div>
 
       <div className="flex gap-2 border-t border-[var(--border-subtle)] p-4">
-        <Button
-          className="flex-1"
-          disabled={claim.isPending}
-          onClick={async () => {
-            try {
-              await claim.mutateAsync(callId);
-              router.push(`/calls/${callId}`);
-            } catch {
-              // toast already fired in mutation onError
-            }
-          }}
+        <Link
+          href={`/calls/${callId}`}
+          className="flex h-9 flex-1 items-center justify-center rounded-md bg-[var(--emerald)] px-3 text-[13px] font-medium text-[#04201a] no-underline hover:opacity-90"
         >
-          {claim.isPending ? "Claiming…" : "Claim & review"}
-        </Button>
+          Open &amp; review
+        </Link>
       </div>
     </div>
   );
@@ -129,25 +117,18 @@ export function QueueDetailPanel({ callId }: { callId: string | null }) {
 
 function StatusPill({ status }: { status: string | null | undefined }) {
   const s = (status || "").toLowerCase();
-  if (s === "unclaimed")
-    return (
-      <Badge variant="outline" className="border-[var(--border-strong)]">
-        ● Unclaimed
-      </Badge>
-    );
-  if (s === "in_review" || s === "in-review")
-    return (
-      <Badge className="border-amber-500/30 bg-amber-500/10 text-[var(--amber-review)]">
-        ● In review
-      </Badge>
-    );
   if (s === "reviewed" || s === "completed")
     return (
       <Badge className="border-emerald-500/30 bg-emerald-500/10 text-[var(--emerald-pass)]">
         ● Reviewed
       </Badge>
     );
-  return <Badge variant="outline">{status ?? "—"}</Badge>;
+  // unclaimed / in_review legacy values all collapse to "Pending".
+  return (
+    <Badge variant="outline" className="border-[var(--border-strong)]">
+      ● Pending
+    </Badge>
+  );
 }
 
 function formatDuration(secs: number | null): string {

@@ -75,7 +75,8 @@ function DeleteButton({ callId, customerName }: { callId: string; customerName: 
         e.stopPropagation();
         setConfirming(true);
       }}
-      className="invisible rounded p-1 text-[var(--text-faint)] group-hover:visible hover:bg-[var(--bg-elev3)] hover:text-red-400"
+      className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-elev3)] hover:text-red-400"
+      aria-label="Delete this call"
     >
       <Trash2 className="size-3.5" />
     </button>
