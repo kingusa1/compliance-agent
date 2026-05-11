@@ -33,6 +33,26 @@ export type TranscriptLine = {
   words: WordToken[];
 };
 
+/** Resolve a stable AGENT/CUSTOMER label for a single word.
+ *
+ *  Prefers the backend's pre-computed `role` field (added by the
+ *  /api/calls/{id}/words endpoint). Falls back to coercing the numeric
+ *  Deepgram `speaker` id — id 0 is the broker by default; anything else
+ *  is the customer. This matches the most common Deepgram diarisation
+ *  layout and keeps legacy clients rendering sensibly while older
+ *  word_data records get re-served through the new endpoint path.
+ */
+function wordRole(w: WordToken): string {
+  if (typeof w.role === "string" && w.role) return w.role.toUpperCase();
+  if (w.speaker == null || w.speaker === "") return "AGENT";
+  // speaker can arrive as 0/1 (number) or "0"/"1" (string).
+  const n = typeof w.speaker === "number" ? w.speaker : Number(w.speaker);
+  if (Number.isFinite(n)) {
+    return n === 0 ? "AGENT" : "CUSTOMER";
+  }
+  return String(w.speaker).toUpperCase();
+}
+
 export function groupWordsIntoLines(words: WordToken[]): TranscriptLine[] {
   const out: TranscriptLine[] = [];
   let buf: WordToken[] = [];
@@ -53,7 +73,7 @@ export function groupWordsIntoLines(words: WordToken[]): TranscriptLine[] {
   }
 
   for (const w of words) {
-    const sp = w.speaker || speaker || "AGENT";
+    const sp = wordRole(w);
     const longPause = buf.length > 0 && w.start - buf[buf.length - 1].end > 0.75;
     if (sp !== speaker || longPause) {
       flush();

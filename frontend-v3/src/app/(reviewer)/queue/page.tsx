@@ -231,9 +231,9 @@ function PreviewPanel({ row }: { row: QueueCall | null }) {
   // customer, so we don't pretend.
   type SnippetLine = { t: string; who: string; speakerIdx: number; text: string };
   const words = wordsQuery.data?.words ?? [];
-  const queueLetterToIdx = (sp: string | null | undefined): number => {
+  const queueLetterToIdx = (sp: string | number | null | undefined): number => {
     const s = String(sp ?? "").toUpperCase().trim();
-    if (s === "A" || s === "AGENT" || s === "1") return 1;
+    if (s === "A" || s === "AGENT" || s === "1" || s === "0") return 1;
     if (s === "B" || s === "CUSTOMER" || s === "2") return 2;
     if (s === "C" || s === "3") return 3;
     if (s === "D" || s === "4") return 4;

@@ -1356,7 +1356,16 @@ async def get_call_audio(call_id: str, db: Session = Depends(get_db)):
 
 @router.get("/api/calls/{call_id}/words")
 def get_call_words(call_id: str, db: Session = Depends(get_db)):
-    """Return per-word timestamp and confidence data for transcript player."""
+    """Return per-word timestamp and confidence data for transcript player.
+
+    Deepgram emits a numeric ``speaker`` id (0, 1, ...) per word. The
+    transcript bubbles on the frontend need a stable AGENT/CUSTOMER label
+    instead — we derive that here via the same heuristic
+    ``format_diarized_transcript`` uses, then tag each word with a
+    ``role`` field. Doing it server-side at read time means legacy calls
+    (where ``word_data`` was written before this lived) light up correctly
+    without a backfill migration.
+    """
     call = db.query(Call).filter_by(id=call_id).first()
     if not call:
         raise HTTPException(404, "Call not found")
@@ -1364,6 +1373,38 @@ def get_call_words(call_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "No word data available for this call")
 
     words = json.loads(call.word_data)
+
+    # Tag each word with AGENT / CUSTOMER. Only do work if there's >1
+    # speaker — otherwise everything is the agent by default.
+    from app.transcription import _detect_agent_speaker
+
+    agent_id: int | None = None
+    speaker_ids: set[int] = set()
+    for w in words:
+        try:
+            speaker_ids.add(int(w.get("speaker", 0) or 0))
+        except (TypeError, ValueError):
+            continue
+    if len(speaker_ids) >= 2:
+        try:
+            agent_id = _detect_agent_speaker(words)
+        except Exception:
+            agent_id = None
+
+    for w in words:
+        try:
+            spk = int(w.get("speaker", 0) or 0)
+        except (TypeError, ValueError):
+            spk = 0
+        if agent_id is None:
+            # Single-speaker recording (or detector failed) — call it
+            # AGENT so the colour is consistent with the broker-side
+            # treatment, and the reviewer isn't misled into thinking the
+            # customer was the only voice on the line.
+            w["role"] = "AGENT"
+        else:
+            w["role"] = "AGENT" if spk == agent_id else "CUSTOMER"
+
     return {
         "call_id": call_id,
         "word_count": len(words),

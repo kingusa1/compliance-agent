@@ -22,7 +22,12 @@ export type WordToken = {
   word: string;
   start: number; // seconds
   end: number; // seconds
-  speaker?: string | null;
+  /** Raw Deepgram speaker id (number-as-string or number). Numeric and
+   *  meaningless on its own — use `role` for display. */
+  speaker?: string | number | null;
+  /** Resolved AGENT / CUSTOMER label assigned by the backend's
+   *  `_detect_agent_speaker` heuristic. */
+  role?: "AGENT" | "CUSTOMER" | string | null;
   confidence?: number | null;
 };
 

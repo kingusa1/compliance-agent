@@ -86,9 +86,9 @@ function fmtTime(sec: number): string {
  * the agent vs customer (per user feedback after E2E walk), so we keep the
  * UI neutral as "Speaker 1 / Speaker 2 / …" rather than guessing roles.
  */
-function letterToIdx(speaker: string | null | undefined): number {
+function letterToIdx(speaker: string | number | null | undefined): number {
   const sp = String(speaker ?? "").toUpperCase().trim();
-  if (sp === "A" || sp === "AGENT" || sp === "1") return 1;
+  if (sp === "A" || sp === "AGENT" || sp === "1" || sp === "0") return 1;
   if (sp === "B" || sp === "CUSTOMER" || sp === "2") return 2;
   if (sp === "C" || sp === "3") return 3;
   if (sp === "D" || sp === "4") return 4;
