@@ -61,11 +61,12 @@ def test_open_to_lead_gen_done():
 
 
 def test_eon_closer_after_lead_gen_verifies():
-    """E.ON only requires lead_gen + closer (LOA bundled). Both
-    present → verified."""
+    """E.ON requires lead_gen + passover + closer (LOA bundled into
+    Closer). All three present → verified."""
     deal = _FakeDeal(supplier="E.ON")
     calls = [
         _FakeCall(call_type="lead_gen", completed_at=_now()),
+        _FakeCall(call_type="passover", completed_at=_now()),
         _FakeCall(call_type="closer", completed_at=_now()),
     ]
     assert derive_lifecycle_status(deal, calls) == "verified"
@@ -77,16 +78,18 @@ def test_british_gas_closer_stays_pending_loa():
     deal = _FakeDeal(supplier="British Gas")
     calls = [
         _FakeCall(call_type="lead_gen", completed_at=_now()),
+        _FakeCall(call_type="passover", completed_at=_now()),
         _FakeCall(call_type="closer", completed_at=_now()),
     ]
     assert derive_lifecycle_status(deal, calls) == "closer_done"
 
 
 def test_british_gas_full_set_verifies():
-    """British Gas with all three phases → verified."""
+    """British Gas with all four phases → verified."""
     deal = _FakeDeal(supplier="British Gas")
     calls = [
         _FakeCall(call_type="lead_gen", completed_at=_now()),
+        _FakeCall(call_type="passover", completed_at=_now()),
         _FakeCall(call_type="closer", completed_at=_now()),
         _FakeCall(call_type="standalone_loa", completed_at=_now()),
     ]
@@ -106,13 +109,14 @@ def test_rejected_is_terminal():
 def test_c_call_is_corrective_not_required():
     """C-call is corrective: it transitions the lifecycle to c_call_done
     but doesn't appear in the supplier's required_phases list."""
-    # E.ON required = lead_gen + closer; c_call is NOT in that list.
+    # E.ON required = lead_gen + passover + closer; c_call is NOT in that list.
     assert "c_call" not in SUPPLIER_PHASE_MATRIX["E.ON"]
     assert "c_call" not in required_phases("British Gas")
 
     deal = _FakeDeal(supplier="E.ON")
     calls = [
         _FakeCall(call_type="lead_gen", completed_at=_now()),
+        _FakeCall(call_type="passover", completed_at=_now()),
         _FakeCall(call_type="closer", completed_at=_now()),
         _FakeCall(call_type="c_call", completed_at=_now()),
     ]

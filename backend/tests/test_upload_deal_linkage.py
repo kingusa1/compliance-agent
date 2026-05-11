@@ -34,16 +34,22 @@ def _stub_storage(monkeypatch):
     yield
 
 
-def _mini_wav() -> bytes:
-    # minimal valid wav header + empty data chunk
+def _mini_wav(nonce: bytes = b"") -> bytes:
+    """Minimal valid WAV with an optional nonce appended to the data chunk
+    so two uploads from the same test produce different SHA-256 hashes —
+    avoids the upload route's content-hash dedup short-circuit returning
+    the previous call instead of creating a new deal."""
     return (
         b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00"
         b"\x40\x1f\x00\x00\x80>\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
+        + nonce
     )
 
 
 def _upload(**form_fields):
-    files = {"file": (f"sample-{uuid.uuid4().hex[:8]}.wav", io.BytesIO(_mini_wav()), "audio/wav")}
+    nonce = uuid.uuid4().bytes  # unique 16 bytes per upload
+    fname = f"sample-{uuid.uuid4().hex[:8]}.wav"
+    files = {"file": (fname, io.BytesIO(_mini_wav(nonce)), "audio/wav")}
     return client.post("/api/calls/upload", files=files, data=form_fields)
 
 
