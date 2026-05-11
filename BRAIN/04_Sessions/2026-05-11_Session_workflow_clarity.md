@@ -92,8 +92,50 @@ pointing at the now-deleted rogue project. `.gitignore` already covers
 
 Only `compliance-agent` (compliance-agent-mu.vercel.app) remains.
 
+## Tracker accuracy fixes (later in same session)
+
+User flagged that the Tracker's Awaiting Review tab showed **30 rows**
+when only 28 non-compliant calls existed in `/api/stats`. Diagnosed via
+direct DB probe:
+
+1. **2 orphan rejections** with `call_id IS NULL`. The rejections table's
+   `call_id` FK is `ON DELETE SET NULL` (intentional — preserves audit
+   trail when a call is deleted). When I deleted two test calls earlier,
+   their rejections survived with `call_id=NULL` and `customer_slug=NULL`,
+   showing up as ghost rows with empty customer/agent columns.
+2. **Duplicate "Rich Stevings funeral service" deal** sitting alongside
+   the canonical "Richard Stebbings General Services". One call
+   (c05fa857, "C call.mp3") was attached to the duplicate deal because
+   the Quality Agent's bucketing key disagreed on per-call customer
+   names ("David" vs "Drusilla Stebbings").
+
+Fixes:
+- **DB cleanup**: deleted both orphan rejections and merged the
+  duplicate deal into the canonical one (moved the 1 call, deleted
+  the empty deal).
+- **Code guard**: `tracker_aggregator.build_tracker_rows` now filters
+  `Rejection.call_id IS NOT NULL` on both the `awaiting_review` and
+  `active` / `fixed` / `dead` tabs. Orphan rejections stay in the DB
+  for audit but never surface as actionable rows. Commit `840a5e2`.
+
+Tracker now reconciles exactly:
+- Awaiting review · 28 ↔ 28 non-compliant calls
+- Compliant · 8 ↔ 8 compliant calls
+- Sum: 36 of 37 calls (1 failed = no rejection produced, intentional)
+
 ## Lingering follow-ups
 
+- MPAN/MPRN + Value columns still empty on most tracker rows — the
+  tracker autofill agents populate these from the deal record, which
+  requires meter IDs / contract value at upload time. Legacy auto-detect
+  uploads don't have them; manual entry mode does.
+- Live date column populated on ~5/8 compliant rows (date_extractor
+  agent worked when transcript mentioned a future date) — the other 3
+  had no explicit live-date mention in the call.
+- Quality Agent's customer-bucketing is name-similarity based; two deals
+  for the same customer slip through when the per-call name detection
+  drifts ("David" vs "Drusilla Stebbings"). Future: seed a known-customer
+  list per Watt's CRM and snap-to-canonical.
 - The customer detail page is the only consumer of the boolean-vs-string
   `compliant` field. If new code is added that calls a stringifier on
   this field, it must handle both shapes. Already documented in the
