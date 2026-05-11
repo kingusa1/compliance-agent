@@ -40,7 +40,7 @@ def _similarity(a: str, b: str) -> float:
 def canonicalise(
     raw_name: str | None,
     known: Iterable[str],
-    threshold: float = 0.84,
+    threshold: float = 0.78,
 ) -> tuple[str | None, bool]:
     """Return (canonical_name, was_normalised).
 
