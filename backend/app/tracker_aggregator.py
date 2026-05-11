@@ -160,7 +160,15 @@ def build_tracker_rows(
     surfaced as a reviewer queue separate from the active/fixed/dead workflow.
     """
     if tab == "awaiting_review":
-        q = db.query(Rejection).filter(Rejection.verdict_state == "AI_PENDING")
+        # Exclude orphan rejections (call_id IS NULL) — they survive the
+        # ON DELETE SET NULL FK from rejections→calls and would otherwise
+        # show up in the queue with empty customer/agent columns. The
+        # audit row is preserved in the DB; we just don't surface it as
+        # a reviewer action item. 2026-05-11.
+        q = db.query(Rejection).filter(
+            Rejection.verdict_state == "AI_PENDING",
+            Rejection.call_id.isnot(None),
+        )
         if category:
             q = q.filter(Rejection.category.in_(category))
         if supplier:
@@ -217,7 +225,12 @@ def build_tracker_rows(
         "dead": _DEAD_STATUSES,
     }.get(tab, _ACTIVE_STATUSES)
 
-    q = db.query(Rejection).filter(Rejection.status.in_(statuses))
+    # Same orphan-rejection guard as awaiting_review — never surface
+    # a rejection whose parent call was deleted.
+    q = db.query(Rejection).filter(
+        Rejection.status.in_(statuses),
+        Rejection.call_id.isnot(None),
+    )
     if category:
         q = q.filter(Rejection.category.in_(category))
     if supplier:
