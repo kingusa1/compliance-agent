@@ -199,31 +199,30 @@ def _coerce_checkpoint(raw: dict, fallback_section: int) -> dict | None:
     }
 
 
-async def extract_phrase_pack(
+async def _extract_chunk(
     *,
-    markdown: str,
+    rows: list[str],
     stage_label: str,
     call_types: str,
-    stage_filter: str,
-    timeout: float = 120.0,
+    timeout: float,
+    section_offset: int,
 ) -> list[dict]:
-    rows_by_stage = _split_dataset_by_stage(markdown)
-    rows = rows_by_stage.get(stage_filter, [])
+    """Run one LLM call against a chunk of rows. Returns canonical checkpoint
+    dicts with section numbering offset so the caller can concatenate
+    multiple chunks without collisions.
+    """
     if not rows:
-        log.warning(f"📋 phrase_pack: no rows for stage_filter={stage_filter!r}")
         return []
-
-    rows_md = "\n".join(rows[:200])  # safety cap
     prompt = (
         PHRASE_PACK_EXTRACT_PROMPT
         .replace("{stage_label}", stage_label)
         .replace("{call_types}", call_types)
-        .replace("{rows_markdown}", rows_md)
+        .replace("{rows_markdown}", "\n".join(rows))
     )
     try:
         raw = await _call_llm(prompt, timeout=timeout)
     except Exception as e:
-        log.warning(f"📋 extract_phrase_pack LLM failed: {e}")
+        log.warning(f"📋 extract chunk LLM failed (rows={len(rows)}): {e}")
         return []
     body = _strip_fences(raw)
     try:
@@ -234,7 +233,7 @@ async def extract_phrase_pack(
             try:
                 parsed = json.loads(body[start : end + 1])
             except json.JSONDecodeError:
-                log.warning("📋 extract_phrase_pack JSON unparseable")
+                log.warning("📋 extract chunk JSON unparseable")
                 return []
         else:
             return []
@@ -242,10 +241,53 @@ async def extract_phrase_pack(
         return []
     canon: list[dict] = []
     for i, item in enumerate(parsed):
-        cp = _coerce_checkpoint(item, fallback_section=i + 1)
+        cp = _coerce_checkpoint(item, fallback_section=section_offset + i + 1)
         if cp:
+            cp["section"] = section_offset + i + 1
             canon.append(cp)
     return canon
+
+
+async def extract_phrase_pack(
+    *,
+    markdown: str,
+    stage_label: str,
+    call_types: str,
+    stage_filter: str,
+    timeout: float = 180.0,
+    chunk_size: int = 20,
+) -> list[dict]:
+    rows_by_stage = _split_dataset_by_stage(markdown)
+    rows = rows_by_stage.get(stage_filter, [])
+    if not rows:
+        log.warning(f"📋 phrase_pack: no rows for stage_filter={stage_filter!r}")
+        return []
+    log.info(
+        f"📋 phrase_pack starting: stage={stage_filter!r} rows={len(rows)} "
+        f"chunk_size={chunk_size}"
+    )
+
+    # 88 rows in a single Opus call routinely times out around 120s and the
+    # LLM truncates the JSON. Chunk to keep each request small enough to
+    # respond cleanly, then concatenate.
+    all_cps: list[dict] = []
+    for start in range(0, len(rows), chunk_size):
+        chunk = rows[start : start + chunk_size]
+        cps = await _extract_chunk(
+            rows=chunk,
+            stage_label=stage_label,
+            call_types=call_types,
+            timeout=timeout,
+            section_offset=len(all_cps),
+        )
+        log.info(
+            f"📋 phrase_pack chunk {start // chunk_size + 1}/"
+            f"{(len(rows) + chunk_size - 1) // chunk_size}: "
+            f"rows={len(chunk)} → {len(cps)} cps"
+        )
+        all_cps.extend(cps)
+    log.info(f"📋 phrase_pack done: stage={stage_filter!r} total={len(all_cps)} cps")
+    return all_cps
 
 
 def pack_definitions() -> list[dict]:
