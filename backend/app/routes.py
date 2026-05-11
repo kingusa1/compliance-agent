@@ -561,6 +561,11 @@ def list_calls(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
             Call.script_id, Call.score, Call.detected_supplier, Call.rule_id,
             Call.created_at, Call.completed_at, Call.compliance_status,
             Call.review_status, Call.reason,
+            # call_type was missing from the select so the UI showed every
+            # call as "NULL stage" even after the AI classifier + backfill
+            # had set it. Surface it here. deal_id is also useful for the
+            # /calls list page to deep-link to /deals/{id}.
+            Call.call_type, Call.deal_id,
         )
         .order_by(Call.created_at.desc())
         .offset(skip)
