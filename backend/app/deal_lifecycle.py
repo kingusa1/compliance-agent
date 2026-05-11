@@ -120,12 +120,24 @@ def _completed_phases(calls: Iterable) -> set[str]:
     """Collect the set of supplier-matrix phases for which *some* call
     has finalized. We treat any call with ``completed_at`` set as
     finalized — the caller is responsible for filtering to the right
-    deal."""
+    deal.
+
+    Special case: a ``call_type == "full"`` recording captures the whole
+    deal in one go (typical for E.ON's bundled flow), so it covers BOTH
+    ``lead_gen`` and ``closer`` for lifecycle purposes. Without this, a
+    single full-call deal would never leave the ``open`` state because
+    "full" doesn't map to any phase. (audit-late B6.)
+    """
     out: set[str] = set()
     for c in calls:
         if getattr(c, "completed_at", None) is None:
             continue
-        phase = call_type_to_phase(getattr(c, "call_type", None))
+        ct = getattr(c, "call_type", None)
+        if ct == "full":
+            out.add("lead_gen")
+            out.add("closer")
+            continue
+        phase = call_type_to_phase(ct)
         if phase:
             out.add(phase)
     return out
