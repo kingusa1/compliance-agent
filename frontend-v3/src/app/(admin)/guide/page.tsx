@@ -155,19 +155,54 @@ const PAGE_DESCRIPTIONS: { href: string; label: string; icon: typeof Inbox; tagl
 ];
 
 const PIPELINE_STEPS: { num: number; title: string; description: string }[] = [
-  { num: 1, title: "Upload", description: "Reviewer drops an MP3/WAV through the Upload Call modal. File goes to Supabase Storage; a Call row is created with status=processing." },
-  { num: 2, title: "Storage", description: "Object stored in the call-audio bucket (max 25 MB). Backend gets a signed URL to read it." },
-  { num: 3, title: "Inngest event (optional)", description: "If durable workflow is enabled, a call/uploaded event fires so each step can retry independently." },
-  { num: 4, title: "Transcribe", description: "Deepgram Nova-3 (en-GB, EU region) runs first. Optional consensus from AssemblyAI / Speechmatics / Groq / Cohere if their keys are set." },
-  { num: 5, title: "Detect metadata", description: "script_detect.detect() reads the transcript and returns supplier / script_type / call_class — backed by 25+ regex patterns." },
-  { num: 6, title: "Phrase pre-pass", description: "10–15 cheap regex rules scan for Critical phrases (Watt-Utilities-identity, savings claim, guarantee, vulnerability signal, …)." },
-  { num: 7, title: "Watt LLM", description: "Claude Opus 4.7 via OpenRouter. Prompt includes the 8 Watt Standards, 27 rejection codes, and call-type-specific focus block (LOA vs closer vs lead-gen)." },
-  { num: 8, title: "Auto-escalate", description: "If any CRITICAL regex fired, verdict is forced to BLOCK regardless of LLM output. The LLM verdict is preserved as llm_verdict for audit." },
-  { num: 9, title: "Risk tag normalise", description: "LLM-emitted tags get coerced to the canonical 4 (ombudsman_risk / mis_selling_risk / complaint_risk / cancellation_risk). Unknown tags drop." },
-  { num: 10, title: "Persist", description: "Call.compliance_status / score / reason / risk_tags get updated. One Rejection row per item, idempotent on call_id." },
-  { num: 11, title: "Tracker export", description: "JOINs Call × Rejection × CustomerDeal × Customer to produce the XLSX in the exact shape of the Watt operations template." },
-  { num: 12, title: "Email feedback (optional)", description: "If FEEDBACK_EMAIL_API keys are set, a per-rejection digest email is dispatched to the agent." },
-  { num: 13, title: "Weekly escalation (optional)", description: "Cron returns agents with ≥ 3 critical rejections in the trailing 7 days, into a digest sent to leads." },
+  { num: 1, title: "Upload", description: "Reviewer drops an MP3/WAV through the Upload Call modal. File posts to /api/calls/upload; a Call row is created with status=processing and a SHA-256 content hash is recorded for dedup." },
+  { num: 2, title: "Storage", description: "Object stored in the call-audio Supabase bucket (max 200 MB). Backend obtains a signed URL for transcription." },
+  { num: 3, title: "Inngest event (optional)", description: "Durable workflow path emits call/uploaded so each step can retry independently. Live deployments currently use the asyncio path (USE_INNGEST_PIPELINE=false) — Inngest stays warmed for failover." },
+  { num: 4, title: "Transcribe", description: "Deepgram Nova-3 (en-GB, EU region) with diarisation + smart-format + sentiment + intents + topics + summary. Per-word speakers come back as numeric ids and are role-tagged AGENT/CUSTOMER server-side." },
+  { num: 5, title: "Detect supplier (AI)", description: "Opus 4.7 receives the first ~3000 words and names the energy supplier whose tariff is being sold. Sibling-supplier inheritance fills in when an LOA-only call doesn't mention the supplier explicitly." },
+  { num: 6, title: "Detect call_type (AI)", description: "Opus 4.7 reads the transcript and classifies it as lead_gen / passover / closer / standalone_loa / c_call / amendment. Filename hints are NOT used — pure content classification. Existing call_types set by reviewers are preserved." },
+  { num: 7, title: "Detect names + meters", description: "detect_names() pulls agent + customer; name_normaliser snaps to existing roster entries above a 0.78 similarity threshold. meter_extractor regex pulls MPAN (13 digits) + MPRN (6-10 digits) into CustomerDeal." },
+  { num: 8, title: "Phrase pre-pass", description: "15 cheap regex patterns scan for Critical signals (Watt identity false-employ, VAT-not-clear, guaranteed-rates, savings-misrep, vulnerability indicators). Hits become CRITICAL evidence injected into the LLM prompt." },
+  { num: 9, title: "Watt analyzer (Opus 4.7)", description: "Per-checkpoint analyzer reads the matched supplier-script's checkpoint list and grades each one PASS / PARTIAL / FAIL with evidence quotes + line numbers." },
+  { num: 10, title: "Auto-escalate", description: "If any CRITICAL regex fired in step 8, verdict is forced to BLOCK regardless of LLM output. The LLM verdict is preserved as llm_verdict for audit." },
+  { num: 11, title: "Vulnerability detect", description: "Per-call scan for vulnerable-customer indicators (age, disability, financial hardship, language). Surfaces a VulnerabilityBanner on the reviewer page." },
+  { num: 12, title: "Pricing mismatch flag", description: "Compares the closer-call's quoted unit-rate against the supplier-published rate sheet. Mismatch surfaces a PricingMismatchBanner." },
+  { num: 13, title: "Quality agent (Opus 4.7)", description: "Cross-call identity resolution. Snaps fuzzy customer names + agent names to existing canonical rows; flips lifecycle status for any newly-bundled deals." },
+  { num: 14, title: "Persist + Tracker", description: "Call.compliance_status / score / reason / risk_tags + per-checkpoint CallCheckpoint rows committed. Rejection rows are idempotent on (call_id, rejection_reason). /tracker shows the live view." },
+  { num: 15, title: "Email + weekly escalation (optional)", description: "If FEEDBACK_EMAIL_API is set, per-rejection digest emails fire to agents. Weekly cron escalates agents with ≥ 3 CRITICAL rejections in trailing 7 days." },
+];
+
+const AI_CLASSIFIER_RULES: { stage: string; tell: string; signals: string }[] = [
+  {
+    stage: "lead_gen",
+    tell: "FIRST contact — cold/warm intro. Captures decision-maker + contract end date. No verbal contract, no LOA wording.",
+    signals: "\"is that [name]?\", \"I'm calling from [broker]\", \"are you the decision maker\", \"shall I send across some prices\", \"I'll pass you to my colleague\"",
+  },
+  {
+    stage: "passover",
+    tell: "WARM HANDOVER between two named agents on the same call. Lead-gen introduces the closer, then drops off.",
+    signals: "\"I'll just pass you over to [name]\", \"my colleague [name] tells me…\", two distinct agent voices introduced inside one recording.",
+  },
+  {
+    stage: "closer",
+    tell: "LEGALLY BINDING verbal contract. Rate p/kWh + standing charge + contract length + Ombudsman + customer \"yes\". For E.ON, LOA wording is bundled INTO this call.",
+    signals: "\"this is a legally binding contract\", \"do you agree to be bound\", customer says \"yes\" to affirmation blocks, explicit rate + standing charge read.",
+  },
+  {
+    stage: "standalone_loa",
+    tell: "Separate Letter of Authority call. Required by every supplier EXCEPT E.ON. No rate/contract reading.",
+    signals: "\"I'm calling for a Letter of Authority\", \"do you authorise Watt to act on your behalf\", \"12 months\", \"authority to negotiate with [supplier]\".",
+  },
+  {
+    stage: "c_call",
+    tell: "CONFIRMATION CALLBACK after sale. Short. Verifies identity + intent to contract.",
+    signals: "\"calling to confirm you've signed up with [supplier]\", \"can you confirm your name and the business address\".",
+  },
+  {
+    stage: "amendment",
+    tell: "POST-SALE fix-up call. References an earlier verbal/LOA mistake (rate misread, name correction, missing line).",
+    signals: "\"we noticed on your earlier call\", \"I need to re-read lines 11 to 14\", \"to amend the verbal contract you took yesterday\".",
+  },
 ];
 
 const COMPLIANCE_TAXONOMY: { title: string; description: string; rows: string[] }[] = [
@@ -675,6 +710,49 @@ export default function GuidePage() {
             E.ON-style bundled flow in one go, it counts as covering{" "}
             <strong>Lead Gen + Passover + Closer</strong> simultaneously, which is enough
             to verify any E.ON deal on its own.
+          </p>
+
+          {/* How the AI classifies call_type from the transcript */}
+          <h3 className="mt-6 mb-2 text-[14px] font-semibold text-[var(--text-primary)]">
+            How the AI decides which stage a recording is
+          </h3>
+          <p className="mb-3 text-[12.5px] leading-relaxed text-[var(--text-muted)]">
+            Stage classification used to rely on the filename (<code className="font-mono text-[11.5px]">lead.mp3</code>,{" "}
+            <code className="font-mono text-[11.5px]">passover.mp3</code>, etc.) which
+            broke whenever suppliers shipped recordings with generic names. As of
+            2026-05-11 the system reads the transcript and asks{" "}
+            <strong>Claude Opus 4.7</strong> to pick one of the six stages.
+            Filenames are ignored. The rule the model is given:
+          </p>
+          <div className="overflow-hidden rounded-xl border border-[var(--border-subtle)]">
+            <table className="w-full text-[12.5px]">
+              <thead className="bg-[var(--bg-elev2)] text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
+                <tr>
+                  <th className="px-3 py-2 text-left">Stage</th>
+                  <th className="px-3 py-2 text-left">What it is</th>
+                  <th className="px-3 py-2 text-left">Phrasal signals the model looks for</th>
+                </tr>
+              </thead>
+              <tbody>
+                {AI_CLASSIFIER_RULES.map((r) => (
+                  <tr key={r.stage} className="border-t border-[var(--border-subtle)]">
+                    <td className="px-3 py-2 font-mono text-[var(--emerald-400)]">
+                      {r.stage}
+                    </td>
+                    <td className="px-3 py-2 text-[var(--text-primary)]">{r.tell}</td>
+                    <td className="px-3 py-2 text-[var(--text-muted)]">{r.signals}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-3 text-[12.5px] leading-relaxed text-[var(--text-muted)]">
+            If the classifier can&apos;t make a clean call (transcript too short, single
+            voice indistinguishable), the recording stays as{" "}
+            <code className="font-mono text-[11.5px]">full</code> and the lifecycle
+            resolver treats it as Lead Gen + Passover + Closer for the E.ON-style flow.
+            Reviewers can always override the stage on the call detail page; once a
+            reviewer has signed off, the classifier won&apos;t overwrite their choice.
           </p>
         </Section>
 

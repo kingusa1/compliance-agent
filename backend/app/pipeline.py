@@ -28,7 +28,13 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from app.analysis import analyze_compliance_v1, detect_names, detect_script_variant, detect_supplier
+from app.analysis import (
+    analyze_compliance_v1,
+    detect_call_type,
+    detect_names,
+    detect_script_variant,
+    detect_supplier,
+)
 from app.watt_compliance.script_detect import canonicalize_supplier
 from app.watt_compliance.taxonomy import SUPPLIER_LABELS
 
@@ -477,6 +483,29 @@ async def _step_detect_metadata(
                 log.warning(f"name backfill skipped: {e}")
     except Exception as e:
         log.warning(f"\U0001f464 DETECT names skipped: {e}")
+
+    # ── AI call_type classifier ────────────────────────────────────
+    # Replaces the previous filename pre-pass with a content-aware LLM
+    # call. Only writes when the call's current call_type is missing or
+    # `full` (which means "no explicit choice yet") — so reviewer-set
+    # values via the L7 envelope are preserved as ground truth.
+    try:
+        existing_ct = (call.call_type or "").strip().lower()
+        if existing_ct in ("", "full"):
+            ai_ct = await detect_call_type(transcript)
+            if ai_ct:
+                call.call_type = ai_ct
+                log.info(
+                    f"\U0001f3af call_type classifier set call_id={call_id} "
+                    f"call_type={ai_ct!r} (was {existing_ct or 'unset'!r})"
+                )
+            else:
+                log.info(
+                    f"\U0001f3af call_type classifier returned None; "
+                    f"leaving call_type as {existing_ct or 'full'!r}"
+                )
+    except Exception as e:
+        log.warning(f"\U0001f3af DETECT call_type skipped: {e}")
 
     script: Script | None = None
     if script_id_arg:

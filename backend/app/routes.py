@@ -346,44 +346,13 @@ async def upload_call(
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
-    # When the upload arrives with the default call_type="full" (which
-    # the lifecycle resolver doesn't understand), try to infer a real
-    # phase from the filename — this is the strongest signal Watt's
-    # workflow gives us at intake time. Lifecycle stays "open" otherwise
-    # because `call_type_to_phase("full")` returns None. (audit-late B6.)
-    if not call_type or call_type == "full":
-        import os as _os
-        import re as _re
-
-        _fn_lower = (file.filename or "").lower()
-        _stem = _os.path.splitext(_fn_lower)[0].strip()
-        # Order matters — specific markers ("amendment", "c call",
-        # "passover") win over generic ones. Both stem-match (e.g.
-        # "loa.mp3" → "loa") and substring-match (e.g. "<dir>/loa.mp3")
-        # are accepted; the substring fallback uses \b word boundaries
-        # so "loa" inside "FloA" doesn't false-positive.
-        def _has(token: str) -> bool:
-            return _stem == token or bool(_re.search(rf"\b{_re.escape(token)}\b", _fn_lower))
-
-        if _has("amendment"):
-            call_type = "amendment"
-        elif _stem in ("c call", "c_call", "c-call", "ccall") or _has("c call") or _has("c_call"):
-            call_type = "c_call"
-        elif _stem in ("lead", "lead gen", "lead_gen") or _has("lead gen") or _has("lead-gen") or _has("leadgen") or _stem == "lead":
-            call_type = "lead_gen"
-        elif _has("passover") or _has("pass over"):
-            # "Passover" in Watt parlance = the lead-gen-to-closer handover.
-            # It's a distinct lifecycle phase, NOT a closer (the closer is the
-            # verbal-contract recording afterwards). audit-late v5.
-            call_type = "passover"
-        elif _has("loa") or _has("letter of authority") or _stem == "loa":
-            call_type = "standalone_loa"
-        elif _has("verbal") or _has("verbal_contract") or _stem == "verbal":
-            # Verbal-contract recordings are closer-stage by definition.
-            call_type = "closer"
-        elif _has("closer") or _stem == "closer":
-            call_type = "closer"
-        # else: fall through with call_type="full"; pipeline still works.
+    # call_type is determined ENTIRELY by the AI now. We keep "full" as
+    # the placeholder until the pipeline's transcript-based classifier
+    # (analysis.detect_call_type → pipeline._step_detect_metadata) sets
+    # the real lifecycle stage. The previous filename pre-pass was
+    # removed 2026-05-11 — filenames are unreliable (suppliers send the
+    # same recording with arbitrary names) and the user explicitly
+    # asked for AI-only categorisation.
 
     call = Call(
         id=call_id,
