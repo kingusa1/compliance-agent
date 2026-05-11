@@ -23,8 +23,8 @@ tags: [state, live, ground-truth]
 
 ## Frontend (Vercel)
 - **Alias:** `compliance-agent-mu.vercel.app`
-- **Current deployment:** `dpl_F5oVygMyiRMaCPFjxZoDxyJmG574` (commit `2467e90` — AI call_type + admin backfill endpoint + 15-step guide)
-- **Previous:** `dpl_HzAFRTJoxPuBi4T96V3jLLqKDQQt` (workflow pill)
+- **Current deployment:** Railway backend on commit `1e7e90c` (sync reanalyze-all endpoint + LLM script-checkpoint extractor + Option A multi-file same-deal default + `.planning/phase2-docs` bundled in Dockerfile)
+- **Previous Vercel:** `dpl_F5oVygMyiRMaCPFjxZoDxyJmG574` (workflow pill + AI call_type + admin backfill)
 - **Project rootDirectory:** `frontend-v3` ✓
 - **Project framework:** `nextjs` ✓
 - **Auto-deploy:** **NOT wired** — `link.deployHooks: []` on the Vercel project. Pushes to `main` do not trigger Vercel. Trigger via API POST `v13/deployments` with `gitSource={type:github,repoId:1233382040,ref:main,sha:<HEAD>}`.
