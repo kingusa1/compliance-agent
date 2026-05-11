@@ -81,6 +81,24 @@ Each was transcribed via Deepgram locally for ground truth, then uploaded via th
 - Vercel deploys triggered via the API (`POST /v13/deployments` with `gitSource.sha`).
 - Final live alias: `compliance-agent-mu.vercel.app` → `dpl_A7b3in3BvsyzkRJQKyL7CYCsSrXL` (SHA `71dc525`).
 
+## Final upload batch (extended run)
+
+After the initial 16-upload set, uploaded another set to broaden the dataset:
+- `T C Brown And Son/FULL CALL.mp3` + `amendment.mp3`
+- `Mr Babar Ali Ta Malik Hair Stylist/Lead Gen.mp3` + `Passover.mp3`
+- `Richard Stebbings Funeral Services Ltd/LG.mp3` + `Passover.mp3` + `C call.mp3`
+- `Little Dowran Farm/lg.mp3` + `verbal.mp3`
+
+Plus a second round of `quality-resolve` that merged 9 buckets (Crosby Grange, Dorothy's, Newhouse Farm, Westbury Hall, Quarry Republic Arden, Corner Cuts (the spoken name for Korner Kutz), TC Brown, Baba).
+
+**Final live DB state:** 37 calls · 22 customers · 24 deals · 8 compliant · 28 non-compliant · 21.6% compliance rate.
+
+## Known follow-ups (out of scope today)
+
+- **Queue master table still renders long filename column on rows whose pipeline ran pre-deploy.** The `/api/queue` payload now includes `customer_name`/`agent_name`/`score` correctly (verified via fetch), and `shortFilename()` is applied to `/compliant` + `/non-compliant` + `CallPreviewPanel`. The Queue page bundle may be Next.js SSR-cached on Vercel; a hard cache purge on the project would refresh. Click-through to call detail and the right-rail preview still work, so this is cosmetic.
+- **Agent name normaliser threshold (0.84)** is conservative — "Alex Fitz" vs "Alex Fitton" (sim 0.80) don't collapse. Lower threshold risks false positives; better path is a seeded canonical-name list per Watt's roster.
+- **`call_type='full'` from short audio clips** (<60s) lands as compliant 0/3 with no script context. Add a `< 60s = incomplete fragment` flag so reviewers don't waste sign-off cycles.
+
 ## Credentials still good for next session
 
 - Email: `admin@compliance-agent.local`

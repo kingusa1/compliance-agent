@@ -29,13 +29,13 @@ tags: [state, live, ground-truth]
 - **Service:** `compliance-agent` on project `compliance-agent-backend`
 - **Latest commit deployed:** `c087493` (frontend type fix); backend latest `4e77515` (auto Quality Agent)
 
-## Database state (post 2026-05-11 overnight session)
-- **Calls:** 27 total
-- **Customers:** 13
-- **Deals:** 14 — all `verified` lifecycle (B6 fix landed)
-- **Compliant:** 7 (Bonnie Clark, Peter Higher, Samantha Randleson, Jillian Rosina Fitzsimons, John Inwood, Saiful Raja Chowdhury, Zoe Helen Larkin)
-- **Non-compliant:** 19
-- **Compliance rate:** 26%
+## Database state (post 2026-05-11 overnight session, after final upload batch)
+- **Calls:** 37 total
+- **Customers:** 22 (Quality Agent merged 9 buckets)
+- **Deals:** 24
+- **Compliant:** 8
+- **Non-compliant:** 28
+- **Compliance rate:** 21.6%
 - Earlier (pre-overnight) state: see [[../04_Sessions/2026-05-10_Session_audit_late]]
 
 ## Test login (admin)
