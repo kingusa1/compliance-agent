@@ -161,6 +161,12 @@ function WorkflowBar({
   current: number;
   supplier?: string | null;
 }) {
+  // The "stage count" the user cares about is the REQUIRED count (3 for
+  // E.ON, 4 for others) — corrective steps (Amendment / C-Call) are
+  // rendered as optional trailing slots and don't count toward the
+  // headline number.
+  const correctiveSet = new Set<string>(["amendment", "c_call"]);
+  const requiredCount = steps.filter((s) => !correctiveSet.has(s)).length;
   return (
     <div style={{ marginTop: 10 }}>
       <div
@@ -172,16 +178,16 @@ function WorkflowBar({
           alignItems: "center",
           gap: 8,
         }}
-        title={_stageBlurb(supplier, steps.length)}
+        title={_stageBlurb(supplier, requiredCount)}
       >
         <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>
-          {steps.length}-stage workflow
+          {requiredCount}-stage workflow
         </span>
         <span>·</span>
         <span>{supplier ?? "Unknown supplier"}</span>
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: 10, color: "var(--text-faint)" }}>
-          hover for explanation
+          + {steps.length - requiredCount} corrective · hover for details
         </span>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
