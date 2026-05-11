@@ -10,7 +10,7 @@
  *   4.  How an upload becomes a verdict (the 13-step pipeline)
  *   5.  Compliance taxonomy (8 standards / 27 codes / 4 categories /
  *       3 severities / 4 risk tags / 8 call types)
- *   6.  Deal lifecycle (E.ON 2-stage vs 3-stage suppliers)
+ *   6.  Deal lifecycle (E.ON 3-stage vs 4-stage suppliers + 6 stages + state machine)
  *   7.  Reviewer playbook (claim → review → sign-off / override)
  *   8.  Glossary
  *   9.  Troubleshooting + where to get help
@@ -221,12 +221,116 @@ const COMPLIANCE_TAXONOMY: { title: string; description: string; rows: string[] 
   },
 ];
 
-const LIFECYCLE_TABLE: { supplier: string; phases: string[]; required: number; corrective: string[] }[] = [
-  { supplier: "E.ON Next", phases: ["lead_gen", "closer"], required: 2, corrective: ["c_call", "amendment"] },
-  { supplier: "British Gas", phases: ["lead_gen", "closer", "standalone_loa"], required: 3, corrective: ["c_call", "amendment"] },
-  { supplier: "EDF Energy", phases: ["lead_gen", "closer", "standalone_loa"], required: 3, corrective: ["c_call", "amendment"] },
-  { supplier: "Scottish Power", phases: ["lead_gen", "closer", "standalone_loa"], required: 3, corrective: ["c_call", "amendment"] },
-  { supplier: "Pozitive", phases: ["lead_gen", "closer", "standalone_loa"], required: 3, corrective: ["c_call", "amendment"] },
+const LIFECYCLE_TABLE: { supplier: string; phases: string[]; required: number; corrective: string[]; note: string }[] = [
+  {
+    supplier: "E.ON Next",
+    phases: ["lead_gen", "passover", "closer"],
+    required: 3,
+    corrective: ["c_call", "amendment"],
+    note: "LOA wording is bundled INTO the Closer call — no separate LOA recording needed.",
+  },
+  {
+    supplier: "British Gas",
+    phases: ["lead_gen", "passover", "closer", "standalone_loa"],
+    required: 4,
+    corrective: ["c_call", "amendment"],
+    note: "Standalone LOA call required after Closer.",
+  },
+  {
+    supplier: "British Gas Lite (BGL)",
+    phases: ["lead_gen", "passover", "closer", "standalone_loa"],
+    required: 4,
+    corrective: ["c_call", "amendment"],
+    note: "Standalone LOA call required after Closer.",
+  },
+  {
+    supplier: "EDF Energy",
+    phases: ["lead_gen", "passover", "closer", "standalone_loa"],
+    required: 4,
+    corrective: ["c_call", "amendment"],
+    note: "DDWA verbal + LOA are separate recordings.",
+  },
+  {
+    supplier: "Scottish Power",
+    phases: ["lead_gen", "passover", "closer", "standalone_loa"],
+    required: 4,
+    corrective: ["c_call", "amendment"],
+    note: "For-Business tariff requires a standalone authority confirmation call.",
+  },
+  {
+    supplier: "Pozitive",
+    phases: ["lead_gen", "passover", "closer", "standalone_loa"],
+    required: 4,
+    corrective: ["c_call", "amendment"],
+    note: "Micro-business threshold + GDPR T&Cs each require explicit consent on a standalone LOA.",
+  },
+];
+
+const STAGE_DETAILS: {
+  key: string;
+  label: string;
+  blurb: string;
+  filenameHints: string[];
+}[] = [
+  {
+    key: "lead_gen",
+    label: "Lead Gen",
+    blurb:
+      "Cold/warm intro. Watt agent introduces themselves, qualifies interest, captures site + contract details. Identity disclosure happens here.",
+    filenameHints: ["lead.mp3", "Lead Gen.mp3", "LG.mp3", "lg.mp3"],
+  },
+  {
+    key: "passover",
+    label: "Passover",
+    blurb:
+      "Warm handover from the Lead Gen agent to the Closer. The lead agent stays on the line, introduces the closer, then drops off. Without a clean passover, the closer is essentially a cold call again.",
+    filenameHints: ["passover.mp3", "Passover.mp3", "pass over"],
+  },
+  {
+    key: "closer",
+    label: "Closer",
+    blurb:
+      "The legally-binding verbal contract reading. Closer agent reads the supplier script, customer agrees, deal is captured. For E.ON, the LOA section is bundled INTO this call.",
+    filenameHints: ["verbal.mp3", "closer.mp3", "full call.mp3"],
+  },
+  {
+    key: "standalone_loa",
+    label: "Standalone LOA",
+    blurb:
+      "Separate Letter-of-Authority call required by every supplier EXCEPT E.ON. Confirms the customer authorises Watt to act on their behalf with the new supplier. 12-month validity.",
+    filenameHints: ["loa.mp3", "letter of authority"],
+  },
+  {
+    key: "c_call",
+    label: "C-Call",
+    blurb:
+      "Confirmation callback — sometimes from the supplier side, sometimes Watt. Optional corrective step, NOT required for verification but available on any supplier.",
+    filenameHints: ["c call.mp3", "c_call.mp3"],
+  },
+  {
+    key: "amendment",
+    label: "Amendment",
+    blurb:
+      "Post-sale fix-up call when something went wrong on the verbal or LOA (wrong rate read, name correction, missing line). Optional corrective; doesn't block verified.",
+    filenameHints: ["amendment.mp3"],
+  },
+];
+
+const LIFECYCLE_STATES: { state: string; meaning: string }[] = [
+  { state: "open", meaning: "No qualifying call yet." },
+  { state: "lead_gen_done", meaning: "Lead Gen done; nothing else yet." },
+  { state: "passover_done", meaning: "Passover landed; Closer still pending." },
+  {
+    state: "closer_done",
+    meaning:
+      "Closer in; one or more required follow-ups still missing (e.g. Standalone LOA for non-E.ON).",
+  },
+  { state: "verified", meaning: "Every required stage finalised. Deal is contractually complete." },
+  {
+    state: "amendment_done / c_call_done",
+    meaning: "Corrective post-verification states.",
+  },
+  { state: "rejected", meaning: "Terminal. Manual reviewer override." },
 ];
 
 const REVIEWER_STEPS: { num: number; title: string; description: string }[] = [
@@ -471,14 +575,54 @@ export default function GuidePage() {
         </Section>
 
         {/* 6 · Lifecycle */}
-        <Section id="lifecycle" icon={ListChecks} title="Deal lifecycle (E.ON 2-stage vs others 3-stage)">
-          <p className="mb-3 text-[13px] text-[var(--text-muted)]">
-            E.ON Next bundles the Letter of Authority into the closer call, so it only
-            needs 2 required calls. Every other supplier requires a separate LOA call (3
-            required). On top, any supplier can have corrective <code>c_call</code> /
-            <code>amendment</code> calls — these don't block the deal from verifying.
+        <Section id="lifecycle" icon={ListChecks} title="Deal lifecycle (E.ON 3-stage vs others 4-stage)">
+          {/* Headline rule */}
+          <div className="mb-5 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 text-[13px] leading-relaxed text-emerald-100/90">
+            <strong className="text-emerald-100">E.ON Next requires 3 stages</strong>{" "}
+            (Lead Gen → Passover → Closer; LOA is bundled into the Closer).{" "}
+            <strong className="text-emerald-100">Every other supplier requires 4 stages</strong>{" "}
+            (+ Standalone LOA as a separately-recorded call).{" "}
+            <strong className="text-emerald-100">Amendment</strong> and{" "}
+            <strong className="text-emerald-100">C-Call</strong> are corrective stages
+            available to any supplier; they never block verification.
+          </div>
+
+          {/* The 6 lifecycle stages */}
+          <h3 className="mb-2 text-[14px] font-semibold text-[var(--text-primary)]">The 6 lifecycle stages</h3>
+          <p className="mb-3 text-[12.5px] text-[var(--text-muted)]">
+            Every recording you upload is classified as one of these stages.
+            Classification happens (a) from the filename if the basename matches a known
+            hint, then (b) from the audio content via Opus 4.7. The stage is stored as{" "}
+            <code className="font-mono text-[11.5px]">Call.call_type</code> and feeds the
+            deal-lifecycle resolver.
           </p>
-          <div className="overflow-hidden rounded-xl border border-[var(--border-subtle)]">
+          <div className="mb-6 grid gap-2.5 md:grid-cols-2">
+            {STAGE_DETAILS.map((s) => (
+              <div
+                key={s.key}
+                className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-3"
+              >
+                <div className="text-[13px] font-semibold text-[var(--text-primary)]">{s.label}</div>
+                <div className="mt-1 text-[12px] leading-relaxed text-[var(--text-muted)]">
+                  {s.blurb}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {s.filenameHints.map((h) => (
+                    <span
+                      key={h}
+                      className="rounded bg-[var(--bg-elev3)] px-1.5 py-0.5 font-mono text-[10.5px] text-[var(--text-muted)]"
+                    >
+                      {h}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Per-supplier required stages */}
+          <h3 className="mb-2 text-[14px] font-semibold text-[var(--text-primary)]">Per-supplier required stages</h3>
+          <div className="mb-6 overflow-hidden rounded-xl border border-[var(--border-subtle)]">
             <table className="w-full text-[12.5px]">
               <thead className="bg-[var(--bg-elev2)] text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
                 <tr>
@@ -486,20 +630,52 @@ export default function GuidePage() {
                   <th className="px-3 py-2 text-left">Required phases</th>
                   <th className="px-3 py-2 text-center">#</th>
                   <th className="px-3 py-2 text-left">Corrective (any time)</th>
+                  <th className="px-3 py-2 text-left">Note</th>
                 </tr>
               </thead>
               <tbody>
                 {LIFECYCLE_TABLE.map((r) => (
                   <tr key={r.supplier} className="border-t border-[var(--border-subtle)]">
                     <td className="px-3 py-2 font-medium text-[var(--text-primary)]">{r.supplier}</td>
-                    <td className="px-3 py-2 text-[var(--text-muted)] font-mono">{r.phases.join(" → ")}</td>
+                    <td className="px-3 py-2 font-mono text-[var(--text-muted)]">{r.phases.join(" → ")}</td>
                     <td className="px-3 py-2 text-center font-mono tabular-nums text-[var(--emerald-400)]">{r.required}</td>
-                    <td className="px-3 py-2 text-[var(--text-dim)] font-mono">{r.corrective.join(" / ")}</td>
+                    <td className="px-3 py-2 font-mono text-[var(--text-dim)]">{r.corrective.join(" / ")}</td>
+                    <td className="px-3 py-2 text-[var(--text-muted)]">{r.note}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+
+          {/* How status is computed */}
+          <h3 className="mb-2 text-[14px] font-semibold text-[var(--text-primary)]">
+            How the deal status is computed
+          </h3>
+          <p className="mb-3 text-[12.5px] leading-relaxed text-[var(--text-muted)]">
+            Every time a call finalises, the backend runs{" "}
+            <code className="font-mono text-[11.5px]">derive_lifecycle_status(deal, calls)</code>{" "}
+            in <code className="font-mono text-[11.5px]">backend/app/deal_lifecycle.py</code>.
+            It collects the set of phases completed (from each call&apos;s{" "}
+            <code className="font-mono text-[11.5px]">call_type</code>), compares against
+            the supplier-specific required list, and returns one of:
+          </p>
+          <ul className="space-y-1 text-[12.5px] text-[var(--text-muted)]">
+            {LIFECYCLE_STATES.map((s) => (
+              <li key={s.state} className="flex items-start gap-2">
+                <span className="mt-1.5 size-1 flex-shrink-0 rounded-full bg-[var(--emerald-400)]" />
+                <span>
+                  <strong className="text-[var(--text-primary)]">{s.state}</strong> — {s.meaning}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-3 text-[12.5px] leading-relaxed text-[var(--text-muted)]">
+            A <code className="font-mono text-[11.5px]">full call.mp3</code> recording is
+            treated specially — because such a file usually captures the entire
+            E.ON-style bundled flow in one go, it counts as covering{" "}
+            <strong>Lead Gen + Passover + Closer</strong> simultaneously, which is enough
+            to verify any E.ON deal on its own.
+          </p>
         </Section>
 
         {/* 7 · Reviewer playbook */}

@@ -207,8 +207,8 @@ export default function CustomersListPage() {
         />
       </div>
 
-      <HelpBanner id="customers" title="Customer rollup" href="/workflow">
-        Each row is a customer (legal name) with a count of deals + calls. Click a row to see every deal grouped by lifecycle stage and the supplier-specific workflow: <strong>E.ON = 3 stages</strong> (Lead Gen → Passover → Closer, LOA bundled) · <strong>everyone else = 4 stages</strong> (+ Standalone LOA). Suppliers and agent names are auto-detected from the call audio. See the dedicated <a href="/workflow" style={{color: 'var(--emerald)'}}>Workflow guide</a>.
+      <HelpBanner id="customers" title="Customer rollup" href="/guide#lifecycle">
+        Each row is a customer (legal name) with a count of deals + calls. Click a row to see every deal grouped by lifecycle stage and the supplier-specific workflow: <strong>E.ON = 3 stages</strong> (Lead Gen → Passover → Closer, LOA bundled) · <strong>everyone else = 4 stages</strong> (+ Standalone LOA). Suppliers and agent names are auto-detected from the call audio. See the full <a href="/guide#lifecycle" style={{color: 'var(--emerald)'}}>lifecycle guide</a>.
       </HelpBanner>
 
       {/* Table */}
