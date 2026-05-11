@@ -77,6 +77,62 @@ curl -sX POST --ssl-no-revoke \
 
 `repoId` is `1233382040` (kingusa1/compliance-agent), NOT `1024258735`.
 
+## CI fix — green for the first time in weeks (commit `9efca3b`)
+
+GitHub Actions `test` + `coverage` had been red on every push for 12+ commits.
+Three root causes, fixed in this session:
+
+1. **Multiple alembic heads** — branches `20260511_passover` and
+   `376c8a03b138` (pipeline_step_log) diverged from a common ancestor, so
+   `alembic upgrade head` aborted on CI's fresh Postgres. **Fix:** merge
+   migration `4ccd8ce8e7e0_merge_heads_lifecycle_passover_pipeline_.py`.
+2. **Schema drift on `calls.file_hash`** — column existed in
+   `app/models.py:194` and on prod (`db.create_all` earlier), but no
+   alembic migration. CI's fresh DB blew up on every INSERT. **Fix:**
+   migration `d5ac554dce56_add_file_hash_column_to_calls.py` with
+   `ADD COLUMN IF NOT EXISTS` so it no-ops on prod and creates on CI.
+   Verified zero remaining drift: model has 58 columns, all 58 are
+   covered by migrations.
+3. **Stale tests** — `test_deal_lifecycle.py` asserted the OLD 2/3 matrix
+   (E.ON = lead_gen+closer, BG = lead_gen+closer+standalone_loa); 3 tests
+   updated to include `passover`. `test_upload_deal_linkage.py` used
+   identical `_mini_wav()` bytes for every upload, so the content-hash
+   dedup short-circuited the 2nd+ upload to return the first call instead
+   of creating a new deal; added per-upload UUID nonce so each request
+   has a unique SHA-256.
+
+After commit `9efca3b`: **737 tests passing, 0 failing, both jobs green**.
+
+### Sanity script for the next "missing column" surprise
+
+```bash
+cd backend && ./venv/Scripts/python.exe << 'PY'
+import re
+from pathlib import Path
+mig_cols = set()
+for f in Path('alembic/versions').glob('*.py'):
+    txt = f.read_text(encoding='utf-8', errors='ignore')
+    if "create_table('calls'" in txt or 'create_table("calls"' in txt:
+        m = re.search(r"create_table\(\s*['\"]calls['\"]", txt)
+        start, depth, i = m.end(), 1, m.end()
+        while i < len(txt) and depth > 0:
+            depth += (txt[i]=='(') - (txt[i]==')'); i += 1
+        for col in re.finditer(r"sa\.Column\(\s*['\"]([a-z_][a-z0-9_]*)['\"]", txt[start:i]):
+            mig_cols.add(col.group(1))
+    for m in re.finditer(r"add_column\(\s*['\"]calls['\"]\s*,\s*sa\.Column\(\s*['\"]([a-z_][a-z0-9_]*)['\"]", txt):
+        mig_cols.add(m.group(1))
+    for m in re.finditer(r"ALTER\s+TABLE\s+calls\s+ADD\s+COLUMN(?:\s+IF\s+NOT\s+EXISTS)?\s+([a-z_][a-z0-9_]*)", txt, re.I):
+        mig_cols.add(m.group(1).lower())
+models = Path('app/models.py').read_text(encoding='utf-8')
+s = models.index('class Call(Base)'); e = models.index('\nclass ', s+1)
+model_cols = sorted(set(re.findall(r'^\s+([a-z_][a-z0-9_]*)\s*=\s*Column\(', models[s:e], re.M)))
+print('missing migrations for:', [c for c in model_cols if c not in mig_cols])
+PY
+```
+
+Run this whenever the Call model is edited; if it prints anything, add
+a migration before pushing.
+
 ## Next session
 
 - Wait for Aly's reply to the 4-blocker ask
