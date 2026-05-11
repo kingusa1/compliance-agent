@@ -184,11 +184,13 @@ export default function DashboardPage() {
       label: "Compliance rate",
       value:
         stats.data?.compliance_rate != null
-          ? `${Math.round(stats.data.compliance_rate * 100)}%`
+          // /api/stats already returns the rate as a percent (e.g. 25.9 for
+          // 7/27 calls compliant) — just round, do NOT multiply by 100 again.
+          ? `${Math.round(stats.data.compliance_rate)}%`
           : "—",
       hint: "Across all reviewed calls",
       tone:
-        stats.data?.compliance_rate != null && stats.data.compliance_rate >= 0.8
+        stats.data?.compliance_rate != null && stats.data.compliance_rate >= 80
           ? "good"
           : "warn",
     },
