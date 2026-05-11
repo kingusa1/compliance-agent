@@ -352,24 +352,35 @@ async def upload_call(
     # workflow gives us at intake time. Lifecycle stays "open" otherwise
     # because `call_type_to_phase("full")` returns None. (audit-late B6.)
     if not call_type or call_type == "full":
+        import os as _os
+        import re as _re
+
         _fn_lower = (file.filename or "").lower()
-        # Order matters — `loa` is checked after `lead` because "lead gen
-        # loa" exists; specific markers ("amendment", "c call", "passover")
-        # win over generic ones.
-        if "amendment" in _fn_lower:
+        _stem = _os.path.splitext(_fn_lower)[0].strip()
+        # Order matters — specific markers ("amendment", "c call",
+        # "passover") win over generic ones. Both stem-match (e.g.
+        # "loa.mp3" → "loa") and substring-match (e.g. "<dir>/loa.mp3")
+        # are accepted; the substring fallback uses \b word boundaries
+        # so "loa" inside "FloA" doesn't false-positive.
+        def _has(token: str) -> bool:
+            return _stem == token or bool(_re.search(rf"\b{_re.escape(token)}\b", _fn_lower))
+
+        if _has("amendment"):
             call_type = "amendment"
-        elif " c call" in _fn_lower or "c_call" in _fn_lower or "c-call" in _fn_lower:
+        elif _stem in ("c call", "c_call", "c-call", "ccall") or _has("c call") or _has("c_call"):
             call_type = "c_call"
-        elif "lead gen" in _fn_lower or "lead-gen" in _fn_lower or "leadgen" in _fn_lower:
+        elif _stem in ("lead", "lead gen", "lead_gen") or _has("lead gen") or _has("lead-gen") or _has("leadgen") or _stem == "lead":
             call_type = "lead_gen"
-        elif "passover" in _fn_lower or "pass over" in _fn_lower:
+        elif _has("passover") or _has("pass over"):
             # "Passover" in Watt parlance = the lead-gen-to-closer handover;
             # the call itself is the closer.
             call_type = "closer"
-        elif "loa" in _fn_lower or "letter of authority" in _fn_lower:
+        elif _has("loa") or _has("letter of authority") or _stem == "loa":
             call_type = "standalone_loa"
-        elif "verbal" in _fn_lower or "verbal_contract" in _fn_lower:
+        elif _has("verbal") or _has("verbal_contract") or _stem == "verbal":
             # Verbal-contract recordings are closer-stage by definition.
+            call_type = "closer"
+        elif _has("closer") or _stem == "closer":
             call_type = "closer"
         # else: fall through with call_type="full"; pipeline still works.
 
