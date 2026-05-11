@@ -45,37 +45,35 @@ from app.analysis import _call_llm
 from app.logger import log
 
 
-PHRASE_PACK_EXTRACT_PROMPT = """You are converting Watt Utilities' phrase-detection dataset into a structured rule pack a compliance analyzer can grade against.
+PHRASE_PACK_EXTRACT_PROMPT = """You are converting Watt Utilities phrase-detection dataset rows into structured compliance rules. You will emit EXACTLY ONE checkpoint object per input row — same count, same order, same source IDs. Do not merge similar rows. Do not skip rows. Do not consolidate or paraphrase the dataset down to fewer rules. The count of output objects MUST equal the count of input rows shown below ({row_count} rows).
 
-You are processing rules for the stage: **{stage_label}**
-Target call_types these rules grade: **{call_types}**
+Stage label: {stage_label}
+Target call_types: {call_types}
 
-The dataset rows you must process are pasted below. Each row encodes one risk pattern — a phrase the agent said, OR a behaviour, OR a missing required statement — at a severity (Critical / High / Medium).
+Each input row has 7 pipe-delimited cells:
+  ID | Stage | Category | Severity-and-Trigger | Why-flagged | Approved-wording | Action
 
-Convert EVERY row that applies to "{stage_label}" into a checkpoint object:
+For EACH row, emit one checkpoint with EVERY field below. Be terse. Be 1:1.
 
-  "section":      1-based integer; preserve original ID order
-  "name":         5-15 words; short rule label
-  "required":     1-2 sentences describing what the agent must do (NOT what they must avoid) for the rule to PASS. Phrase it as a positive obligation: "Agent must state…", "Agent must avoid…", "Agent must confirm…"
-  "key_phrases":  array of 3-8 lower-case distinctive strings the analyzer can grep — include the trigger AND semantic equivalents. For absence-of-statement rules ("no mention of Watt"), include the phrases the agent OUGHT to say (so the analyzer can verify presence). For say-this-not-that rules, include both forbidden and approved phrases.
+  "section":      copy the row's ID number (the first cell, an integer)
+  "name":         5-15 words derived from the trigger or category
+  "required":     One sentence describing what the agent must DO to PASS this specific rule. If the source is "no mention of Watt Utilities in first 20s", the requirement is "Agent must say 'Watt Utilities' or the company name within first 20 seconds." Phrase positively.
+  "key_phrases":  3-6 lower-case distinctive phrases. Include both forbidden trigger phrases and approved-alternative phrases when both are in the source. NO filler words.
   "customer_response_required": boolean
-  "strictness":   "mandatory" | "verbatim" | "customer_yes"
+  "strictness":   "mandatory" (default) or "verbatim" or "customer_yes"
   "line_number":  null
-  "severity":     "critical" | "high" | "medium" (from the source row)
-  "category":     short text — preserve from source (Identity / Pricing / etc.)
-  "approved_alternative": from the source row or null
-  "action":       from the source row or null
+  "severity":     "critical" | "high" | "medium" — read the leading word in cell 4
+  "category":     copy cell 3 verbatim
+  "approved_alternative": copy cell 6 (truncate to 200 chars) or null
+  "action":       copy cell 7 or null
 
-OUTPUT: JSON array only. No prose, no code fences, no surrounding text.
-
-CRITICAL
-- One checkpoint per applicable rule row.
-- Skip rows that don't match the target stage.
-- Lowercase key_phrases, no common filler words.
+OUTPUT FORMAT
+- Single JSON array starting `[` and ending `]`.
+- No prose, no code fences, no commentary outside the array.
 - Use double quotes (JSON).
-- Preserve source ID ordering in "section".
+- {row_count} input rows MUST produce {row_count} output objects.
 
-ROWS:
+ROWS ({row_count} total):
 {rows_markdown}
 
 JSON ARRAY:"""
@@ -217,6 +215,7 @@ async def _extract_chunk(
         PHRASE_PACK_EXTRACT_PROMPT
         .replace("{stage_label}", stage_label)
         .replace("{call_types}", call_types)
+        .replace("{row_count}", str(len(rows)))
         .replace("{rows_markdown}", "\n".join(rows))
     )
     try:
