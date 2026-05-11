@@ -873,26 +873,66 @@ async def _step_analyze_checkpoints(
     db.query(CallCheckpoint).filter_by(call_id=call_id).delete()
     db.flush()
 
-    script = None
-    checkpoints_def: list = []
-    if call.script_id:
-        script = db.query(Script).filter_by(id=call.script_id).first()
-        if script:
-            checkpoints_def = json.loads(script.checkpoints) or []
-            log.info(
-                f"\U0001f4cb SCRIPT matched call_id={call_id} → "
-                f"\"{script.script_name}\" ({len(checkpoints_def)} checkpoints)"
+    # ── Rubric Router ───────────────────────────────────────────────
+    # Pick which rule set to grade against based on call_type. The router
+    # encapsulates Aly's rule (lead-gen calls don't get graded against
+    # closer cps) + LOA routing + the phrase-pack fallback. Pure read-only;
+    # returns a Rubric we apply below.
+    from app.agents.rubric_router import route as _route_rubric
+    from app.models import AgentTrace as _AgentTrace
+    import uuid as _uuid
+
+    rubric = _route_rubric(call, db)
+    log.info(f"\U0001f4cb RUBRIC call_id={call_id} → {rubric.kind} · {rubric.reason}")
+
+    # Audit row so the call-detail UI can show "Stage X: Rubric router
+    # picked phrase_pack/lead_gen (88 rules) because call_type=lead_gen".
+    # Best-effort — failure here must not block the pipeline.
+    try:
+        db.add(
+            _AgentTrace(
+                id=str(_uuid.uuid4()),
+                call_id=call_id,
+                run_id=str(_uuid.uuid4()),
+                turn=0,
+                role="tool",
+                tool_name="rubric_router",
+                tool_input=json.dumps({"call_type": rubric.call_type}),
+                tool_output=json.dumps(
+                    {
+                        "kind": rubric.kind,
+                        "script_id": str(rubric.script.id) if rubric.script else None,
+                        "script_name": (rubric.script.script_name if rubric.script else None),
+                        "checkpoint_count": (
+                            len(json.loads(rubric.script.checkpoints or "[]") or [])
+                            if rubric.script
+                            else 0
+                        ),
+                    }
+                ),
+                content=rubric.reason,
+                model="deterministic",
             )
-            if not checkpoints_def:
-                # The script row is metadata-only (e.g. seeded before the
-                # markdown extracts shipped). Don't return 0/0 — drop into
-                # the V1 third-party-disclosure analyzer so the reviewer
-                # still sees a real verdict.
-                log.warning(
-                    f"\U0001f4cb SCRIPT empty-checkpoints call_id={call_id} → "
-                    "falling through to V1 third-party-disclosure analyzer"
-                )
-                script = None  # signals the fallback path below
+        )
+        db.flush()
+    except Exception as _e:
+        log.warning(f"agent_trace write skipped for rubric_router: {_e}")
+
+    script = rubric.script
+    checkpoints_def: list = []
+    if script:
+        try:
+            checkpoints_def = json.loads(script.checkpoints or "[]") or []
+        except Exception:
+            checkpoints_def = []
+        if not checkpoints_def:
+            # Synthetic phrase-pack with empty rules, or supplier script
+            # row that exists but has no cps yet. Fall through to V1.
+            log.warning(
+                f"\U0001f4cb RUBRIC matched script \"{script.script_name}\" "
+                "but checkpoints empty → V1 fallback"
+            )
+            script = None
         if script and checkpoints_def:
             parsed_word_data = []
             if call.word_data:

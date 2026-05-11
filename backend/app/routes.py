@@ -1579,6 +1579,100 @@ async def admin_backfill_tracker(db: Session = Depends(get_db)):
     }
 
 
+@router.post("/api/admin/ingest-phrase-packs", status_code=200)
+async def admin_ingest_phrase_packs(
+    apply: bool = False,
+    only_phase: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Convert the Watt phrase-detection dataset into per-call_type
+    phrase packs stored as synthetic `Script` rows with
+    supplier_name='PHRASE_PACK'. The rubric router picks one of these
+    when a call's call_type is not 'closer/verbal/full' and there's no
+    supplier-specific LOA script.
+
+    Pack rows shipped:
+      - PHRASE_PACK / lead_gen           (88 Lead Generation rules)
+      - PHRASE_PACK / passover           (Lead Gen subset)
+      - PHRASE_PACK / verbal_confirmation (32 Verbal Confirmation rules)
+      - PHRASE_PACK / c_call              (Verbal Confirmation subset)
+      - PHRASE_PACK / amendment           (Verbal Confirmation subset)
+
+    apply=true     → persist (upsert by supplier+phase).
+    only_phase=X   → restrict to one phase, useful for re-ingesting one
+                      pack after a prompt tweak.
+    """
+    from pathlib import Path
+    from app.agents.phrase_pack_extractor import extract_phrase_pack, pack_definitions
+    from app.watt_compliance.supplier_seed import docs_dir
+    from app.agents.rubric_router import PHRASE_PACK_SUPPLIER
+
+    src = docs_dir() / "compliance_xai__watt_ai_phrase_detection_dataset_1.md"
+    if not src.exists():
+        raise HTTPException(500, f"phrase dataset not found at {src}")
+    md = src.read_text(encoding="utf-8", errors="ignore")
+
+    defs = pack_definitions()
+    if only_phase:
+        defs = [d for d in defs if d["phase"] == only_phase]
+        if not defs:
+            raise HTTPException(400, f"unknown phase {only_phase!r}")
+
+    results: list[dict] = []
+    total_rules = 0
+    for d in defs:
+        cps = await extract_phrase_pack(
+            markdown=md,
+            stage_label=d["stage_label"],
+            call_types=d["call_types"],
+            stage_filter=d["stage_filter"],
+        )
+        if apply and cps:
+            existing = (
+                db.query(Script)
+                .filter(Script.supplier_name == PHRASE_PACK_SUPPLIER)
+                .filter(Script.lifecycle_phase == d["phase"])
+                .first()
+            )
+            if existing:
+                existing.checkpoints = json.dumps(cps)
+                existing.active = True
+                existing.script_name = f"Watt Phrase Pack · {d['stage_label']}"
+                existing.version = "phrase-dataset-v1"
+                existing.mode = "phrase_pack"
+            else:
+                db.add(
+                    Script(
+                        supplier_name=PHRASE_PACK_SUPPLIER,
+                        script_name=f"Watt Phrase Pack · {d['stage_label']}",
+                        version="phrase-dataset-v1",
+                        mode="phrase_pack",
+                        lifecycle_phase=d["phase"],
+                        checkpoints=json.dumps(cps),
+                        active=True,
+                    )
+                )
+        total_rules += len(cps)
+        results.append(
+            {
+                "phase": d["phase"],
+                "stage": d["stage_label"],
+                "rule_count": len(cps),
+                "sample_names": [c["name"] for c in cps[:3]],
+            }
+        )
+    if apply:
+        db.commit()
+    else:
+        db.rollback()
+    return {
+        "applied": apply,
+        "packs": len(defs),
+        "total_rules": total_rules,
+        "results": results,
+    }
+
+
 @router.post("/api/admin/reanalyze-all", status_code=200)
 async def admin_reanalyze_all(
     apply: bool = False,
