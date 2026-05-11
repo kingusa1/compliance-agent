@@ -123,6 +123,47 @@ Tracker now reconciles exactly:
 - Compliant · 8 ↔ 8 compliant calls
 - Sum: 36 of 37 calls (1 failed = no rejection produced, intentional)
 
+## Post-tracker batch fixes
+
+After the user reported "the tracker is fucked up" (turned out to be a 1-second
+empty-state flash on every fresh page load), worked through the
+backlog of accuracy issues:
+
+1. **Tracker empty-state flash** — `frontend-v3/src/app/(admin)/tracker/page.tsx`
+   was checking only `!q.isLoading` before rendering "Nice work — zero open
+   rejections". During refetches (tab switch, navigation back to page,
+   stale-time expiry) `isLoading=false` but `isFetching=true` for ~1s
+   while the request is in flight. Replaced with a 6-row skeleton on
+   `isLoading || isFetching`. Commit `68ee0b0`.
+
+2. **Legacy `call_type='full'` re-classification** — 19 calls had
+   `call_type='full'` from before the filename-hint pre-pass. 4 of them
+   had filenames that match the hints (`__FUL...`, `__Cro... lead gen call`,
+   `__full call.mp3`). Re-classified in-place to `closer` / `lead_gen`.
+   The remaining 15 are genuinely full single-call recordings with no
+   workflow keyword in the basename (e.g. `Ms Bonnie Clarke.mp3`,
+   `Peter hyett.mp3`); they verify correctly under the
+   "full counts as lead_gen+passover+closer" rule.
+
+3. **Quality Agent re-run** — merged 9 buckets including
+   Rich Stevings → Richard Stebbings (manual earlier), Crosby Grange (2),
+   Dorothy's (3), Newhouse (2), Westbury (2), Curry Republic (3),
+   Corner Cuts (3), TC Brown (2), Baba (2). 24 deals → 23,
+   22 customers → 21.
+
+4. **Agent-name normaliser threshold** lowered from 0.84 → 0.78 in
+   `backend/app/agents/name_normaliser.py`. Catches "Alex Fitz" /
+   "Alex Fitton" (similarity 0.80) which previously stayed separate.
+   Commit `d9eae96`.
+
+5. **Live state after batch** (verified via Playwright + `/api/stats`):
+   - 37 calls · 21 customers · 23 deals
+   - 8 compliant · 28 non-compliant · 22% compliance rate
+   - Lifecycle: 12 verified, 3 passover_done, 2 closer_done,
+     2 lead_gen_done, 2 open, 1 amendment_done, 1 c_call_done
+   - Tracker Active tab shows 28 rows immediately on hard reload
+   - Tracker Compliant tab shows 8 rows
+
 ## Lingering follow-ups
 
 - MPAN/MPRN + Value columns still empty on most tracker rows — the
