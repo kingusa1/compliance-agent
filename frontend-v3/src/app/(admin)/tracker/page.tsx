@@ -163,7 +163,22 @@ export default function TrackerPage() {
         </div>
 
         <div className="flex-1 overflow-auto px-6 py-3">
-          {!q.isLoading && rows.length === 0 ? (
+          {q.isLoading || q.isFetching ? (
+            // Show skeleton while ANY fetch is in flight (initial OR refetch
+            // after a tab switch) — was flashing the empty state for ~1s
+            // between request fire and response, which made the user think
+            // the tracker was broken. Only show empty state when we have
+            // confirmed-zero data from a settled response.
+            <div className="m-2 space-y-2 p-2" aria-busy>
+              {[0,1,2,3,4,5].map((i) => (
+                <div
+                  key={i}
+                  className="h-9 rounded-md bg-[var(--bg-elev1)]"
+                  style={{ opacity: 0.6 - i * 0.08 }}
+                />
+              ))}
+            </div>
+          ) : rows.length === 0 ? (
             <div className="m-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-6 text-center">
               <div className="mx-auto mb-3 grid size-10 place-items-center rounded-full bg-[var(--bg-elev3)]">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--emerald-400)]"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 4v5h5"/></svg>
