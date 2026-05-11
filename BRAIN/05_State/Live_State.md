@@ -1,24 +1,33 @@
 ---
 created: 2026-05-10
-updated: 2026-05-10
+updated: 2026-05-11
 tags: [state, live, ground-truth]
 ---
 
-# Live State — verified 2026-05-10 (audit-late, post-deploy)
+# Live State — verified 2026-05-11 (workflow-pill ship + Aly ask)
 
-> Updated 2026-05-10 late: 5 bugs + 5 UX fixes shipped after a full
+> Updated 2026-05-11: shipped color-coded 3-vs-4 stage `WorkflowTypePill`
+> on `/customers`, `/customers/[slug]`, `/calls/[id]`. Pill is auto-derived
+> from the AI-detected supplier label — emerald `3-stage · LOA bundled`
+> for E.ON variants, blue `4-stage · separate LOA` for everyone else.
+> Aly ask drafted at `comms/2026-05-11_Aly_ask.md` (4 blockers consolidated).
+> Playwright-verified on prod (`dpl_HzAFRTJoxPuBi4T96V3jLLqKDQQt`).
+>
+> Earlier 2026-05-10 late: 5 bugs + 5 UX fixes shipped after a full
 > Playwright-driven sweep. Live test login created; ground-truth upload
 > validated (Bonnie Clarke = first 3/3 compliant call in DB).
 >
-> See [[../04_Sessions/2026-05-10_Session_audit_late]] for the full punch list.
+> See [[../04_Sessions/2026-05-11_Session_workflow_pill]] for the full punch list.
 
 > Single source of truth on what's deployed and verified. Update after every deploy.
 
 ## Frontend (Vercel)
 - **Alias:** `compliance-agent-mu.vercel.app`
-- **Current deployment:** `compliance-agent-lbmlgbzj9-mohamed-hishams-projects-0b4feda9.vercel.app`
+- **Current deployment:** `dpl_HzAFRTJoxPuBi4T96V3jLLqKDQQt` (commit `436f93b` — workflow pill)
+- **Previous:** `compliance-agent-lbmlgbzj9-mohamed-hishams-projects-0b4feda9.vercel.app`
 - **Project rootDirectory:** `frontend-v3` ✓
 - **Project framework:** `nextjs` ✓
+- **Auto-deploy:** **NOT wired** — `link.deployHooks: []` on the Vercel project. Pushes to `main` do not trigger Vercel. Trigger via API POST `v13/deployments` with `gitSource={type:github,repoId:1233382040,ref:main,sha:<HEAD>}`.
 - **17 routes HTTP-status verified 200/307** (desktop+mobile, 36 runs): `/` (307→/dashboard), `/login`, `/dashboard`, `/queue`, `/calls`, `/tracker`, `/customers`, `/customers/<slug>`, `/deals`, `/rejections`, `/scripts`, `/agents`, `/agents/Parat`, `/compliant`, `/non-compliant`, `/observability`, `/guide`, `/settings`
 - ⚠️ **Content NOT verified:** for an unauthenticated visitor every protected route renders the **Sign In** form, not the page content. The HTTP code is 200 because Next.js renders the layout shell first then the auth guard hijacks. **Future visual audits need a working test login on prod Supabase.** See `audit-2026-05-10/AUDIT_REPORT.md` and `audit-2026-05-10/shots/dashboard_desktop.png`.
 - **Branded 404:** `/some-bad-path` returns the `not-found.tsx` page (contains "ComplianceAI" header + quick-links). NOT the raw Vercel `bom1::xxx` page.

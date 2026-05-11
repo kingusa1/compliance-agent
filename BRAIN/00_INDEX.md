@@ -53,6 +53,7 @@ tags: [index, brain]
 - [[04_Sessions/2026-05-10_Session_audit_late]] — late: Playwright sweep, 5 bugs + 5 UX, first compliant call (Bonnie Clarke)
 - [[04_Sessions/2026-05-11_Session_overnight]] — autonomous 5h run: 7 commits, 27 calls, 7 compliant, 26% rate, deal lifecycle wired end-to-end
 - [[04_Sessions/2026-05-11_Session_workflow_clarity]] — corrected supplier-stage matrix from 2/3 to **3/4** (added Passover), new dedicated `/workflow` page, customer-detail crash fix, rogue Vercel project deleted
+- [[04_Sessions/2026-05-11_Session_workflow_pill]] — color-coded `WorkflowTypePill` on /customers, /customers/[slug], /calls/[id]; AI-detected supplier drives `3-stage · LOA bundled` (emerald) vs `4-stage · separate LOA` (blue); Aly ask consolidated to 4 blockers
 - [[04_Sessions/Decisions]] — running list of architectural decisions
 
 ### 05 State
