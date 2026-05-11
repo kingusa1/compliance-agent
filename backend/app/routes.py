@@ -1579,6 +1579,80 @@ async def admin_backfill_tracker(db: Session = Depends(get_db)):
     }
 
 
+@router.post("/api/admin/reanalyze-all", status_code=200)
+async def admin_reanalyze_all(
+    apply: bool = False,
+    only_script_id: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Re-run the analyzer + score + finalize pipeline steps SYNCHRONOUSLY
+    against every completed call with a transcript + word_data + script.
+
+    Needed because /api/calls/{id}/reanalyze emits an Inngest event and
+    prod runs USE_INNGEST_PIPELINE=false — those events go nowhere.
+
+    Use after `POST /api/admin/ingest-script-checkpoints?apply=true` so
+    the freshly-extracted checkpoint rules actually grade existing calls.
+
+    apply=false   → dry-run; only reports how many calls would be processed.
+    apply=true    → actually runs. Skips calls already 'reviewed' to keep
+                     reviewer-signed-off verdicts intact.
+    only_script_id → restrict to calls with this script_id (debugging).
+    """
+    from app.pipeline import _step_analyze_checkpoints, _step_score, _step_finalize
+
+    q = db.query(Call).filter(
+        Call.transcript.isnot(None),
+        Call.word_data.isnot(None),
+        Call.script_id.isnot(None),
+    )
+    if only_script_id:
+        q = q.filter(Call.script_id == only_script_id)
+    calls = q.order_by(Call.created_at.desc()).all()
+
+    if not apply:
+        return {
+            "would_process": len(calls),
+            "applied": False,
+            "sample_ids": [str(c.id)[:8] for c in calls[:10]],
+        }
+
+    results: list[dict] = []
+    successes = 0
+    for c in calls:
+        if (c.review_status or "") == "reviewed":
+            results.append({"call_id": str(c.id)[:8], "status": "skipped_reviewed"})
+            continue
+        transcript_data = {"transcript": c.transcript or ""}
+        try:
+            analysis = await _step_analyze_checkpoints(str(c.id), transcript_data, db)
+            _step_score(str(c.id), analysis, db)
+            _step_finalize(str(c.id), db)
+            db.commit()
+            # Re-read the fresh score.
+            db.refresh(c)
+            results.append(
+                {
+                    "call_id": str(c.id)[:8],
+                    "status": "ok",
+                    "new_score": c.score,
+                    "new_compliance_status": c.compliance_status,
+                }
+            )
+            successes += 1
+        except Exception as e:
+            db.rollback()
+            results.append(
+                {"call_id": str(c.id)[:8], "status": f"error:{type(e).__name__}", "msg": str(e)[:120]}
+            )
+    return {
+        "processed": len(calls),
+        "successes": successes,
+        "applied": True,
+        "results": results,
+    }
+
+
 @router.post("/api/admin/ingest-script-checkpoints", status_code=200)
 async def admin_ingest_script_checkpoints(
     apply: bool = False,
