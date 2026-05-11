@@ -1054,6 +1054,30 @@ def _step_finalize(call_id: str, db: Session) -> dict:
     except Exception as e:
         log.error(f"L3_LIFECYCLE_FAILED call_id={call_id} err={e!r}")
 
+    # MPAN/MPRN extractor — pure regex, runs at finalize so any uploaded
+    # call gets meter IDs into the deal record. Skips silently if no
+    # cue in transcript (most lead-gen calls won't have it; closer + LOA
+    # calls do). 2026-05-11.
+    try:
+        from app.agents.meter_extractor import extract_meters
+        if call.deal_id and call.transcript:
+            from app.models import CustomerDeal
+            deal = db.query(CustomerDeal).filter_by(id=call.deal_id).first()
+            if deal:
+                meters = extract_meters(call.transcript)
+                if meters["mpan"] and not getattr(deal, "mpan_electricity", None):
+                    deal.mpan_electricity = meters["mpan"]
+                    if not deal.mpan_or_mprn:
+                        deal.mpan_or_mprn = meters["mpan"]
+                    log.info(f"METER_EXTRACT call_id={call_id} mpan={meters['mpan']}")
+                if meters["mprn"] and not getattr(deal, "mprn_gas", None):
+                    deal.mprn_gas = meters["mprn"]
+                    if not deal.mpan_or_mprn:
+                        deal.mpan_or_mprn = meters["mprn"]
+                    log.info(f"METER_EXTRACT call_id={call_id} mprn={meters['mprn']}")
+    except Exception as e:
+        log.error(f"METER_EXTRACT_FAILED call_id={call_id} err={e!r}")
+
     # L2 extraction writer — segments + flags + entities. Wrapped in try/except
     # so a writer bug never blocks the call from completing. Errors logged for
     # follow-up; the call still finalizes with checkpoint_results intact.

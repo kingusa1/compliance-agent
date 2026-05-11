@@ -55,9 +55,12 @@ def compute_deadline(
 
     if expected_live_date is not None:
         # Land ONE business day before go-live so the supplier can
-        # process the fix.
-        live_dt = datetime.combine(expected_live_date, datetime.min.time())
-        by_live = _add_business_days(live_dt, -1) if False else live_dt - timedelta(days=1)
+        # process the fix. Match `rejected_at`'s tz-awareness so the
+        # min() comparison doesn't crash on offset-naive vs offset-aware
+        # datetimes (Postgres returns timezone-aware datetimes).
+        tz = rejected_at.tzinfo if rejected_at.tzinfo is not None else None
+        live_dt = datetime.combine(expected_live_date, datetime.min.time(), tzinfo=tz)
+        by_live = live_dt - timedelta(days=1)
         # Skip back to the previous business day if we landed on Sat/Sun.
         while by_live.weekday() >= 5:
             by_live = by_live - timedelta(days=1)
