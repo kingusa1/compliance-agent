@@ -51,6 +51,7 @@ tags: [index, brain]
 - [[04_Sessions/2026-05-10_Session_audit]] — afternoon: end-to-end audit pass
 - [[04_Sessions/2026-05-10_Session_evening_sweep]] — evening: agents + dashboard + dedup + delete-cascade
 - [[04_Sessions/2026-05-10_Session_audit_late]] — late: Playwright sweep, 5 bugs + 5 UX, first compliant call (Bonnie Clarke)
+- [[04_Sessions/2026-05-11_Session_overnight]] — autonomous 5h run: 7 commits, 27 calls, 7 compliant, 26% rate, deal lifecycle wired end-to-end
 - [[04_Sessions/Decisions]] — running list of architectural decisions
 
 ### 05 State

@@ -29,15 +29,14 @@ tags: [state, live, ground-truth]
 - **Service:** `compliance-agent` on project `compliance-agent-backend`
 - **Latest commit deployed:** `c087493` (frontend type fix); backend latest `4e77515` (auto Quality Agent)
 
-## Database state (post 2026-05-10 audit-late)
-- **Customers:** 4 visible (orphan stubs removed late session; +1 from Bonnie Clarke upload)
-  - `crosby grange` — 2 calls, 1 deal, supplier `E.ON Next`
-  - `new house farm` — 1 call, 1 deal, supplier `E.ON Next`
-  - `dorothy's evangelical church` — 3 calls, 1 deal, supplier `E.ON Next`
-  - `bonnie clark` — 1 call, 1 deal, supplier `E.ON Next` (first compliant call!)
-- **Calls:** 7 total, 6 non-compliant + **1 compliant** (Bonnie Clarke 3/3)
-- **Compliance rate:** 14% (1/7)
-- Orphan stub state from earlier in the day: see [[../04_Sessions/2026-05-10_Session_audit_late]]
+## Database state (post 2026-05-11 overnight session)
+- **Calls:** 27 total
+- **Customers:** 13
+- **Deals:** 14 — all `verified` lifecycle (B6 fix landed)
+- **Compliant:** 7 (Bonnie Clark, Peter Higher, Samantha Randleson, Jillian Rosina Fitzsimons, John Inwood, Saiful Raja Chowdhury, Zoe Helen Larkin)
+- **Non-compliant:** 19
+- **Compliance rate:** 26%
+- Earlier (pre-overnight) state: see [[../04_Sessions/2026-05-10_Session_audit_late]]
 
 ## Test login (admin)
 - Email: `admin@compliance-agent.local`
