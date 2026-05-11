@@ -250,8 +250,16 @@ function WorkflowBar({
   );
 }
 
-function complianceTone(s: string | null | undefined): PillTone {
-  switch ((s || "").toLowerCase()) {
+function complianceTone(s: string | boolean | null | undefined): PillTone {
+  // Backend timeline rows return `compliant` as a boolean. Earlier callers
+  // pass strings (`worst_action`, `final_action`). Coerce both shapes
+  // safely — `true || ""` evaluates to `true` and then `.toLowerCase()`
+  // throws "(e || '').toLowerCase is not a function". audit-late 2026-05-11.
+  if (typeof s === "boolean") {
+    return s ? "emerald" : "red";
+  }
+  const v = typeof s === "string" ? s.toLowerCase() : "";
+  switch (v) {
     case "compliant":
     case "pass":
       return "emerald";
@@ -696,7 +704,13 @@ export default function CustomerDetailPage({
                   </div>
                   <div>
                     <Pill tone={complianceTone(row.compliant)} dot>
-                      {row.compliant ?? "—"}
+                      {row.compliant === true
+                        ? "compliant"
+                        : row.compliant === false
+                          ? "non_compliant"
+                          : typeof row.compliant === "string" && row.compliant
+                            ? row.compliant
+                            : "—"}
                     </Pill>
                   </div>
                   <div style={{ color: "var(--text-faint)" }}>
