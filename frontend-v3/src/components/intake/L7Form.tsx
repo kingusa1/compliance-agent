@@ -701,6 +701,19 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
               render={({ field: { onChange, value } }) => (
                 <label
                   htmlFor={fileFieldId}
+                  // Radix Dialog's focus-management + label htmlFor on a
+                  // hidden file input occasionally swallow the implicit
+                  // label-click → file-picker chain in production builds.
+                  // Trigger the input directly so the picker opens
+                  // reliably regardless of which child element was clicked.
+                  onClick={(e) => {
+                    // Don't double-fire when the click already targets
+                    // the input itself (browser handles it natively).
+                    if ((e.target as HTMLElement).tagName === "INPUT") return;
+                    e.preventDefault();
+                    const el = document.getElementById(fileFieldId) as HTMLInputElement | null;
+                    if (el) el.click();
+                  }}
                   onDragOver={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
