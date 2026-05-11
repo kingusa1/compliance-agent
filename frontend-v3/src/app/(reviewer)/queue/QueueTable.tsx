@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/table";
 import { ScoreBar } from "@/components/reviewer/ScoreBar";
 import type { QueueCall } from "@/lib/api";
+import { shortFilename } from "@/lib/filename";
 
 /**
  * Comfortable-density queue master table (UX-D02 pick).
@@ -95,24 +96,28 @@ function QueueRow({
       <TableCell className="whitespace-nowrap text-[13px] text-[var(--text-muted)] tabular-nums">
         {formatWhen(row.created_at)}
       </TableCell>
-      <TableCell className="text-[13px]">
-        <div className="font-medium text-[var(--text-primary)]">
-          {row.filename ?? "—"}
+      <TableCell className="text-[13px]" style={{ maxWidth: 280 }}>
+        <div
+          className="font-medium text-[var(--text-primary)] truncate"
+          title={row.customer_name ?? row.filename ?? row.id}
+        >
+          {row.customer_name ?? shortFilename(row.filename)}
         </div>
-        <div className="mt-0.5 font-mono text-[11px] text-[var(--text-dim)]">
-          {row.id.slice(0, 8)}
+        <div
+          className="mt-0.5 font-mono text-[11px] text-[var(--text-dim)] truncate"
+          title={row.filename ?? undefined}
+        >
+          {row.filename ? shortFilename(row.filename) : row.id.slice(0, 8)}
         </div>
       </TableCell>
       <TableCell className="text-[13px] text-[var(--text-primary)]">
         {row.supplier ?? "—"}
       </TableCell>
       <TableCell className="text-[13px] text-[var(--text-muted)]">
-        {/* Backend doesn't include agent_name on QueueCall directly; the
-            preview panel hits /api/calls/{id} for that. Show "—" here. */}
-        {"—"}
+        {row.agent_name ?? "—"}
       </TableCell>
       <TableCell>
-        <ScoreBar score={null} />
+        <ScoreBar score={row.score ?? null} />
       </TableCell>
       <TableCell>
         <StatusPill status={row.review_status} />

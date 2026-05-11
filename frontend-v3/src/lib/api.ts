@@ -125,6 +125,9 @@ export type QueueMetrics = {
 export type QueueCall = {
   id: string;
   filename: string;
+  customer_name: string | null;
+  agent_name: string | null;
+  score: string | null;
   supplier: string | null;
   duration: number | null;
   created_at: string | null;

@@ -346,6 +346,33 @@ async def upload_call(
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
+    # When the upload arrives with the default call_type="full" (which
+    # the lifecycle resolver doesn't understand), try to infer a real
+    # phase from the filename — this is the strongest signal Watt's
+    # workflow gives us at intake time. Lifecycle stays "open" otherwise
+    # because `call_type_to_phase("full")` returns None. (audit-late B6.)
+    if not call_type or call_type == "full":
+        _fn_lower = (file.filename or "").lower()
+        # Order matters — `loa` is checked after `lead` because "lead gen
+        # loa" exists; specific markers ("amendment", "c call", "passover")
+        # win over generic ones.
+        if "amendment" in _fn_lower:
+            call_type = "amendment"
+        elif " c call" in _fn_lower or "c_call" in _fn_lower or "c-call" in _fn_lower:
+            call_type = "c_call"
+        elif "lead gen" in _fn_lower or "lead-gen" in _fn_lower or "leadgen" in _fn_lower:
+            call_type = "lead_gen"
+        elif "passover" in _fn_lower or "pass over" in _fn_lower:
+            # "Passover" in Watt parlance = the lead-gen-to-closer handover;
+            # the call itself is the closer.
+            call_type = "closer"
+        elif "loa" in _fn_lower or "letter of authority" in _fn_lower:
+            call_type = "standalone_loa"
+        elif "verbal" in _fn_lower or "verbal_contract" in _fn_lower:
+            # Verbal-contract recordings are closer-stage by definition.
+            call_type = "closer"
+        # else: fall through with call_type="full"; pipeline still works.
+
     call = Call(
         id=call_id,
         filename=file.filename,

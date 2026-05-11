@@ -447,6 +447,13 @@ async def _step_detect_metadata(
     try:
         det_agent, det_customer = await detect_names(transcript)
         if det_agent and det_agent != "Unknown":
+            # Canonicalise transcription drift (Alex Fitton vs Alex Pitton,
+            # Parat vs Paras, Afak vs Afaq). audit-late B8.
+            try:
+                from app.agents.name_normaliser import canonicalise_agent
+                det_agent = canonicalise_agent(det_agent, db, exclude_call_id=str(call.id)) or det_agent
+            except Exception as _e:
+                log.warning(f"agent normalisation skipped: {_e}")
             call.agent_name = det_agent
         if det_customer and det_customer != "Unknown":
             call.customer_name = det_customer

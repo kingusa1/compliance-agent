@@ -22,6 +22,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCallDetailQuery } from "@/lib/queries/reviewer";
 import { ScoreBar } from "@/components/reviewer/ScoreBar";
+import { shortFilename } from "@/lib/filename";
 
 export type CallPreviewPanelProps = {
   callId: string | null;
@@ -75,9 +76,10 @@ export function CallPreviewPanel({ callId, primaryAction }: CallPreviewPanelProp
         <div className="mb-2 flex items-center gap-2">
           <Badge
             variant="outline"
-            className="border-[var(--border-strong)] font-mono text-[11px] text-[var(--text-muted)]"
+            className="border-[var(--border-strong)] font-mono text-[11px] text-[var(--text-muted)] max-w-[260px] truncate"
+            title={c.filename ?? undefined}
           >
-            {c.filename}
+            {shortFilename(c.filename)}
           </Badge>
           <StatusPill status={c.review_status ?? c.status} />
         </div>

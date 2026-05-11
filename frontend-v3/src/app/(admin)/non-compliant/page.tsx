@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 
+import { shortFilename } from "@/lib/filename";
+
 import {
   Table,
   TableBody,
@@ -116,13 +118,17 @@ export default function NonCompliantPage() {
                             }`,
                           }}
                         >
-                          <TableCell className="font-mono text-[12px]">
+                          <TableCell
+                            className="font-mono text-[12px]"
+                            style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                            title={c.filename ?? c.id}
+                          >
                             <Link
                               href={`/calls/${c.id}`}
                               onClick={(e) => e.stopPropagation()}
                               className="text-[var(--blue-coaching)] hover:underline"
                             >
-                              {c.filename ?? c.id.slice(0, 12)}
+                              {shortFilename(c.filename ?? c.id.slice(0, 12))}
                             </Link>
                           </TableCell>
                           <TableCell className="text-[13px] text-[var(--text-primary)]">
@@ -131,7 +137,11 @@ export default function NonCompliantPage() {
                           <TableCell className="text-[13px] text-[var(--text-muted)]">
                             {c.agent_name ?? "—"}
                           </TableCell>
-                          <TableCell className="text-[13px] text-red-400">
+                          <TableCell
+                            className="text-[13px] text-red-400"
+                            style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                            title={c.reason ?? undefined}
+                          >
                             {c.reason ?? "—"}
                           </TableCell>
                           <TableCell className="text-[12px] text-[var(--text-muted)]">

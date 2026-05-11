@@ -16,6 +16,7 @@ import { getCompliantQuery } from "@/lib/queries/aggregator";
 import { useUrlState } from "@/lib/hooks/useUrlState";
 import { CursorPagination } from "@/components/shared/CursorPagination";
 import { CallPreviewPanel } from "@/components/shared/CallPreviewPanel";
+import { shortFilename } from "@/lib/filename";
 
 const COMPLIANT_PAGE_LIMIT = 50;
 
@@ -101,13 +102,17 @@ export default function CompliantPage() {
                             borderLeft: `2px solid ${isSelected ? "var(--emerald)" : "transparent"}`,
                           }}
                         >
-                          <TableCell className="font-mono text-[12px]">
+                          <TableCell
+                            className="font-mono text-[12px]"
+                            style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                            title={c.filename ?? undefined}
+                          >
                             <Link
                               href={`/calls/${c.id}`}
                               onClick={(e) => e.stopPropagation()}
                               className="text-[var(--blue-coaching)] hover:underline"
                             >
-                              {c.filename ?? c.id.slice(0, 12)}
+                              {shortFilename(c.filename ?? c.id.slice(0, 12))}
                             </Link>
                           </TableCell>
                           <TableCell className="text-[13px] text-[var(--text-primary)]">

@@ -1429,6 +1429,12 @@ def get_queue(
         return {
             "id": c.id,
             "filename": c.filename,
+            # audit-late: surface customer + agent on the queue row so the
+            # /queue master table doesn't have to fall back to filenames
+            # (which the upload pipeline prefixes with the supplier script).
+            "customer_name": c.customer_name,
+            "agent_name": c.agent_name,
+            "score": c.score,
             "supplier": c.detected_supplier,
             "duration": c.duration_seconds,
             "created_at": c.created_at.isoformat() if c.created_at else None,

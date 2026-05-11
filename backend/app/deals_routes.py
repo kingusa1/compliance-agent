@@ -153,8 +153,35 @@ def list_deals(
         .limit(limit)
         .all()
     )
+
+    # Compute lifecycle_status per row from the calls it owns. The stored
+    # column defaults to "open"; only `get_deal` was deriving live, so the
+    # listing always showed "open" for every row. (audit-late B6.) Bulk
+    # the call lookup so this stays O(deals + calls), not O(deals × N).
+    deal_ids = [r.id for r in rows]
+    calls_by_deal: dict = {did: [] for did in deal_ids}
+    if deal_ids:
+        for c in (
+            db.query(Call)
+            .filter(Call.deal_id.in_(deal_ids))
+            .order_by(Call.created_at.asc())
+            .all()
+        ):
+            calls_by_deal.setdefault(c.deal_id, []).append(c)
+
+    out_deals = []
+    for r in rows:
+        d = _serialise_deal(r)
+        try:
+            d["lifecycle_status"] = derive_lifecycle_status(r, calls_by_deal.get(r.id, []))
+        except Exception:
+            # Keep the stored value if derivation blows up — failure here
+            # should never break the listing.
+            pass
+        out_deals.append(d)
+
     return {
-        "deals": [_serialise_deal(r) for r in rows],
+        "deals": out_deals,
         "total": total,
         "limit": limit,
         "offset": offset,
