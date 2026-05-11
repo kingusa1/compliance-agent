@@ -29,14 +29,15 @@ tags: [state, live, ground-truth]
 - **Service:** `compliance-agent` on project `compliance-agent-backend`
 - **Latest commit deployed:** `c087493` (frontend type fix); backend latest `4e77515` (auto Quality Agent)
 
-## Database state (post 2026-05-11 overnight session, after final upload batch)
-- **Calls:** 37 total
-- **Customers:** 22 (Quality Agent merged 9 buckets)
-- **Deals:** 24
-- **Compliant:** 8
-- **Non-compliant:** 28
+## Database state (post 2026-05-11 deep-clean session)
+- **Calls:** 37 total · 19 with `call_type` correctly classified (lead_gen/passover/closer/standalone_loa/c_call/amendment), 15 still `full` (legacy uploads, no filename hint — verify correctly anyway under "full = lead_gen+passover+closer" rule for E.ON)
+- **Customers:** 18 (down from 22; manual consolidation of 3 Little Farm variants + 2 Hanif + 2 Corner Cuts + "The Coach" + name renames Jill/John/Peter → full names)
+- **Deals:** 18 — every deal lifecycle recomputed
+- **Compliant:** 8 calls
+- **Non-compliant:** 28 calls
 - **Compliance rate:** 21.6%
-- Earlier (pre-overnight) state: see [[../04_Sessions/2026-05-10_Session_audit_late]]
+- **Deal lifecycle distribution:** 12 verified · 2 passover_done · 1 closer_done · 1 lead_gen_done · 1 amendment_done · 1 c_call_done · 0 open
+- Earlier states: see [[../04_Sessions/2026-05-10_Session_audit_late]] and [[../04_Sessions/2026-05-11_Session_workflow_clarity]]
 
 ## Test login (admin)
 - Email: `admin@compliance-agent.local`
