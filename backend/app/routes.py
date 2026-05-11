@@ -1579,6 +1579,149 @@ async def admin_backfill_tracker(db: Session = Depends(get_db)):
     }
 
 
+@router.post("/api/admin/ingest-script-checkpoints", status_code=200)
+async def admin_ingest_script_checkpoints(
+    apply: bool = False,
+    only_empty: bool = True,
+    db: Session = Depends(get_db),
+):
+    """Walk every `Script` row, locate its source markdown in
+    `.planning/phase2-docs/`, ask Opus 4.7 to extract the canonical
+    per-rule checkpoint list, and write it to `Script.checkpoints`.
+
+    Fixes the long-standing bug where every call fell through to the
+    V1 third-party-disclosure analyzer (3 universal rules) instead of
+    being graded against the 20-30 supplier-specific rules in the
+    actual script.
+
+    Query params:
+      apply=true       — persist the new checkpoints to DB
+      only_empty=true  — default; only touch rows whose `checkpoints`
+                          column is empty/`[]`. Pass `only_empty=false`
+                          to re-extract every row (expensive — one Opus
+                          call per script).
+    """
+    from pathlib import Path
+    from app.agents.script_checkpoint_extractor import extract_checkpoints_from_markdown
+    from app.watt_compliance.supplier_seed import CATALOGUE, docs_dir
+
+    src_dir = docs_dir()
+    if not src_dir.exists():
+        raise HTTPException(500, f"phase2-docs/ not found at {src_dir}")
+
+    # Index catalogue by canonical name parts so we can match scripts in
+    # DB (which use freeform names) to the right markdown filename.
+    def _canon(s: str) -> str:
+        return "".join(ch for ch in (s or "").lower() if ch.isalnum())
+
+    catalogue_by_filename_stem: dict[str, Path] = {}
+    for meta in CATALOGUE:
+        p = src_dir / meta.filename
+        if p.exists():
+            catalogue_by_filename_stem[_canon(meta.filename)] = p
+
+    all_md_files = list(src_dir.glob("supplier_scripts__*.md"))
+
+    scripts = db.query(Script).all()
+    results: list[dict] = []
+    extracted = 0
+    skipped_filled = 0
+    skipped_no_md = 0
+    total_checkpoints = 0
+    for s in scripts:
+        existing = (s.checkpoints or "").strip()
+        existing_count = 0
+        try:
+            existing_count = len(json.loads(existing) or []) if existing else 0
+        except Exception:
+            existing_count = 0
+        if only_empty and existing_count > 0:
+            skipped_filled += 1
+            continue
+
+        # Best-effort match: scan the markdown corpus and pick the file
+        # whose canonical-name shares the most substrings with the
+        # script_name. Tolerates slug-vs-display name drift.
+        name_canon = _canon(s.script_name)
+        best_path: Path | None = None
+        best_score = 0
+        for p in all_md_files:
+            stem_canon = _canon(p.stem)
+            # very simple longest-common-substring proxy: count shared
+            # 6-char windows
+            score = 0
+            for i in range(0, len(name_canon) - 5):
+                if name_canon[i : i + 6] in stem_canon:
+                    score += 1
+            if score > best_score:
+                best_score = score
+                best_path = p
+
+        if best_path is None or best_score < 5:
+            skipped_no_md += 1
+            results.append(
+                {
+                    "script_id": str(s.id)[:8],
+                    "name": s.script_name,
+                    "status": "no-markdown-match",
+                    "existing_checkpoints": existing_count,
+                }
+            )
+            continue
+
+        md = best_path.read_text(encoding="utf-8", errors="ignore")
+        try:
+            cps = await extract_checkpoints_from_markdown(
+                script_md=md,
+                supplier=s.supplier_name,
+                script_name=s.script_name,
+                script_type=(getattr(s, "lifecycle_phase", None) or "acquisition"),
+            )
+        except Exception as e:
+            results.append(
+                {
+                    "script_id": str(s.id)[:8],
+                    "name": s.script_name,
+                    "status": f"extract-error:{type(e).__name__}",
+                    "existing_checkpoints": existing_count,
+                }
+            )
+            continue
+
+        extracted += 1
+        total_checkpoints += len(cps)
+        results.append(
+            {
+                "script_id": str(s.id)[:8],
+                "name": s.script_name,
+                "matched_md": best_path.name,
+                "match_score": best_score,
+                "checkpoint_count": len(cps),
+                "existing_checkpoints": existing_count,
+                "status": "extracted" if cps else "empty",
+                "sample_names": [c["name"] for c in cps[:3]],
+            }
+        )
+        if apply and cps:
+            s.checkpoints = json.dumps(cps)
+
+    if apply:
+        db.commit()
+    else:
+        db.rollback()
+
+    return {
+        "scripts_total": len(scripts),
+        "extracted": extracted,
+        "skipped_already_filled": skipped_filled,
+        "skipped_no_markdown": skipped_no_md,
+        "applied": apply,
+        "only_empty": only_empty,
+        "total_checkpoints_extracted": total_checkpoints,
+        "results": results,
+    }
+
+
 @router.post("/api/admin/backfill-call-types", status_code=200)
 async def admin_backfill_call_types(
     apply: bool = False,
