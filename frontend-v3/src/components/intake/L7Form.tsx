@@ -193,13 +193,21 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
       toast.error("Only MP3, WAV, or M4A audio files are accepted.");
       return;
     }
+
+    // When the reviewer drops 2+ files together, they almost always
+    // belong to the same deal (Lead Gen + Passover + Closer + LOA for
+    // one customer). Default same-deal ON unless they've explicitly
+    // ticked it off. Single-file drops leave the toggle alone — the
+    // pipeline will create or join a deal from the detected customer
+    // name as before.
+    const sameDealEffective = valid.length > 1 ? true : sameDeal;
     setBatchUploads(valid.map((f) => ({ name: f.name, size: f.size, status: "pending" })));
 
     // Same-deal mode: create one stub deal up-front, attach every file's
     // upload to it. Pipeline _step_detect_metadata is race-safe so the
     // first-finished call's detection backfills the shared deal.
     let sharedDealId: string | null = null;
-    if (sameDeal) {
+    if (sameDealEffective) {
       try {
         const res = await apiFetch<{ deal_id: string }>("/api/deals/stub", {
           method: "POST",
@@ -458,7 +466,10 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
             data-testid="l7-same-deal"
           />
           <span className="text-[12px] text-[var(--text-muted)]">
-            Same deal — group these files as one deal record
+            Same deal — group these files as one deal record{" "}
+            <span className="text-[10px] text-[var(--text-dim)]">
+              (auto-on when you drop 2+ files together; untick to split)
+            </span>
           </span>
         </label>
       )}
