@@ -25,6 +25,13 @@ COPY backend/scripts/ scripts/
 COPY backend/alembic/ alembic/
 COPY backend/alembic.ini .
 
+# Phase-2 supplier-script markdown extracts. Required by
+# app.watt_compliance.supplier_seed.docs_dir() so the script-checkpoint
+# extractor + initial seed can read them on the Railway image.
+# docs_dir() resolves `parents[3] / ".planning" / "phase2-docs"`; in the
+# container that lands at `/.planning/phase2-docs`. Copy them there.
+COPY .planning/phase2-docs/ /.planning/phase2-docs/
+
 RUN mkdir -p uploads
 
 ENV PORT=8001 \
