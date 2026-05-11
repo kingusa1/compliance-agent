@@ -210,12 +210,13 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
       }
     }
 
-    // For the single-file case (most common in auto-detect mode), route
-    // the success callback back to UploadModal so the user lands on
-    // /calls/{id} the moment the upload returns — matching the old
-    // click-Upload behaviour. Multi-file keeps the inline status UI so
-    // reviewers can pick which call to open.
-    let firedNavigate = false;
+    // Track call_ids in order. After the batch finishes we navigate to
+    // the first successful one so the user lands somewhere (avoids the
+    // "I clicked upload and nothing happened" complaint). Multi-file
+    // batches: the first uploaded call's detail page acts as a landing
+    // pad — the user can navigate to the others via the customer page
+    // or queue, both of which now reflect all 2/N uploads.
+    const completed: Array<string | null> = new Array(valid.length).fill(null);
     await Promise.allSettled(
       valid.map(async (file, idx) => {
         const fd = new FormData();
@@ -227,16 +228,10 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
         try {
           const data = await uploadCall(fd);
           const cid = data.call_id ?? data.id;
+          completed[idx] = cid ?? null;
           setBatchUploads((prev) =>
             prev.map((u, i) => (i === idx ? { ...u, status: "done", callId: cid } : u)),
           );
-          // Navigate on the first finished single-file upload. Multi-file
-          // batches keep the user on the modal so they can see all results.
-          if (valid.length === 1 && !firedNavigate && cid && onSuccess) {
-            firedNavigate = true;
-            toast.success("Call uploaded, processing");
-            onSuccess(cid);
-          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           setBatchUploads((prev) =>
@@ -246,6 +241,20 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
         }
       }),
     );
+
+    // Navigate to the first successful call now that the batch is done.
+    // For single-file uploads this matches the old click-Upload UX. For
+    // multi-file batches the user lands on the first call's detail page
+    // — they can navigate to siblings via the customer page or queue.
+    const firstCid = completed.find((c) => !!c);
+    if (firstCid && onSuccess) {
+      toast.success(
+        valid.length === 1
+          ? "Call uploaded, processing"
+          : `${valid.length} calls uploaded — opening the first one`,
+      );
+      onSuccess(firstCid);
+    }
     qc.invalidateQueries({ queryKey: ["admin", "calls"] });
     qc.invalidateQueries({ queryKey: ["admin", "customers"] });
     qc.invalidateQueries({ queryKey: ["admin", "tracker"] });
