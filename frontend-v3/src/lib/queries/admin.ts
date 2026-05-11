@@ -84,7 +84,9 @@ export type CustomerTimelineRow = {
   call_type?: string | null;
   agent_name?: string | null;
   score?: string | null;
-  compliant?: string | null;
+  // Backend's /timeline endpoint returns booleans for `compliant`. Older
+  // builds used strings ("compliant" / "non_compliant"); keep both.
+  compliant?: string | boolean | null;
   rejection?: string | null;
   [k: string]: unknown;
 };
