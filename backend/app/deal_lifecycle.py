@@ -76,25 +76,45 @@ ALLOWED: dict[str, set[str]] = {
 }
 
 
-# Required phases per supplier. Keys are canonicalised supplier names —
-# 'E.ON' (no 'Next' suffix) gets the bundled-LOA variant.
+# Required phases per supplier. Keys cover both the bare brand
+# ("E.ON") and the variant strings the pipeline actually persists
+# ("E.ON Next", "EON Next"). The bundled-LOA suppliers only need
+# lead_gen + closer; everyone else needs the standalone LOA call.
 SUPPLIER_PHASE_MATRIX: dict[str, list[str]] = {
     "E.ON": ["lead_gen", "closer"],
+    "E.ON Next": ["lead_gen", "closer"],
+    "EON": ["lead_gen", "closer"],
+    "EON Next": ["lead_gen", "closer"],
     "British Gas": ["lead_gen", "closer", "standalone_loa"],
+    "British Gas Lite": ["lead_gen", "closer", "standalone_loa"],
+    "BG Core": ["lead_gen", "closer", "standalone_loa"],
+    "BGL": ["lead_gen", "closer", "standalone_loa"],
     "Scottish Power": ["lead_gen", "closer", "standalone_loa"],
     "EDF Energy": ["lead_gen", "closer", "standalone_loa"],
+    "EDF": ["lead_gen", "closer", "standalone_loa"],
     "Pozitive": ["lead_gen", "closer", "standalone_loa"],
+    "Pozitive Energy": ["lead_gen", "closer", "standalone_loa"],
 }
 
 
 def required_phases(supplier: str | None) -> list[str]:
     """Required phases for a given supplier. Unknown suppliers default
-    to the full standalone-LOA variant (safer for compliance review)."""
+    to the full standalone-LOA variant (safer for compliance review).
+
+    Case-insensitive match so DB drift between "E.ON next" / "E.ON Next"
+    doesn't trigger the default 3-phase rule for bundled suppliers.
+    """
     if not supplier:
         return ["lead_gen", "closer", "standalone_loa"]
-    return SUPPLIER_PHASE_MATRIX.get(
-        supplier, ["lead_gen", "closer", "standalone_loa"]
-    )
+    # Direct hit first.
+    if supplier in SUPPLIER_PHASE_MATRIX:
+        return SUPPLIER_PHASE_MATRIX[supplier]
+    # Case-insensitive fallback.
+    s_low = supplier.lower()
+    for k, v in SUPPLIER_PHASE_MATRIX.items():
+        if k.lower() == s_low:
+            return v
+    return ["lead_gen", "closer", "standalone_loa"]
 
 
 # Map from Call.call_type to the supplier-matrix phase name.
