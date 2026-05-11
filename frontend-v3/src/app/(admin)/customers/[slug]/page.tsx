@@ -17,6 +17,14 @@ import {
   useCustomerTimelineQuery,
 } from "@/lib/queries/admin";
 import { Pill, type PillTone } from "@/components/design/Pill";
+import { WorkflowTypePill } from "@/components/design/WorkflowTypePill";
+import {
+  CORRECTIVE_PHASES,
+  PHASE_LABEL,
+  isEonSupplier,
+  workflowStepsFor as _workflowStepsForShared,
+  workflowSummary,
+} from "@/lib/workflow";
 
 /** W1.1 (v3-watt-coverage): build the Watt portal deep-link URL. */
 function wattPortalUrl(siteId: number | null | undefined): string | null {
@@ -24,42 +32,14 @@ function wattPortalUrl(siteId: number | null | undefined): string | null {
   return `https://api.wattutilities.co.uk:4433/sites/${siteId}`;
 }
 
-// Watt deal lifecycle phases — matches backend
-// deal_lifecycle.SUPPLIER_PHASE_MATRIX. Canonical per Watt AI
-// Compliance Tech Spec (TS §3) and user confirmation 2026-05-11:
-//   - E.ON / E.ON Next: 3 required stages = Lead Gen → Passover → Closer
-//     (LOA is bundled into Closer for E.ON)
-//   - Every other supplier: 4 required stages = Lead Gen → Passover →
-//     Closer → Standalone LOA
-//   - `amendment` and `c_call` are corrective steps available to ANY
-//     supplier; they never block "verified". Rendered at the end of
-//     the bar so reviewers can tell whether a corrective happened.
-const _CORRECTIVE_STEPS = ["c_call", "amendment"] as const;
-
-const _SUPPLIER_REQUIRED_PHASES: Record<string, string[]> = {
-  // E.ON variants → 3 required stages (LOA bundled into Closer)
-  "E.ON":             ["lead_gen", "passover", "closer"],
-  "E.ON Next":        ["lead_gen", "passover", "closer"],
-  "EON":              ["lead_gen", "passover", "closer"],
-  "EON Next":         ["lead_gen", "passover", "closer"],
-  // Everyone else → 4 required stages (standalone LOA needed)
-  "British Gas":      ["lead_gen", "passover", "closer", "standalone_loa"],
-  "British Gas Lite": ["lead_gen", "passover", "closer", "standalone_loa"],
-  "BGL":              ["lead_gen", "passover", "closer", "standalone_loa"],
-  "BG Core":          ["lead_gen", "passover", "closer", "standalone_loa"],
-  "Scottish Power":   ["lead_gen", "passover", "closer", "standalone_loa"],
-  "EDF Energy":       ["lead_gen", "passover", "closer", "standalone_loa"],
-  "EDF":              ["lead_gen", "passover", "closer", "standalone_loa"],
-  "Pozitive":         ["lead_gen", "passover", "closer", "standalone_loa"],
-  "Pozitive Energy":  ["lead_gen", "passover", "closer", "standalone_loa"],
-};
-
+// Workflow phases are resolved by `lib/workflow.ts` — single source of truth
+// that mirrors backend `deal_lifecycle.SUPPLIER_PHASE_MATRIX`:
+//   - E.ON variants → 3 required stages (LOA bundled into Closer)
+//   - everyone else → 4 required stages (+ Standalone LOA)
+// Corrective steps (Amendment, C-Call) are appended for any supplier and
+// don't count toward the headline 3/4.
 function workflowStepsFor(supplier: string | null | undefined): string[] {
-  const required = supplier
-    ? (_SUPPLIER_REQUIRED_PHASES[supplier] ??
-       ["lead_gen", "passover", "closer", "standalone_loa"])
-    : ["lead_gen", "passover", "closer", "standalone_loa"];
-  return [...required, ..._CORRECTIVE_STEPS];
+  return _workflowStepsForShared(supplier);
 }
 
 function completedPhaseCount(deal: { calls: { call_type?: string | null }[] }, steps: string[]): number {
@@ -130,28 +110,6 @@ function StatCard({
   );
 }
 
-// Human-readable label for each lifecycle phase. Surfaces "Lead Gen" /
-// "Passover" / "Closer" / "Standalone LOA" instead of snake-case.
-const _PHASE_LABEL: Record<string, string> = {
-  lead_gen: "Lead Gen",
-  passover: "Passover",
-  closer: "Closer",
-  standalone_loa: "Standalone LOA",
-  amendment: "Amendment",
-  c_call: "C-Call",
-};
-
-// Per-supplier phase tooltip explaining the 3 vs 4 stage rule.
-function _stageBlurb(supplier: string | null | undefined, count: number): string {
-  if (count === 3) {
-    return `${supplier ?? "This supplier"} bundles the LOA into the Closer, so this deal needs 3 stages: Lead Gen → Passover → Closer.`;
-  }
-  if (count === 4) {
-    return `${supplier ?? "This supplier"} requires a separate LOA call after the Closer, so this deal needs 4 stages: Lead Gen → Passover → Closer → Standalone LOA.`;
-  }
-  return `${count} lifecycle stages required for this deal.`;
-}
-
 function WorkflowBar({
   steps,
   current,
@@ -161,12 +119,11 @@ function WorkflowBar({
   current: number;
   supplier?: string | null;
 }) {
-  // The "stage count" the user cares about is the REQUIRED count (3 for
-  // E.ON, 4 for others) — corrective steps (Amendment / C-Call) are
-  // rendered as optional trailing slots and don't count toward the
-  // headline number.
-  const correctiveSet = new Set<string>(["amendment", "c_call"]);
+  const correctiveSet = new Set<string>([...CORRECTIVE_PHASES]);
   const requiredCount = steps.filter((s) => !correctiveSet.has(s)).length;
+  const eon = isEonSupplier(supplier);
+  const summary = supplier ? workflowSummary(supplier) : undefined;
+
   return (
     <div style={{ marginTop: 10 }}>
       <div
@@ -178,79 +135,116 @@ function WorkflowBar({
           alignItems: "center",
           gap: 8,
         }}
-        title={_stageBlurb(supplier, requiredCount)}
+        title={summary}
       >
-        <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>
-          {requiredCount}-stage workflow
-        </span>
-        <span>·</span>
-        <span>{supplier ?? "Unknown supplier"}</span>
+        <WorkflowTypePill supplier={supplier ?? null} />
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: 10, color: "var(--text-faint)" }}>
-          + {steps.length - requiredCount} corrective · hover for details
+          {requiredCount} required · {steps.length - requiredCount} corrective
+          {" · "}hover for details
         </span>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-      {steps.map((s, i) => {
-        const done = i < current;
-        const active = i === current;
-        return (
-          <div key={s} style={{ display: "flex", alignItems: "center", flex: 1 }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "4px 8px",
-                borderRadius: 4,
-                background: done
-                  ? "var(--emerald-bg)"
-                  : active
-                    ? "var(--amber-bg)"
-                    : "var(--bg-elev3)",
-                border: `1px solid ${
-                  done
-                    ? "var(--emerald-border)"
-                    : active
-                      ? "var(--amber-border)"
-                      : "var(--border-subtle)"
-                }`,
-                fontSize: 11,
-                color: done
-                  ? "var(--emerald-400)"
-                  : active
-                    ? "var(--amber-400)"
-                    : "var(--text-faint)",
-              }}
-            >
-              <span
-                style={{
-                  display: "inline-block",
-                  width: 5,
-                  height: 5,
-                  borderRadius: "50%",
-                  background: done
-                    ? "var(--emerald)"
-                    : active
-                      ? "var(--amber)"
-                      : "var(--border-strong)",
-                }}
-              />
-              {_PHASE_LABEL[s] ?? s}
-            </div>
-            {i < steps.length - 1 && (
+        {steps.map((s, i) => {
+          const done = i < current;
+          const active = i === current;
+          const corrective = correctiveSet.has(s);
+          const isClosingEon = eon && s === "closer";
+          const isStandaloneLoa = !eon && s === "standalone_loa";
+          // Sublabel surfaces the supplier-specific twist (LOA bundled or
+          // separate LOA call) so reviewers see the rule at a glance.
+          const subLabel = isClosingEon
+            ? "+ LOA bundled"
+            : isStandaloneLoa
+              ? "separate LOA call"
+              : null;
+          return (
+            <div key={s} style={{ display: "flex", alignItems: "center", flex: 1 }}>
               <div
                 style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                  padding: "4px 8px",
+                  borderRadius: 4,
+                  background: done
+                    ? "var(--emerald-bg)"
+                    : active
+                      ? "var(--amber-bg)"
+                      : "var(--bg-elev3)",
+                  border: `1px solid ${
+                    done
+                      ? "var(--emerald-border)"
+                      : active
+                        ? "var(--amber-border)"
+                        : "var(--border-subtle)"
+                  }`,
+                  fontSize: 11,
+                  color: done
+                    ? "var(--emerald-400)"
+                    : active
+                      ? "var(--amber-400)"
+                      : "var(--text-faint)",
+                  opacity: corrective && !done && !active ? 0.55 : 1,
                   flex: 1,
-                  height: 1,
-                  background: "var(--border-subtle)",
-                  minWidth: 8,
+                  minWidth: 0,
                 }}
-              />
-            )}
-          </div>
-        );
-      })}
+                title={
+                  corrective
+                    ? "Corrective step — optional for any supplier"
+                    : isClosingEon
+                      ? "E.ON reads the LOA wording inside the Closer call — no separate LOA needed."
+                      : isStandaloneLoa
+                        ? "Non-E.ON suppliers require a separate LOA call after the Closer."
+                        : PHASE_LABEL[s as keyof typeof PHASE_LABEL]
+                }
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span
+                    style={{
+                      display: "inline-block",
+                      width: 5,
+                      height: 5,
+                      borderRadius: "50%",
+                      background: done
+                        ? "var(--emerald)"
+                        : active
+                          ? "var(--amber)"
+                          : "var(--border-strong)",
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span style={{ whiteSpace: "nowrap" }}>
+                    {PHASE_LABEL[s as keyof typeof PHASE_LABEL] ?? s}
+                  </span>
+                </div>
+                {subLabel && (
+                  <span
+                    style={{
+                      fontSize: 9,
+                      letterSpacing: "0.04em",
+                      textTransform: "uppercase",
+                      color: "var(--text-faint)",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {subLabel}
+                  </span>
+                )}
+              </div>
+              {i < steps.length - 1 && (
+                <div
+                  style={{
+                    flex: "0 0 12px",
+                    height: 1,
+                    background: "var(--border-subtle)",
+                    minWidth: 8,
+                  }}
+                />
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -381,6 +375,9 @@ export default function CustomerDetailPage({
             </span>
             <span style={{ fontSize: 12, color: "var(--text-faint)" }}>·</span>
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{supplier}</span>
+            {supplier !== "—" && (
+              <WorkflowTypePill supplier={supplier} />
+            )}
             {worst && (
               <>
                 <span style={{ fontSize: 12, color: "var(--text-faint)" }}>·</span>

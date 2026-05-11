@@ -16,6 +16,7 @@ import { useAdminCustomersQuery } from "@/lib/queries/admin";
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import { useUrlState } from "@/lib/hooks/useUrlState";
 import { Pill, type PillTone } from "@/components/design/Pill";
+import { WorkflowTypePill } from "@/components/design/WorkflowTypePill";
 import { EmptyState } from "@/components/design/EmptyState";
 import { HelpBanner } from "@/components/design/HelpBanner";
 import { CursorPagination } from "@/components/shared/CursorPagination";
@@ -23,7 +24,8 @@ import { AddCustomerDialog } from "./AddCustomerDialog";
 
 const PAGE_LIMIT = 50;
 
-const COL = "1.6fr 1.2fr 70px 70px 1.2fr 110px 100px 70px";
+// Columns: Customer · Supplier · Workflow · Deals · Calls · Agents · Worst · Last · Flags
+const COL = "1.5fr 1.1fr 1fr 60px 60px 1.1fr 100px 90px 60px";
 
 function HeaderCell({ children }: { children: React.ReactNode }) {
   return (
@@ -227,6 +229,7 @@ export default function CustomersListPage() {
           >
             <HeaderCell>Customer</HeaderCell>
             <HeaderCell>Supplier</HeaderCell>
+            <HeaderCell>Workflow</HeaderCell>
             <HeaderCell>Deals</HeaderCell>
             <HeaderCell>Calls</HeaderCell>
             <HeaderCell>Agents</HeaderCell>
@@ -248,7 +251,7 @@ export default function CustomersListPage() {
                     borderBottom: "1px solid var(--border-subtle)",
                   }}
                 >
-                  {[180, 110, 30, 30, 100, 80, 60, 30].map((w, j) => (
+                  {[180, 110, 90, 30, 30, 100, 80, 60, 30].map((w, j) => (
                     <div
                       key={j}
                       style={{
@@ -300,6 +303,12 @@ export default function CustomersListPage() {
                         {c.display_name}
                       </div>
                       <div style={{ color: "var(--text-muted)" }}>{supplier}</div>
+                      <div>
+                        <WorkflowTypePill
+                          supplier={supplier === "—" ? null : supplier}
+                          compact
+                        />
+                      </div>
                       <div
                         style={{
                           color: "var(--text-primary)",

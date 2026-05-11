@@ -49,6 +49,7 @@ import {
 import { ApiError } from "@/lib/api";
 import { formatScorePercent } from "@/lib/score";
 import { Pill } from "@/components/design/Pill";
+import { WorkflowTypePill } from "@/components/design/WorkflowTypePill";
 import { Waveform } from "@/components/design/Waveform";
 import { CheckpointCard, parseCheckpointResults, type CheckpointVerdict } from "./CheckpointCard";
 import { TranscriptPlayer, type WordData } from "./TranscriptPlayer";
@@ -996,6 +997,7 @@ export default function CallDetailPage({
               .join(" · ")}
           </span>
         </div>
+        <WorkflowTypePill supplier={c?.detected_supplier ?? null} compact />
         {committed ? (
           <Pill tone="emerald" dot>
             Committed
