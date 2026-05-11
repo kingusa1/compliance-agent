@@ -210,11 +210,19 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
       }
     }
 
+    // For the single-file case (most common in auto-detect mode), route
+    // the success callback back to UploadModal so the user lands on
+    // /calls/{id} the moment the upload returns — matching the old
+    // click-Upload behaviour. Multi-file keeps the inline status UI so
+    // reviewers can pick which call to open.
+    let firedNavigate = false;
     await Promise.allSettled(
       valid.map(async (file, idx) => {
         const fd = new FormData();
         fd.append("file", file);
         if (sharedDealId) fd.append("deal_id", sharedDealId);
+        if (customerSlug) fd.append("customer_slug", customerSlug);
+        if (prefill?.customer?.name) fd.append("customer_name", prefill.customer.name);
         setBatchUploads((prev) => prev.map((u, i) => (i === idx ? { ...u, status: "uploading" } : u)));
         try {
           const data = await uploadCall(fd);
@@ -222,11 +230,19 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
           setBatchUploads((prev) =>
             prev.map((u, i) => (i === idx ? { ...u, status: "done", callId: cid } : u)),
           );
+          // Navigate on the first finished single-file upload. Multi-file
+          // batches keep the user on the modal so they can see all results.
+          if (valid.length === 1 && !firedNavigate && cid && onSuccess) {
+            firedNavigate = true;
+            toast.success("Call uploaded, processing");
+            onSuccess(cid);
+          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           setBatchUploads((prev) =>
             prev.map((u, i) => (i === idx ? { ...u, status: "error", error: msg } : u)),
           );
+          toast.error(msg || "Upload failed");
         }
       }),
     );
@@ -678,11 +694,13 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
                     e.stopPropagation();
                     const all = Array.from(e.dataTransfer.files ?? []);
                     if (all.length === 0) return;
-                    // Multi-file auto-detect path: drop N>1 files in auto-detect
-                    // mode → fire N parallel auto-detect uploads. Single-file
-                    // path keeps the RHF integration so the manual form still
-                    // works for non-auto-detect intake.
-                    if (autoDetect && all.length > 1) {
+                    // Auto-detect mode: any drop (1 or many) fires the
+                    // no-metadata upload immediately. Single-file path used
+                    // to set the RHF field and wait for the Upload click,
+                    // which silently 422'd when the user hit Upload first.
+                    // Now both paths behave the same — drop = upload starts,
+                    // navigate to /calls/{id} on success.
+                    if (autoDetect) {
                       fireBatchUpload(all);
                       return;
                     }
@@ -767,7 +785,9 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
                     onChange={(e) => {
                       const all = Array.from(e.target.files ?? []);
                       if (all.length === 0) return;
-                      if (autoDetect && all.length > 1) {
+                      // Same logic as onDrop: auto-detect = any count fires
+                      // the no-metadata batch upload immediately.
+                      if (autoDetect) {
                         fireBatchUpload(all);
                         return;
                       }

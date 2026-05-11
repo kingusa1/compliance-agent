@@ -7,7 +7,7 @@
  * Hero: back arrow + customer name + inline KPIs + +Upload primary button.
  * 6-stat strip · Deal cards (workflow progress bar) · Call timeline table.
  */
-import { use } from "react";
+import { use, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, ExternalLink } from "lucide-react";
 
@@ -18,6 +18,7 @@ import {
 } from "@/lib/queries/admin";
 import { Pill, type PillTone } from "@/components/design/Pill";
 import { WorkflowTypePill } from "@/components/design/WorkflowTypePill";
+import { UploadModal } from "@/app/(admin)/calls/UploadModal";
 import {
   CORRECTIVE_PHASES,
   PHASE_LABEL,
@@ -292,6 +293,7 @@ export default function CustomerDetailPage({
   const detail = useCustomerDetailQuery(slug);
   const rollup = useCustomerRollupQuery(slug);
   const timeline = useCustomerTimelineQuery(slug);
+  const [uploadOpen, setUploadOpen] = useState(false);
 
   const customer = detail.data?.customer;
   const deals = detail.data?.deals ?? [];
@@ -430,6 +432,8 @@ export default function CustomerDetailPage({
           )}
           <button
             type="button"
+            onClick={() => setUploadOpen(true)}
+            data-testid="customer-upload-trigger"
             style={{
               height: 32,
               padding: "0 12px",
@@ -448,6 +452,18 @@ export default function CustomerDetailPage({
           </button>
         </div>
       </div>
+
+      <UploadModal
+        open={uploadOpen}
+        onOpenChange={setUploadOpen}
+        customerSlug={slug}
+        prefill={{
+          customer: {
+            name: customer?.display_name ?? slug,
+            slug,
+          },
+        }}
+      />
 
       {/* Body */}
       <div
