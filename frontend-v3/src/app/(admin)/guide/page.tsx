@@ -399,7 +399,7 @@ const TROUBLESHOOTING: { problem: string; cause: string; fix: string }[] = [
   },
   {
     problem: "Call stuck in 'processing'",
-    cause: "Pipeline failed at one of the 13 steps (likely transcription if Deepgram throttled, or LLM if OpenRouter is rate-limited).",
+    cause: "Pipeline failed at one of the 15 steps (likely transcription if Deepgram throttled, or LLM if OpenRouter is rate-limited).",
     fix: "Open /observability → click the call → Redispatch. Or wait 30 minutes — the redispatch watchdog auto-fires for stuck calls.",
   },
   {
@@ -569,7 +569,7 @@ export default function GuidePage() {
         </Section>
 
         {/* 4 · Pipeline */}
-        <Section id="pipeline" icon={GitBranch} title="Upload → verdict pipeline (13 steps)">
+        <Section id="pipeline" icon={GitBranch} title="Upload → verdict pipeline (15 steps)">
           <p className="mb-4 text-[13px] text-[var(--text-muted)]">
             What happens between the moment you click <em>Upload Call</em> and the moment a
             verdict appears on /tracker.
