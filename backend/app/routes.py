@@ -1574,6 +1574,87 @@ async def admin_backfill_tracker(db: Session = Depends(get_db)):
     }
 
 
+@router.post("/api/admin/backfill-call-types", status_code=200)
+async def admin_backfill_call_types(
+    apply: bool = False,
+    only_full: bool = True,
+    db: Session = Depends(get_db),
+):
+    """Re-classify Call.call_type via AI for every call with a transcript.
+
+    Replaces the old filename pre-pass results. Reviewer-signed-off calls
+    are skipped. By default ``only_full=True`` so we only touch rows whose
+    call_type is unset or 'full'; pass ``only_full=False`` to re-classify
+    every call (slower, costs Opus 4.7 calls per recording).
+
+    Pass ``?apply=true`` to persist; default is a dry-run that just logs
+    the proposed changes + returns the diff.
+    """
+    from app.analysis import detect_call_type as _detect_call_type
+    from app.deal_lifecycle import derive_lifecycle_status as _derive
+    from app.models import CustomerDeal as _CDeal
+
+    _CANON = {"lead_gen", "passover", "closer", "standalone_loa", "c_call", "amendment"}
+
+    q = db.query(Call).filter(Call.transcript.isnot(None))
+    if only_full:
+        q = q.filter((Call.call_type.is_(None)) | (Call.call_type == "full"))
+    calls = q.order_by(Call.created_at.desc()).all()
+
+    changes: list[dict] = []
+    unresolved = 0
+    skipped_reviewed = 0
+    for c in calls:
+        existing = (c.call_type or "").strip().lower()
+        if (c.review_status or "") == "reviewed" and existing in _CANON:
+            skipped_reviewed += 1
+            continue
+        new_ct = await _detect_call_type(c.transcript or "")
+        if new_ct is None:
+            unresolved += 1
+            continue
+        if new_ct == existing:
+            continue
+        changes.append(
+            {
+                "call_id": str(c.id),
+                "filename": c.filename,
+                "from": existing or None,
+                "to": new_ct,
+            }
+        )
+        if apply:
+            c.call_type = new_ct
+
+    if apply:
+        # Re-derive lifecycle on every affected deal.
+        deal_ids = {c.deal_id for c in calls if c.deal_id}
+        relifed = 0
+        for did in deal_ids:
+            deal = db.query(_CDeal).filter_by(id=did).first()
+            if not deal:
+                continue
+            deal_calls = [c for c in calls if c.deal_id == did]
+            new_status = _derive(deal, deal_calls)
+            if new_status and new_status != deal.lifecycle_status:
+                deal.lifecycle_status = new_status
+                relifed += 1
+        db.commit()
+    else:
+        relifed = 0
+        db.rollback()
+
+    return {
+        "scanned": len(calls),
+        "applied": apply,
+        "only_full": only_full,
+        "changes": changes,
+        "unresolved": unresolved,
+        "skipped_reviewed": skipped_reviewed,
+        "deals_relifed": relifed,
+    }
+
+
 @router.post("/api/admin/quality-resolve", status_code=200)
 async def admin_quality_resolve(db: Session = Depends(get_db)):
     """Run the Quality AI Agent across all completed calls and apply its
