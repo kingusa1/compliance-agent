@@ -25,34 +25,40 @@ function wattPortalUrl(siteId: number | null | undefined): string | null {
 }
 
 // Watt deal lifecycle phases — matches backend
-// deal_lifecycle.SUPPLIER_PHASE_MATRIX. Per the supplier-spec-handout
-// audit, E.ON only requires lead_gen + closer (LOA bundled into closer);
-// every other supplier requires lead_gen + closer + standalone_loa.
-// `c_call` and `amendment` are corrective steps available to all
-// suppliers and never block "verified" — we always render them at the
-// end of the bar so reviewers can see whether a corrective happened.
+// deal_lifecycle.SUPPLIER_PHASE_MATRIX. Canonical per Watt AI
+// Compliance Tech Spec (TS §3) and user confirmation 2026-05-11:
+//   - E.ON / E.ON Next: 3 required stages = Lead Gen → Passover → Closer
+//     (LOA is bundled into Closer for E.ON)
+//   - Every other supplier: 4 required stages = Lead Gen → Passover →
+//     Closer → Standalone LOA
+//   - `amendment` and `c_call` are corrective steps available to ANY
+//     supplier; they never block "verified". Rendered at the end of
+//     the bar so reviewers can tell whether a corrective happened.
 const _CORRECTIVE_STEPS = ["c_call", "amendment"] as const;
 
 const _SUPPLIER_REQUIRED_PHASES: Record<string, string[]> = {
-  // Keys mirror the canonical supplier names the backend matrix uses.
-  "E.ON":           ["lead_gen", "closer"],
-  "E.ON Next":      ["lead_gen", "closer"],
-  "EON":            ["lead_gen", "closer"],
-  "EON Next":       ["lead_gen", "closer"],
-  "British Gas":    ["lead_gen", "closer", "standalone_loa"],
-  "British Gas Lite": ["lead_gen", "closer", "standalone_loa"],
-  "BGL":            ["lead_gen", "closer", "standalone_loa"],
-  "BG Core":        ["lead_gen", "closer", "standalone_loa"],
-  "Scottish Power": ["lead_gen", "closer", "standalone_loa"],
-  "EDF Energy":     ["lead_gen", "closer", "standalone_loa"],
-  "EDF":            ["lead_gen", "closer", "standalone_loa"],
-  "Pozitive":       ["lead_gen", "closer", "standalone_loa"],
+  // E.ON variants → 3 required stages (LOA bundled into Closer)
+  "E.ON":             ["lead_gen", "passover", "closer"],
+  "E.ON Next":        ["lead_gen", "passover", "closer"],
+  "EON":              ["lead_gen", "passover", "closer"],
+  "EON Next":         ["lead_gen", "passover", "closer"],
+  // Everyone else → 4 required stages (standalone LOA needed)
+  "British Gas":      ["lead_gen", "passover", "closer", "standalone_loa"],
+  "British Gas Lite": ["lead_gen", "passover", "closer", "standalone_loa"],
+  "BGL":              ["lead_gen", "passover", "closer", "standalone_loa"],
+  "BG Core":          ["lead_gen", "passover", "closer", "standalone_loa"],
+  "Scottish Power":   ["lead_gen", "passover", "closer", "standalone_loa"],
+  "EDF Energy":       ["lead_gen", "passover", "closer", "standalone_loa"],
+  "EDF":              ["lead_gen", "passover", "closer", "standalone_loa"],
+  "Pozitive":         ["lead_gen", "passover", "closer", "standalone_loa"],
+  "Pozitive Energy":  ["lead_gen", "passover", "closer", "standalone_loa"],
 };
 
 function workflowStepsFor(supplier: string | null | undefined): string[] {
   const required = supplier
-    ? (_SUPPLIER_REQUIRED_PHASES[supplier] ?? ["lead_gen", "closer", "standalone_loa"])
-    : ["lead_gen", "closer", "standalone_loa"];
+    ? (_SUPPLIER_REQUIRED_PHASES[supplier] ??
+       ["lead_gen", "passover", "closer", "standalone_loa"])
+    : ["lead_gen", "passover", "closer", "standalone_loa"];
   return [...required, ..._CORRECTIVE_STEPS];
 }
 
@@ -125,22 +131,23 @@ function StatCard({
 }
 
 // Human-readable label for each lifecycle phase. Surfaces "Lead Gen" /
-// "Closer" / "Standalone LOA" instead of the snake-case backend names.
+// "Passover" / "Closer" / "Standalone LOA" instead of snake-case.
 const _PHASE_LABEL: Record<string, string> = {
   lead_gen: "Lead Gen",
+  passover: "Passover",
   closer: "Closer",
   standalone_loa: "Standalone LOA",
   amendment: "Amendment",
   c_call: "C-Call",
 };
 
-// Per-supplier phase tooltip explaining WHY this customer has 2 vs 3 stages.
+// Per-supplier phase tooltip explaining the 3 vs 4 stage rule.
 function _stageBlurb(supplier: string | null | undefined, count: number): string {
-  if (count === 2) {
-    return `${supplier ?? "This supplier"} bundles the LOA into the Closer call, so this deal needs 2 stages: Lead Gen → Closer.`;
-  }
   if (count === 3) {
-    return `${supplier ?? "This supplier"} requires a separate LOA call after the Closer, so this deal needs 3 stages: Lead Gen → Closer → Standalone LOA.`;
+    return `${supplier ?? "This supplier"} bundles the LOA into the Closer, so this deal needs 3 stages: Lead Gen → Passover → Closer.`;
+  }
+  if (count === 4) {
+    return `${supplier ?? "This supplier"} requires a separate LOA call after the Closer, so this deal needs 4 stages: Lead Gen → Passover → Closer → Standalone LOA.`;
   }
   return `${count} lifecycle stages required for this deal.`;
 }

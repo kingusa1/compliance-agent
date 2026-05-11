@@ -372,9 +372,10 @@ async def upload_call(
         elif _stem in ("lead", "lead gen", "lead_gen") or _has("lead gen") or _has("lead-gen") or _has("leadgen") or _stem == "lead":
             call_type = "lead_gen"
         elif _has("passover") or _has("pass over"):
-            # "Passover" in Watt parlance = the lead-gen-to-closer handover;
-            # the call itself is the closer.
-            call_type = "closer"
+            # "Passover" in Watt parlance = the lead-gen-to-closer handover.
+            # It's a distinct lifecycle phase, NOT a closer (the closer is the
+            # verbal-contract recording afterwards). audit-late v5.
+            call_type = "passover"
         elif _has("loa") or _has("letter of authority") or _stem == "loa":
             call_type = "standalone_loa"
         elif _has("verbal") or _has("verbal_contract") or _stem == "verbal":

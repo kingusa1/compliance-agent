@@ -55,6 +55,7 @@ from typing import Iterable, Literal
 LifecycleStatus = Literal[
     "open",
     "lead_gen_done",
+    "passover_done",
     "closer_done",
     "c_call_done",
     "amendment_done",
@@ -67,7 +68,8 @@ LifecycleStatus = Literal[
 # `rejected` is terminal — no outgoing edges.
 ALLOWED: dict[str, set[str]] = {
     "open": {"lead_gen_done", "rejected"},
-    "lead_gen_done": {"closer_done", "rejected"},
+    "lead_gen_done": {"passover_done", "closer_done", "rejected"},
+    "passover_done": {"closer_done", "rejected"},
     "closer_done": {"verified", "amendment_done", "c_call_done", "rejected"},
     "verified": {"c_call_done", "amendment_done", "rejected"},
     "amendment_done": {"verified", "c_call_done", "rejected"},
@@ -76,24 +78,30 @@ ALLOWED: dict[str, set[str]] = {
 }
 
 
-# Required phases per supplier. Keys cover both the bare brand
-# ("E.ON") and the variant strings the pipeline actually persists
-# ("E.ON Next", "EON Next"). The bundled-LOA suppliers only need
-# lead_gen + closer; everyone else needs the standalone LOA call.
+# Required phases per supplier — CORRECT per user 2026-05-11:
+#   - E.ON / E.ON Next: 3 stages (Lead Gen → Passover → Closer, LOA bundled)
+#   - All other suppliers: 4 stages (+ Standalone LOA)
+# Plus optional `amendment` and `c_call` corrective phases for any deal.
+#
+# "Passover" is the warm-handover between the lead-gen agent and the closer.
+# It's a distinct file in every Watt customer audio folder and a distinct
+# segmentation stage in the Watt AI Compliance Tech Spec (TS §3).
+# Previously the matrix only had Lead Gen + Closer (+ LOA) — Passover was
+# missing, which is why deals reached "verified" prematurely.
 SUPPLIER_PHASE_MATRIX: dict[str, list[str]] = {
-    "E.ON": ["lead_gen", "closer"],
-    "E.ON Next": ["lead_gen", "closer"],
-    "EON": ["lead_gen", "closer"],
-    "EON Next": ["lead_gen", "closer"],
-    "British Gas": ["lead_gen", "closer", "standalone_loa"],
-    "British Gas Lite": ["lead_gen", "closer", "standalone_loa"],
-    "BG Core": ["lead_gen", "closer", "standalone_loa"],
-    "BGL": ["lead_gen", "closer", "standalone_loa"],
-    "Scottish Power": ["lead_gen", "closer", "standalone_loa"],
-    "EDF Energy": ["lead_gen", "closer", "standalone_loa"],
-    "EDF": ["lead_gen", "closer", "standalone_loa"],
-    "Pozitive": ["lead_gen", "closer", "standalone_loa"],
-    "Pozitive Energy": ["lead_gen", "closer", "standalone_loa"],
+    "E.ON":             ["lead_gen", "passover", "closer"],
+    "E.ON Next":        ["lead_gen", "passover", "closer"],
+    "EON":              ["lead_gen", "passover", "closer"],
+    "EON Next":         ["lead_gen", "passover", "closer"],
+    "British Gas":      ["lead_gen", "passover", "closer", "standalone_loa"],
+    "British Gas Lite": ["lead_gen", "passover", "closer", "standalone_loa"],
+    "BG Core":          ["lead_gen", "passover", "closer", "standalone_loa"],
+    "BGL":              ["lead_gen", "passover", "closer", "standalone_loa"],
+    "Scottish Power":   ["lead_gen", "passover", "closer", "standalone_loa"],
+    "EDF Energy":       ["lead_gen", "passover", "closer", "standalone_loa"],
+    "EDF":              ["lead_gen", "passover", "closer", "standalone_loa"],
+    "Pozitive":         ["lead_gen", "passover", "closer", "standalone_loa"],
+    "Pozitive Energy":  ["lead_gen", "passover", "closer", "standalone_loa"],
 }
 
 
@@ -118,11 +126,13 @@ def required_phases(supplier: str | None) -> list[str]:
 
 
 # Map from Call.call_type to the supplier-matrix phase name.
-# Normalised because some uploads use 'loa' as a synonym for the
-# standalone LOA call.
+# 'passover' is the warm-handover between lead-gen and closer agents
+# (TS §3 segmentation stage). 'loa' aliases to 'standalone_loa'.
 _CALL_TYPE_TO_PHASE: dict[str, str] = {
     "lead_gen": "lead_gen",
+    "passover": "passover",
     "closer": "closer",
+    "verbal": "closer",
     "standalone_loa": "standalone_loa",
     "loa": "standalone_loa",
     "amendment": "amendment",
@@ -154,7 +164,11 @@ def _completed_phases(calls: Iterable) -> set[str]:
             continue
         ct = getattr(c, "call_type", None)
         if ct == "full":
+            # A "full" recording captures the entire E.ON-style bundled
+            # flow on one call: lead-gen intro + passover/handover + closer
+            # (LOA bundled). Credit all three phases.
             out.add("lead_gen")
+            out.add("passover")
             out.add("closer")
             continue
         phase = call_type_to_phase(ct)
@@ -182,6 +196,7 @@ def derive_lifecycle_status(deal, calls: Iterable) -> str:
     required = set(required_phases(getattr(deal, "supplier", None)))
 
     has_lead_gen = "lead_gen" in completed
+    has_passover = "passover" in completed
     has_closer = "closer" in completed
     has_loa = "standalone_loa" in completed
     has_amendment = "amendment" in completed
@@ -205,6 +220,9 @@ def derive_lifecycle_status(deal, calls: Iterable) -> str:
         # Closer landed but a required follow-up (LOA) is still
         # missing → closer_done.
         return "closer_done"
+
+    if has_passover:
+        return "passover_done"
 
     if has_lead_gen:
         return "lead_gen_done"

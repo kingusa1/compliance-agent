@@ -30,6 +30,7 @@ import {
   Table as TableIcon,
   LayoutDashboard,
   BookOpen,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 
@@ -70,8 +71,9 @@ const NAV_ITEMS: NavItem[] = [
   { key: "non-compliant", label: "Non-compliant", icon: ShieldAlert,  href: "/non-compliant",  roles: ["admin", "lead"] },
   { key: "observability", label: "Observability", icon: Activity,     href: "/observability",  roles: ["admin", "lead"] },
 
-  // ── System — configuration ────────────────────────────────────
-  { key: "settings",      label: "Settings",      icon: SettingsIcon, href: "/settings",       roles: ["admin", "lead"], section: "System" },
+  // ── System — configuration + reference ──────────────────────
+  { key: "workflow",      label: "Workflow",      icon: Workflow,     href: "/workflow",       roles: ["reviewer", "lead", "admin"], section: "System" },
+  { key: "settings",      label: "Settings",      icon: SettingsIcon, href: "/settings",       roles: ["admin", "lead"] },
   { key: "guide",         label: "User Guide",    icon: BookOpen,     href: "/guide",          roles: ["reviewer", "lead", "admin"] },
 ];
 
