@@ -729,6 +729,20 @@ async def analyze_all_checkpoints(
         f"(word_data size={len(word_data) if word_data else 0})"
     )
 
+    # Severity passthrough — copy each checkpoint's source severity onto
+    # the result row so the verdict logic below can weight breaches by
+    # severity. Match by section first (stable), then by name.
+    by_section = {cp.get("section"): cp for cp in checkpoints if cp.get("section") is not None}
+    by_name = {cp.get("name"): cp for cp in checkpoints}
+    for r in results:
+        if "severity" in r and r["severity"]:
+            continue
+        src = by_section.get(r.get("section")) or by_name.get(r.get("name"))
+        if src:
+            r["severity"] = (src.get("severity") or "medium").lower()
+            # Pass through category too — useful for the reviewer queue + audit.
+            r["category"] = src.get("category")
+
     # Aggregate scores (skip "error" checkpoints from denominator)
     non_error = [r for r in results if r["status"] != "error"]
     total = len(non_error)
@@ -737,10 +751,49 @@ async def analyze_all_checkpoints(
     failed = sum(1 for r in non_error if r["status"] in ("fail", "unverified"))
     error_count = sum(1 for r in results if r["status"] == "error")
     needs_review_count = sum(1 for r in results if r.get("needs_review"))
-    compliant = total > 0 and failed == 0 and partial == 0
+
+    # \u2500\u2500 Severity-weighted verdict (Watt Compliance Dataset, line 8):
+    #     "Critical = block / escalate, High = manual review, Medium = coaching"
+    #
+    # The old binary rule `compliant = (failed == 0 and partial == 0)` flipped
+    # otherwise-clean calls to non_compliant on a single Medium partial. That
+    # doesn't match the document. New mapping:
+    #
+    #     worst_severity \u2192 bucket \u2192 DB compliance_status     compliant
+    #     critical fail  \u2192 blocked    \u2192 non_compliant         False
+    #     high    fail   \u2192 review     \u2192 pending (HITL)        False
+    #     medium  fail   \u2192 coaching   \u2192 compliant             True (note logged)
+    #     all pass       \u2192 pass       \u2192 compliant             True
+    #
+    # `non_error` checkpoint rows carry a `severity` field from the source
+    # script / phrase pack (defaults to "medium" when absent \u2014 same fallback
+    # the phrase_pack_extractor uses).
+    def _sev(cp: dict) -> str:
+        s = str(cp.get("severity") or "medium").lower()
+        return s if s in {"critical", "high", "medium", "low", "info"} else "medium"
+
+    breached = [r for r in non_error if r["status"] in ("fail", "unverified", "partial")]
+    critical_hits = [r for r in breached if _sev(r) == "critical"]
+    high_hits = [r for r in breached if _sev(r) == "high"]
+    medium_hits = [r for r in breached if _sev(r) in ("medium", "low", "info")]
+
+    if critical_hits:
+        bucket = "blocked"
+        compliant = False
+    elif high_hits:
+        bucket = "review"
+        compliant = False
+    elif medium_hits:
+        bucket = "coaching"
+        compliant = True  # passes with note
+    else:
+        bucket = "pass"
+        compliant = total > 0
 
     log.info(
-        f"\U0001f4ca ANALYSIS done \u2192 {passed}/{total} passed, "
+        f"\U0001f4ca ANALYSIS done \u2192 {passed}/{total} passed \u00b7 "
+        f"breaches: critical={len(critical_hits)} high={len(high_hits)} "
+        f"medium={len(medium_hits)} \u00b7 bucket={bucket} compliant={compliant} \u00b7 "
         f"{error_count} errors, {needs_review_count} needs review"
     )
 
@@ -756,6 +809,10 @@ async def analyze_all_checkpoints(
             "error": error_count,
             "needs_review": needs_review_count,
             "compliant": compliant,
+            "bucket": bucket,                       # pass | coaching | review | blocked
+            "critical_breaches": len(critical_hits),
+            "high_breaches": len(high_hits),
+            "medium_breaches": len(medium_hits),
             "score": f"{passed}/{total}" if total > 0 else "0/0",
         },
     }

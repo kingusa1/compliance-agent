@@ -1040,13 +1040,36 @@ def _step_score(call_id: str, analysis: dict, db: Session) -> dict:
         else:
             call.score = summary["score"]
             call.compliant = summary["compliant"]
-            passed = summary["passed"]
-            partial = summary["partial"]
-            failed = summary["failed"]
-            call.reason = f"Score: {call.score}. " + (
-                "All checkpoints passed." if call.compliant
-                else f"{failed} checkpoint(s) missed, {partial} partial."
-            )
+            # Severity-weighted bucket (pass / coaching / review / blocked) —
+            # see checkpoint_analyzer.analyze_all_checkpoints for the rule.
+            bucket = summary.get("bucket", "pass" if call.compliant else "review")
+            crit = summary.get("critical_breaches", 0)
+            high = summary.get("high_breaches", 0)
+            med = summary.get("medium_breaches", 0)
+            # Write the bucket onto compliance_status so the UI + reviewer
+            # queue route correctly without a second lookup. Existing
+            # values ("compliant" | "non_compliant" | "pending") stay valid
+            # — the bucket is an additional, finer signal.
+            if bucket == "pass":
+                call.compliance_status = "compliant"
+                call.reason = f"Score: {call.score}. All checkpoints passed."
+            elif bucket == "coaching":
+                # Medium breaches only — pass with coaching note.
+                call.compliance_status = "compliant"
+                call.reason = (
+                    f"Score: {call.score}. {med} medium issue(s) logged for coaching; "
+                    "no Critical or High breaches."
+                )
+            elif bucket == "review":
+                call.compliance_status = "pending"
+                call.reason = (
+                    f"Score: {call.score}. {high} High-severity breach(es) — reviewer must decide."
+                )
+            else:  # blocked
+                call.compliance_status = "non_compliant"
+                call.reason = (
+                    f"Score: {call.score}. {crit} Critical breach(es) — auto-blocked."
+                )
             if errored > 0:
                 call.reason += f" {errored} checkpoint(s) had errors."
         call.excerpt = None
