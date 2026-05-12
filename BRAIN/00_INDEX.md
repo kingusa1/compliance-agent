@@ -38,6 +38,7 @@ tags: [index, brain]
 - [[02_Domain/Suppliers]] — 6 suppliers, the alias map, the canonical labels
 - [[02_Domain/Scripts]] — 15 supplier scripts + the 2-vs-3-stage rule
 - [[02_Domain/Lifecycle]] — Lead Gen → Closer → Standalone LOA
+- [[02_Domain/Stage_Terminology]] — Aly's "Opener/Closer{Pre-Sales,Verbal,LOA}" vs doc terminology vs system routing (2026-05-12)
 
 ### 03 AI Pipeline
 - [[03_AI_Pipeline/Pipeline_Stages]] — the 5-stage flow on every upload
