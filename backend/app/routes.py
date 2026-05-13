@@ -1493,6 +1493,90 @@ async def reanalyze_call(
     return await _reanalyze_call(call_id, db, actor_id=actor_id)
 
 
+@router.post("/api/admin/wipe-all-calls", status_code=200)
+async def admin_wipe_all_calls(
+    confirm: str = "",
+    db: Session = Depends(get_db),
+):
+    """DESTRUCTIVE — hard-deletes every Call + cascade-bound rows.
+
+    Required for the 2026-05-12 taxonomy rebuild: user wants the prod DB
+    cleared of legacy 37 calls graded under the old single-rubric model
+    before the new content-classifier + per-segment pipeline goes live.
+
+    Cascade-delete tables (FK has ON DELETE CASCADE):
+        call_checkpoints · agent_traces · call_segments · flags ·
+        extracted_entities · pipeline_step_log · failed_jobs ·
+        transcript_chunks · fix_directives
+
+    SET NULL tables (we explicitly delete the now-orphaned rows so they
+    don't accumulate):
+        rejections · verdict_history · transcript_edits ·
+        verdict_suggestions · verdict_responses · review_sessions
+
+    customer_deals + customers with no remaining calls are deleted too.
+
+    Hard requires ``?confirm=YES_DELETE_EVERYTHING`` — any other value
+    returns 400 to avoid accidental fires.
+    """
+    if confirm != "YES_DELETE_EVERYTHING":
+        raise HTTPException(
+            400,
+            "Missing or wrong confirm. Pass ?confirm=YES_DELETE_EVERYTHING to proceed.",
+        )
+
+    from sqlalchemy import text
+
+    counts: dict[str, int] = {}
+
+    # 1) Tables that have call_id with SET NULL — delete the orphans
+    # explicitly so we don't leave dangling rows.
+    for table in (
+        "rejections",
+        "verdict_history",
+        "transcript_edits",
+        "verdict_suggestions",
+        "verdict_responses",
+        "review_sessions",
+    ):
+        try:
+            result = db.execute(text(f"DELETE FROM {table}"))
+            counts[table] = result.rowcount or 0
+        except Exception as e:
+            log.warning(f"wipe: {table} skipped ({e})")
+            counts[table] = -1
+
+    # 2) The big one — DELETE FROM calls cascades to ~9 child tables.
+    result = db.execute(text("DELETE FROM calls"))
+    counts["calls"] = result.rowcount or 0
+
+    # 3) Drop deals + customers that no longer have any calls.
+    result = db.execute(
+        text(
+            "DELETE FROM customer_deals WHERE id NOT IN "
+            "(SELECT DISTINCT deal_id FROM calls WHERE deal_id IS NOT NULL)"
+        )
+    )
+    counts["customer_deals"] = result.rowcount or 0
+
+    try:
+        result = db.execute(
+            text(
+                "DELETE FROM customers WHERE id NOT IN "
+                "(SELECT DISTINCT customer_id FROM customer_deals "
+                "WHERE customer_id IS NOT NULL)"
+            )
+        )
+        counts["customers"] = result.rowcount or 0
+    except Exception as e:
+        log.warning(f"wipe: customers skipped ({e})")
+        counts["customers"] = -1
+
+    db.commit()
+    log.warning(f"\U0001f4a3 WIPE-ALL-CALLS executed → {counts}")
+    return {"wiped": True, "row_counts": counts}
+
+
 @router.post("/api/admin/backfill-tracker", status_code=200)
 async def admin_backfill_tracker(db: Session = Depends(get_db)):
     """Backfill tracker columns on legacy calls + rejections.
