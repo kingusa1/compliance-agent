@@ -12,7 +12,7 @@
 //      of a bare `editWord` call — gives us TanStack invalidation +
 //      toast plumbing for free.
 
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 
 import { ApiError } from "@/lib/api";
 import { getCurrentUser } from "@/lib/supabase";
@@ -44,6 +44,39 @@ interface TranscriptPlayerProps {
   onCheckpointUpdate?: (cp: unknown) => void;
   getRevision?: () => number | undefined;
   onConflict?: () => void;
+  /**
+   * Plan §5b extension (2026-05-14): when present and non-empty, render
+   * a "─── <Stage> · m:ss → m:ss ───" divider before the first turn whose
+   * start time crosses each segment boundary. Off when there's only one
+   * segment (no boundaries to draw).
+   */
+  segments?: Array<{
+    idx: number;
+    stage: string;
+    start_s: number | null;
+    end_s: number | null;
+  }>;
+}
+
+const SEG_LABEL: Record<string, string> = {
+  lead_gen: "Lead Gen",
+  pre_sales: "Pre-Sales",
+  verbal: "Verbal",
+  loa: "LOA",
+};
+
+const SEG_TONE: Record<string, string> = {
+  lead_gen: "#22c55e",
+  pre_sales: "#3b82f6",
+  verbal: "#f59e0b",
+  loa: "#a78bfa",
+};
+
+function _fmtSecsT(secs: number | null | undefined): string {
+  if (secs == null || !Number.isFinite(secs)) return "—";
+  const m = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 // Plan §5b: AGENT / CUSTOMER labels are LOUD — uppercase, bold, strong
@@ -93,6 +126,7 @@ export function TranscriptPlayer({
   onCheckpointUpdate,
   getRevision,
   onConflict,
+  segments,
 }: TranscriptPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const activeWordRef = useRef<HTMLSpanElement>(null);
@@ -260,9 +294,75 @@ export function TranscriptPlayer({
           activeWordIndex >= turn.startIdx &&
           activeWordIndex < turn.startIdx + turn.words.length;
 
+        // Plan §5b extension: segment divider drawn before any turn whose
+        // start time enters a new segment (i.e. this turn is the first in
+        // its segment AND there is >1 segment overall).
+        let divider: React.ReactNode = null;
+        if (segments && segments.length > 1) {
+          const turnStart = turn.startTime ?? 0;
+          const seg = segments.find(
+            (s) =>
+              s.start_s != null &&
+              s.end_s != null &&
+              turnStart >= s.start_s &&
+              turnStart <= s.end_s,
+          );
+          if (seg) {
+            const prevTurn = turnIdx > 0 ? turns[turnIdx - 1] : null;
+            const prevTurnStart = prevTurn?.startTime ?? -1;
+            const prevSeg = prevTurn
+              ? segments.find(
+                  (s) =>
+                    s.start_s != null &&
+                    s.end_s != null &&
+                    prevTurnStart >= s.start_s &&
+                    prevTurnStart <= s.end_s,
+                )
+              : null;
+            const crossedBoundary = !prevSeg || prevSeg.idx !== seg.idx;
+            if (crossedBoundary) {
+              const tone = SEG_TONE[seg.stage] ?? "#8a857e";
+              const label = SEG_LABEL[seg.stage] ?? seg.stage;
+              divider = (
+                <div
+                  key={`seg-${seg.idx}`}
+                  data-testid={`transcript-segment-divider-${seg.idx}`}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    margin: turnIdx === 0 ? "0 0 6px" : "12px 0 6px",
+                    padding: "0 12px",
+                  }}
+                >
+                  <div style={{ flex: 1, height: 1, background: tone, opacity: 0.5 }} />
+                  <span
+                    style={{
+                      fontSize: 10.5,
+                      fontWeight: 700,
+                      letterSpacing: "0.08em",
+                      textTransform: "uppercase",
+                      color: tone,
+                      whiteSpace: "nowrap",
+                      padding: "3px 10px",
+                      borderRadius: 999,
+                      border: `1px solid ${tone}`,
+                      background: "var(--bg-elev1)",
+                    }}
+                  >
+                    {label} · {_fmtSecsT(seg.start_s)} → {_fmtSecsT(seg.end_s)}
+                  </span>
+                  <div style={{ flex: 1, height: 1, background: tone, opacity: 0.5 }} />
+                </div>
+              );
+            }
+          }
+        }
+
         return (
+          <React.Fragment key={turnIdx}>
+          {divider}
           <div
-            key={turnIdx}
             style={{
               display: "flex",
               gap: 10,
@@ -408,6 +508,7 @@ export function TranscriptPlayer({
               })}
             </div>
           </div>
+          </React.Fragment>
         );
       })}
     </div>

@@ -27,6 +27,12 @@ type Segment = {
   idx: number;
   stage: string;
   confidence: number | null;
+  start_s: number | null;
+  end_s: number | null;
+  start_word_idx: number | null;
+  end_word_idx: number | null;
+  transcript_excerpt: string | null;
+  classifier_reasoning: string | null;
   score: string | null;
   bucket: string | null;
   compliant: boolean | null;
@@ -55,6 +61,13 @@ const STAGE_TONE: Record<string, string> = {
   verbal: "var(--amber)",
   loa: "var(--violet)",
 };
+
+function fmtSecs(secs: number | null): string {
+  if (secs == null || !Number.isFinite(secs)) return "—";
+  const m = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
 
 function bucketPill(bucket: string | null | undefined): React.ReactNode {
   const b = (bucket || "").toLowerCase();
@@ -173,6 +186,29 @@ export function SegmentCards({ callId }: { callId: string }) {
               >
                 Segment {s.idx + 1}
               </span>
+              <span
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-faint)",
+                  fontFamily: "var(--font-mono)",
+                  fontVariantNumeric: "tabular-nums",
+                }}
+                title={`Segment ranges from ${fmtSecs(s.start_s)} to ${fmtSecs(s.end_s)}`}
+              >
+                · {fmtSecs(s.start_s)} → {fmtSecs(s.end_s)}
+              </span>
+              {s.confidence != null && (
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: "var(--text-faint)",
+                    fontFamily: "var(--font-mono)",
+                  }}
+                  title={`Classifier confidence ${Math.round((s.confidence ?? 0) * 100)}%`}
+                >
+                  · conf {Math.round((s.confidence ?? 0) * 100)}%
+                </span>
+              )}
               <div style={{ flex: 1 }} />
               <span
                 style={{
@@ -186,6 +222,26 @@ export function SegmentCards({ callId }: { callId: string }) {
               </span>
               {bucketPill(s.bucket)}
             </div>
+            {/* Why did the AI call this segment <stage>? — surfaces the
+                classifier_reasoning so the reviewer can audit at a glance. */}
+            {s.classifier_reasoning && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "var(--text-muted)",
+                  marginBottom: 6,
+                  fontStyle: "italic",
+                  borderLeft: "2px solid var(--border-subtle)",
+                  paddingLeft: 8,
+                }}
+                title="Why the AI classified this segment as the chosen stage"
+              >
+                <span style={{ color: "var(--text-faint)", fontStyle: "normal" }}>
+                  AI&apos;s reasoning · why {label}:{" "}
+                </span>
+                {s.classifier_reasoning}
+              </div>
+            )}
             {s.reason && (
               <div
                 style={{

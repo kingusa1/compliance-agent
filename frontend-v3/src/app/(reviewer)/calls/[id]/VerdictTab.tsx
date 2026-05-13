@@ -343,6 +343,35 @@ export function VerdictTab(props: VerdictTabProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cpCards.length]);
 
+  // Mirror reviewer_verdict (set from the Checkpoints-tab 1-click Pass /
+  // Override Fail) into perCpActions so the Required-actions counter on
+  // this tab moves in lock-step with the per-checkpoint cards. Without
+  // this, clicking Pass on a fail checkpoint left the verdict tab's
+  // "0 of 26 need action" frozen — see user feedback 2026-05-14.
+  //
+  // Reviewer → action mapping:
+  //   reviewer.pass  → "no_action"  (CP signed off, no follow-up)
+  //   reviewer.fail  → "recall_redo" (default remediation, reviewer
+  //                                   can downgrade to coach/ignore)
+  useEffect(() => {
+    setPerCpActions((prev) => {
+      const m = new Map(prev);
+      let changed = false;
+      for (const cp of cpCards) {
+        const reviewer = (cp.verdict?.reviewer_verdict || "").toLowerCase();
+        if (reviewer !== "pass" && reviewer !== "fail") continue;
+        const desired: PerCpAction =
+          reviewer === "pass" ? "no_action" : "recall_redo";
+        if (m.get(cp.key) !== desired) {
+          m.set(cp.key, desired);
+          changed = true;
+        }
+      }
+      return changed ? m : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cpCards]);
+
   function setAction(key: string, next: PerCpAction) {
     setPerCpActions((prev) => {
       const m = new Map(prev);

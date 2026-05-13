@@ -11,7 +11,7 @@
  */
 import { use, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   Download,
@@ -46,7 +46,7 @@ import {
   useRetryCheckpoint,
   type VerdictAction,
 } from "@/lib/mutations/reviewer";
-import { ApiError } from "@/lib/api";
+import { ApiError, apiFetch } from "@/lib/api";
 import { formatScorePercent } from "@/lib/score";
 import { Pill } from "@/components/design/Pill";
 import { WorkflowTypePill } from "@/components/design/WorkflowTypePill";
@@ -57,6 +57,7 @@ import { PricingMismatchBanner } from "./PricingMismatchBanner";
 import { ProcessingStepper } from "./ProcessingStepper";
 import { VerdictTab } from "./VerdictTab";
 import { SegmentCards } from "./SegmentCards";
+import { SegmentChips } from "./SegmentChips";
 import { VulnerabilityBanner } from "./VulnerabilityBanner";
 import { EditMetadataDialog } from "./EditMetadataDialog";
 import { ReanalyzeButton } from "./ReanalyzeButton";
@@ -596,6 +597,26 @@ export default function CallDetailPage({
   const retryCheckpoint = useRetryCheckpoint();
 
   const [tab, setTab] = useState<"checkpoints" | "verdict" | "chat">("checkpoints");
+
+  // Plan §5b extension (2026-05-14): fetch segments at page level so the
+  // TranscriptPlayer can draw segment dividers; SegmentChips + SegmentCards
+  // share the cache via the same query key.
+  type _SegRow = {
+    id: string;
+    idx: number;
+    stage: string;
+    start_s: number | null;
+    end_s: number | null;
+  };
+  const segmentsQuery = useQuery({
+    queryKey: ["call", id, "segments"] as const,
+    queryFn: () =>
+      apiFetch<{ segments: _SegRow[] }>(
+        `/api/calls/${encodeURIComponent(id)}/segments`,
+      ),
+    enabled: !!id,
+    staleTime: 30_000,
+  });
   // Plan §5b: top-row pill filter restored (Pass / Partial / Non-Compliant)
   // with counts. Click a chip → narrow the checkpoint list to that status.
   const [cpFilter, setCpFilter] = useState<"all" | "passed" | "partial" | "fail">("all");
@@ -1027,6 +1048,8 @@ export default function CallDetailPage({
           </span>
         </div>
         <WorkflowTypePill supplier={c?.detected_supplier ?? null} compact />
+        {/* Plan §5b extension (2026-05-14): inline AI-detected segment chips. */}
+        <SegmentChips callId={id} />
         {committed ? (
           <Pill tone="emerald" dot>
             Committed
@@ -1402,6 +1425,7 @@ export default function CallDetailPage({
             {wordsForPlayer.length > 0 ? (
               <TranscriptPlayer
                 words={wordsForPlayer}
+                segments={segmentsQuery.data?.segments ?? []}
                 currentTime={currentSec}
                 onWordClick={seekTo}
                 callId={id}

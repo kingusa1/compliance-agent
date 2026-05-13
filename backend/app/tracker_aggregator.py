@@ -113,6 +113,48 @@ def _rejection_row(
     }
 
 
+def _awaiting_review_row(call: Call, deal: Optional[CustomerDeal]) -> TrackerRow:
+    """Tracker row for a Call that's awaiting reviewer sign-off.
+
+    Mirrors `_compliant_row` shape but seeds rejection-shape columns from
+    the AI verdict so the existing tracker UI can render them without a
+    schema branch. ``rejection_reason`` becomes the AI's call-level
+    ``reason`` text; ``category`` is left null until the reviewer assigns
+    one; ``status`` becomes a synthetic 'AWAITING_REVIEW' so the table
+    knows this row isn't a real rejection.
+    """
+    cust_name = (deal.customer_name if deal else None) or call.customer_name
+    return {
+        "customer_name": cust_name,
+        "mpan_mprn": deal.mpan_or_mprn if deal else None,
+        "expected_live_date": deal.expected_live_date if deal else None,
+        "deal_value_gbp": float(deal.deal_value_gbp)
+        if deal and deal.deal_value_gbp is not None
+        else None,
+        "supplier": (deal.supplier if deal else None) or call.detected_supplier,
+        "rejected_at": call.created_at,
+        "sales_agent": call.agent_name,
+        "rejection_reason": call.reason,
+        "category": None,
+        "fix_required": None,
+        "fix_assignee_id": None,
+        "status": "AWAITING_REVIEW",
+        "last_action_date": call.completed_at,
+        "deadline": None,
+        "outcome": None,
+        "notes": None,
+        "fix_narrative": None,
+        "score": call.score,
+        "call_id": call.id,
+        "rejection_id": None,
+        "deal_id": str(deal.id) if deal else None,
+        "verdict_state": "AI_PENDING",
+        "confirmed_by": None,
+        "confirmed_at": None,
+        "field_sources": dict((deal.field_sources or {}) if deal else {}),
+    }
+
+
 def _compliant_row(call: Call, deal: Optional[CustomerDeal]) -> TrackerRow:
     cust_name = (deal.customer_name if deal else None) or call.customer_name
     return {
@@ -160,38 +202,36 @@ def build_tracker_rows(
     surfaced as a reviewer queue separate from the active/fixed/dead workflow.
     """
     if tab == "awaiting_review":
-        # Exclude orphan rejections (call_id IS NULL) — they survive the
-        # ON DELETE SET NULL FK from rejections→calls and would otherwise
-        # show up in the queue with empty customer/agent columns. The
-        # audit row is preserved in the DB; we just don't surface it as
-        # a reviewer action item. 2026-05-11.
-        q = db.query(Rejection).filter(
-            Rejection.verdict_state == "AI_PENDING",
-            Rejection.call_id.isnot(None),
+        # Post-2026-05-12: rejections are reviewer-initiated only, so the
+        # awaiting_review tab can no longer be sourced from Rejection rows.
+        # Instead we surface every completed Call that the reviewer has
+        # NOT yet signed off (review_status != 'reviewed'), regardless of
+        # AI verdict — both Non-Compliant flagged and Compliant calls need
+        # a human pass before they leave this queue.
+        q = db.query(Call).filter(
+            Call.status == "completed",
+            or_(Call.review_status.is_(None), Call.review_status != "reviewed"),
         )
-        if category:
-            q = q.filter(Rejection.category.in_(category))
         if supplier:
-            q = q.filter(Rejection.supplier == supplier)
+            q = q.filter(Call.detected_supplier == supplier)
         if month:
-            q = q.filter(func.to_char(Rejection.rejected_at, "YYYY-MM") == month)
+            q = q.filter(func.to_char(Call.created_at, "YYYY-MM") == month)
         if search:
             like = f"%{search}%"
             q = q.filter(or_(
-                Rejection.customer_slug.ilike(like),
-                Rejection.sales_agent.ilike(like),
-                Rejection.rejection_reason.ilike(like),
+                Call.customer_name.ilike(like),
+                Call.agent_name.ilike(like),
             ))
-        rejections = q.order_by(Rejection.rejected_at.desc()).limit(limit).all()
-        rows = []
-        for rej in rejections:
-            call = db.query(Call).filter(Call.id == rej.call_id).first() if rej.call_id else None
+        # Newest first so freshly-processed calls land at the top.
+        calls = q.order_by(Call.created_at.desc()).limit(limit).all()
+        rows: list[TrackerRow] = []
+        for call in calls:
             deal = (
                 db.query(CustomerDeal).filter(CustomerDeal.id == call.deal_id).first()
-                if call and call.deal_id
+                if call.deal_id
                 else None
             )
-            rows.append(_rejection_row(rej, deal, call, db))
+            rows.append(_awaiting_review_row(call, deal))
         return rows
 
     if tab == "compliant":
