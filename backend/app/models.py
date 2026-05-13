@@ -290,6 +290,22 @@ class Call(Base):
     raw_llm_io = Column(JSONBCompat, nullable=True)
 
     checkpoints = relationship("CallCheckpoint", back_populates="call", order_by="CallCheckpoint.id")
+    # Schema CallResponse expects ``segments`` and ``flags`` lists; without
+    # the relationships pydantic.from_attributes raises AttributeError at
+    # response-serialization time and the route returns 500 even though
+    # the DB writes succeeded. Lazy=select keeps the query cheap when the
+    # caller doesn't touch them.
+    segments = relationship(
+        "CallSegment",
+        primaryjoin="Call.id==foreign(CallSegment.call_id)",
+        order_by="CallSegment.idx",
+        viewonly=True,
+    )
+    flags = relationship(
+        "Flag",
+        primaryjoin="Call.id==foreign(Flag.call_id)",
+        viewonly=True,
+    )
 
 
 class CallCheckpoint(Base):
