@@ -1092,32 +1092,75 @@ async def _step_analyze_checkpoints(
                 checkpoints_def = []
 
         if not (script and checkpoints_def):
-            # No rubric matched (or empty checkpoints) — record a stub
-            # segment verdict so the UI shows the gap, but skip the LLM
-            # call. Score is "0/0" with bucket=pass since we can't
-            # honestly say it failed.
-            seg.score = "0/0"
-            seg.compliant = None
-            seg.compliance_status = "pending"
-            seg.bucket = "review"
-            seg.critical_breaches = 0
-            seg.high_breaches = 0
-            seg.medium_breaches = 0
-            seg.reason = (
-                f"No rubric matched for segment '{seg.stage}' "
-                f"(supplier={call.detected_supplier!r})."
+            # No supplier-specific rubric matched (or empty checkpoints).
+            # Fall through to the V1 third-party-disclosure analyzer for
+            # this segment — same legacy behavior as the pre-rewrite
+            # _step_analyze_checkpoints. Emits CallCheckpoint rows + a
+            # per-segment verdict so the UI keeps grading the call
+            # rather than stubbing it out.
+            v1 = await analyze_compliance_v1(seg_transcript)
+            if v1.agent_name and v1.agent_name != "Unknown":
+                call.agent_name = v1.agent_name
+            if v1.customer_name and v1.customer_name != "Unknown":
+                call.customer_name = v1.customer_name
+            if not call.excerpt and v1.excerpt:
+                call.excerpt = v1.excerpt
+
+            v1_total = len(v1.checkpoints)
+            v1_passed = sum(1 for cp in v1.checkpoints if cp.passed)
+            seg.script_id = None
+            seg.score = f"{v1_passed}/{v1_total}" if v1_total else "0/0"
+            seg.compliant = bool(v1.compliant)
+            seg.bucket = "pass" if (v1_total and v1_passed == v1_total) else (
+                "review" if v1_total else "pass"
             )
-            seg.checkpoint_results = json.dumps([])
+            seg.compliance_status = (
+                "compliant" if seg.bucket == "pass" else "pending"
+            )
+            seg.critical_breaches = 0
+            seg.high_breaches = 0 if seg.bucket != "review" else max(0, v1_total - v1_passed)
+            seg.medium_breaches = 0
+            seg.reason = v1.reason or (
+                f"V1 fallback (no supplier script matched for "
+                f"supplier={call.detected_supplier!r})."
+            )
+            seg.checkpoint_results = json.dumps(
+                [
+                    {
+                        "name": cp.rule,
+                        "status": "pass" if cp.passed else "fail",
+                        "evidence": cp.excerpt,
+                    }
+                    for cp in v1.checkpoints
+                ]
+            )
+
+            for cp in v1.checkpoints:
+                db.add(
+                    CallCheckpoint(
+                        call_id=call_id,
+                        segment_id=seg.id,
+                        rule_text=cp.rule,
+                        passed=cp.passed,
+                        excerpt=cp.excerpt,
+                        confidence="high",
+                        needs_review=False,
+                    )
+                )
+                all_results.append(
+                    {"name": cp.rule, "status": "pass" if cp.passed else "fail"}
+                )
+
             segment_summaries.append(
                 {
                     "stage": seg.stage,
-                    "passed": 0,
-                    "total": 0,
-                    "bucket": "review",
+                    "passed": v1_passed,
+                    "total": v1_total,
+                    "bucket": seg.bucket,
                     "critical_breaches": 0,
-                    "high_breaches": 0,
+                    "high_breaches": seg.high_breaches,
                     "medium_breaches": 0,
-                    "compliant": None,
+                    "compliant": seg.compliant,
                 }
             )
             continue
