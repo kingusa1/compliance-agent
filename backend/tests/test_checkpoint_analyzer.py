@@ -274,11 +274,13 @@ async def test_all_checkpoints_parallel_all_pass():
 
 @pytest.mark.asyncio
 async def test_all_checkpoints_mixed_results():
-    """Mixed pass/fail results: compliant=False.
+    """Mixed pass/fail/partial results with the severity-weighted verdict
+    introduced 2026-05-10.
 
-    Post-D02 the LLM is called once per batch and returns a JSON array
-    covering every checkpoint in that batch. With one batch of 3, the
-    mock returns one array with [pass, fail, partial].
+    SAMPLE_CHECKPOINTS carries no explicit severity — default is 'medium',
+    so a fail + a partial both land in the ``medium_hits`` bucket. Under
+    the new mapping that is ``coaching`` → compliant=True (passes with
+    a coaching note logged). The score is still 1/3.
     """
     async def mock_call_llm(prompt, timeout=60.0):
         return json.dumps([
@@ -310,11 +312,17 @@ async def test_all_checkpoints_mixed_results():
             SAMPLE_TRANSCRIPT, SAMPLE_CHECKPOINTS, "meaning_for_meaning"
         )
 
-    assert result["summary"]["passed"] == 1
-    assert result["summary"]["failed"] == 1
-    assert result["summary"]["partial"] == 1
-    assert result["summary"]["compliant"] is False
-    assert result["summary"]["score"] == "1/3"
+    summary = result["summary"]
+    assert summary["passed"] == 1
+    assert summary["failed"] == 1
+    assert summary["partial"] == 1
+    assert summary["score"] == "1/3"
+    # All breaches default to severity=medium → coaching bucket, still compliant.
+    assert summary["bucket"] == "coaching"
+    assert summary["compliant"] is True
+    assert summary["critical_breaches"] == 0
+    assert summary["high_breaches"] == 0
+    assert summary["medium_breaches"] == 2  # fail + partial
 
 
 @pytest.mark.asyncio

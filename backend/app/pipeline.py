@@ -1262,6 +1262,12 @@ async def _step_analyze_checkpoints(
         )
         all_results.extend(verified)
 
+    # Mirror the flat per-rule verdict list onto the Call row so the legacy
+    # HITL / rejection-advisor / compliance.derive_compliance helpers (which
+    # read ``call.checkpoint_results``) keep working under the new per-segment
+    # pipeline. Segment-level results remain authoritative on each CallSegment row.
+    call.checkpoint_results = json.dumps(all_results) if all_results else None
+
     db.commit()
     return {
         "mode": "segments",
@@ -1523,8 +1529,6 @@ def _step_score(call_id: str, analysis: dict, db: Session) -> dict:
             f"Score: {call.score}. {crit} Critical breach(es) — auto-blocked. "
             f"({breakdown})"
         )
-
-    call.excerpt = None
 
     # Graceful degradation: if more than half of all checkpoints errored
     # (e.g. LLM timeouts), surface ``needs_manual_review`` so the

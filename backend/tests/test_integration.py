@@ -72,8 +72,11 @@ def _v2_analyzer_result(
 ) -> dict:
     """Build a mock return value for analyze_all_checkpoints().
 
-    Each checkpoint dict should have: section, name, status, evidence, notes.
-    This adds verified/similarity fields and computes the summary.
+    Mirrors the severity-weighted summary the real analyzer returns:
+    bucket ∈ {pass, coaching, review, blocked}; compliant is derived from
+    the bucket (pass/coaching → True). Default severity is 'medium' when
+    not set on an input checkpoint dict — same fallback the real analyzer
+    uses.
     """
     results = []
     for cp in checkpoints:
@@ -91,7 +94,24 @@ def _v2_analyzer_result(
     partial = sum(1 for r in non_error if r["status"] == "partial")
     failed = sum(1 for r in non_error if r["status"] in ("fail", "unverified"))
     error_count = sum(1 for r in results if r["status"] == "error")
-    compliant = total > 0 and failed == 0 and partial == 0
+
+    def _sev(cp: dict) -> str:
+        s = str(cp.get("severity") or "medium").lower()
+        return s if s in {"critical", "high", "medium", "low", "info"} else "medium"
+
+    breached = [r for r in non_error if r["status"] in ("fail", "unverified", "partial")]
+    critical_hits = [r for r in breached if _sev(r) == "critical"]
+    high_hits = [r for r in breached if _sev(r) == "high"]
+    medium_hits = [r for r in breached if _sev(r) in ("medium", "low", "info")]
+
+    if critical_hits:
+        bucket, compliant = "blocked", False
+    elif high_hits:
+        bucket, compliant = "review", False
+    elif medium_hits:
+        bucket, compliant = "coaching", True
+    else:
+        bucket, compliant = "pass", total > 0
 
     return {
         "results": results,
@@ -104,6 +124,10 @@ def _v2_analyzer_result(
             "failed": failed,
             "error": error_count,
             "compliant": compliant,
+            "bucket": bucket,
+            "critical_breaches": len(critical_hits),
+            "high_breaches": len(high_hits),
+            "medium_breaches": len(medium_hits),
             "score": f"{passed}/{total}" if total > 0 else "0/0",
         },
     }
@@ -454,6 +478,11 @@ async def test_integration_partial_checkpoint_v2(test_db):
     script = _make_script(test_db, supplier_name="Energy Solutions")
     call = _make_call(test_db, call_id="integ-005")
 
+    # Mark the partial checkpoint as severity=high so under the
+    # severity-weighted analyzer it lands in the 'review' bucket (compliant
+    # is False, reason mentions a High-severity breach). Same intent as the
+    # legacy binary rule "partial counts as a miss" — just expressed in the
+    # severity language the post-2026-05-10 analyzer speaks.
     partial_checkpoints = [
         {
             "section": 1,
@@ -461,6 +490,7 @@ async def test_integration_partial_checkpoint_v2(test_db):
             "status": "pass",
             "evidence": "we are an independent energy broker and a third party",
             "notes": None,
+            "severity": "high",
         },
         {
             "section": 2,
@@ -468,6 +498,7 @@ async def test_integration_partial_checkpoint_v2(test_db):
             "status": "pass",
             "evidence": "We are not an energy supplier like British Gas or E.ON Next",
             "notes": None,
+            "severity": "high",
         },
         {
             "section": 3,
@@ -475,6 +506,7 @@ async def test_integration_partial_checkpoint_v2(test_db):
             "status": "partial",
             "evidence": "We act as a broker",
             "notes": "Agent mentioned broker but did not say 'intermediary' or 'comparison service'.",
+            "severity": "high",
         },
         {
             "section": 4,
@@ -482,6 +514,7 @@ async def test_integration_partial_checkpoint_v2(test_db):
             "status": "pass",
             "evidence": "We are paid a referral fee by the supplier if you switch",
             "notes": None,
+            "severity": "high",
         },
     ]
 
@@ -502,12 +535,13 @@ async def test_integration_partial_checkpoint_v2(test_db):
     updated = test_db.query(Call).filter_by(id="integ-005").first()
 
     assert updated.status == "completed"
-    # partial checkpoint means NOT fully compliant
+    # 3 pass + 1 partial (severity=high) → review bucket → not compliant
     assert updated.compliant is False
-    # 3 pass + 1 partial: score counts only full passes
+    # Score counts only full passes
     assert updated.score == "3/4"
-    # reason should mention the partial count
-    assert "partial" in updated.reason.lower() or "1 partial" in updated.reason
+    # New reason format surfaces the score + a High-severity breach call-out
+    assert "3/4" in updated.reason
+    assert "high" in updated.reason.lower()
 
     checkpoints = test_db.query(CallCheckpoint).filter_by(call_id="integ-005").all()
     assert len(checkpoints) == 4
