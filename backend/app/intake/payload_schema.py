@@ -129,28 +129,26 @@ class DealMeta(BaseModel):
 
 
 class CallMeta(BaseModel):
-    """Call-level metadata — required at intake (every upload is a call).
+    """Call-level metadata — every upload is a call.
 
-    The 7-enum ``call_type`` covers Watt's full taxonomy:
+    2026-05-12 taxonomy rebuild: ``call_type`` is now optional at intake.
+    The new pipeline classifies the recording's segments automatically via
+    ``app.agents.content_classifier``; reviewers do NOT pick a call_type
+    on the upload form anymore. When present, the value MUST be one of
+    the 4 canonical segment types:
 
-      * ``lead_gen`` — first contact
-      * ``closer`` — verbal sale
-      * ``amendment`` — corrective re-sale
-      * ``c_call`` — corrective compliance call
-      * ``standalone_loa`` — separate LOA call (non-E.ON suppliers)
-      * ``passover`` — handover call (digest line 246)
-      * ``full`` — single combined recording (digest §2 line 51)
+      * ``lead_gen``  — opener / first contact
+      * ``pre_sales`` — closer warm-up (re-confirm before verbal)
+      * ``verbal``    — legally binding contract reading
+      * ``loa``       — letter-of-authority wording (E.ON audio only)
+
+    The old taxonomy (passover, closer, amendment, c_call, standalone_loa,
+    full) is retired. Phase 0 wiped all rows that used those values.
     """
 
-    call_type: Literal[
-        "lead_gen",
-        "closer",
-        "amendment",
-        "c_call",
-        "standalone_loa",
-        "passover",
-        "full",
-    ]
+    call_type: Optional[
+        Literal["lead_gen", "pre_sales", "verbal", "loa"]
+    ] = None
     sales_agent: Optional[str] = None
     notes: Optional[str] = None
 

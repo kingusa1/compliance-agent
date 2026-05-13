@@ -1,50 +1,35 @@
-"""Watt deal lifecycle state machine (Pillar 3 / L3).
+"""Watt deal lifecycle state machine — 2026-05-12 taxonomy rebuild.
 
-Maps the real Watt sales workflow:
-    1 customer → 1 deal → up to 5 calls (Lead Gen, Closer, Standalone-LOA,
-    Amendment, C-call). Each completed call advances the deal's
-    ``lifecycle_status`` along a constrained DAG.
+Maps the canonical 4-stage Watt sales workflow:
+
+    1 customer → 1 deal → 1+ recordings.
+    Each recording is classified as call_type ∈ {lead_gen, pre_sales, verbal, loa}.
+
+Aly's mental model (= Watt operations):
+    - E.ON Next: 3 stages (Lead Gen, Pre-Sales, Verbal). LOA wording is
+                 bundled INSIDE the Verbal segment of the closer
+                 recording per the E.ON Next verbal-contract script.
+    - All other suppliers: 3 stages (Lead Gen, Pre-Sales, Verbal). LOA
+                 is always paper / DocuSign for non-E.ON — never audio.
+
+Per-stage rule:
+    - "Latest call per phase wins" — re-records supersede earlier
+      non-compliant calls. If lead_gen #1 was non_compliant and
+      lead_gen #2 is compliant, the lead_gen phase counts as done.
 
 State definitions
 -----------------
-- ``open``           — deal created, no call has finalized yet.
-- ``lead_gen_done``  — Lead Gen call completed (gate 1 passed).
-- ``closer_done``    — Closer completed but the supplier still needs a
-                      standalone LOA (British Gas / Scottish Power /
-                      EDF Energy / Pozitive). The deal is *not* verified
-                      until the LOA call lands.
-- ``c_call_done``    — Confirmation call ("C-call") finalized after a
-                      verified deal — corrective transition. Does not
-                      block ``verified`` and does not appear in
-                      ``missing_calls``.
-- ``amendment_done`` — Amendment call finalized (corrective).
-- ``verified``       — All required phases per the supplier matrix are
-                      complete. E.ON only needs Lead Gen + Closer
-                      (LOA bundled). Other suppliers need the standalone
-                      LOA on top.
-- ``rejected``       — Terminal. No transitions out; reviewer manual
-                      override.
+- ``open``              — deal created, no required phase complete.
+- ``lead_gen_done``     — Lead Gen phase done (latest call compliant).
+- ``pre_sales_done``    — Pre-Sales phase done.
+- ``verbal_done``       — Verbal phase done.
+- ``loa_done``          — LOA phase done (E.ON only).
+- ``verified``          — Every required phase done.
+- ``rejected``          — Terminal. Reviewer manual override.
 
-Allowed transitions
--------------------
-The ``ALLOWED`` table below is the canonical state machine and is
-enforced by ``derive_lifecycle_status``. Last-writer-wins semantics:
-the function recomputes the status from the current set of finalized
-calls every time a call hits ``finalize`` — so out-of-order uploads
-(e.g. Closer arrives before Lead Gen) eventually converge to the right
-state once both calls land. We never *downgrade* out of ``rejected``;
-that's the only terminal state.
-
-Supplier matrix
----------------
-``SUPPLIER_PHASE_MATRIX`` lists the *required* phases per supplier.
-Intentionally keyed on ``"E.ON"`` (NOT ``"E.ON Next"``) — gates file
-Step 3 is explicit that E.ON Next does not get the bundled-LOA variant.
-The detection layer canonicalizes the supplier name upstream.
-
-C-call is *not* in any supplier's required list — it's a corrective
-transition that doesn't block ``verified`` and doesn't appear in
-``missing_calls``.
+The old states (passover_done, closer_done, c_call_done, amendment_done)
+are retired. Their data was wiped in Phase 0 of the rebuild; new uploads
+never produce them.
 """
 
 from __future__ import annotations
@@ -55,88 +40,74 @@ from typing import Iterable, Literal
 LifecycleStatus = Literal[
     "open",
     "lead_gen_done",
-    "passover_done",
-    "closer_done",
-    "c_call_done",
-    "amendment_done",
+    "pre_sales_done",
+    "verbal_done",
+    "loa_done",
     "verified",
     "rejected",
 ]
 
 
-# Allowed transitions per design_decisions.lifecycle_state_machine.
-# `rejected` is terminal — no outgoing edges.
+# Allowed transitions — `rejected` is the only terminal state.
 ALLOWED: dict[str, set[str]] = {
-    "open": {"lead_gen_done", "rejected"},
-    "lead_gen_done": {"passover_done", "closer_done", "rejected"},
-    "passover_done": {"closer_done", "rejected"},
-    "closer_done": {"verified", "amendment_done", "c_call_done", "rejected"},
-    "verified": {"c_call_done", "amendment_done", "rejected"},
-    "amendment_done": {"verified", "c_call_done", "rejected"},
-    "c_call_done": {"verified", "amendment_done", "rejected"},
+    "open": {"lead_gen_done", "pre_sales_done", "verbal_done", "loa_done", "verified", "rejected"},
+    "lead_gen_done": {"pre_sales_done", "verbal_done", "loa_done", "verified", "rejected"},
+    "pre_sales_done": {"verbal_done", "loa_done", "verified", "rejected"},
+    "verbal_done": {"loa_done", "verified", "rejected"},
+    "loa_done": {"verified", "rejected"},
+    "verified": {"rejected"},
     "rejected": set(),
 }
 
 
-# Required phases per supplier — CORRECT per user 2026-05-11:
-#   - E.ON / E.ON Next: 3 stages (Lead Gen → Passover → Closer, LOA bundled)
-#   - All other suppliers: 4 stages (+ Standalone LOA)
-# Plus optional `amendment` and `c_call` corrective phases for any deal.
+# Required phases per supplier.
+# - E.ON variants: 3 stages — LOA bundled into Verbal segment of closer recording.
+# - Everyone else: 3 stages — LOA is paper/DocuSign, never appears in audio.
 #
-# "Passover" is the warm-handover between the lead-gen agent and the closer.
-# It's a distinct file in every Watt customer audio folder and a distinct
-# segmentation stage in the Watt AI Compliance Tech Spec (TS §3).
-# Previously the matrix only had Lead Gen + Closer (+ LOA) — Passover was
-# missing, which is why deals reached "verified" prematurely.
+# Case-insensitive supplier matching via ``required_phases``.
+_EON_PHASES = ["lead_gen", "pre_sales", "verbal"]
+_NON_EON_PHASES = ["lead_gen", "pre_sales", "verbal"]
+
 SUPPLIER_PHASE_MATRIX: dict[str, list[str]] = {
-    "E.ON":             ["lead_gen", "passover", "closer"],
-    "E.ON Next":        ["lead_gen", "passover", "closer"],
-    "EON":              ["lead_gen", "passover", "closer"],
-    "EON Next":         ["lead_gen", "passover", "closer"],
-    "British Gas":      ["lead_gen", "passover", "closer", "standalone_loa"],
-    "British Gas Lite": ["lead_gen", "passover", "closer", "standalone_loa"],
-    "BG Core":          ["lead_gen", "passover", "closer", "standalone_loa"],
-    "BGL":              ["lead_gen", "passover", "closer", "standalone_loa"],
-    "Scottish Power":   ["lead_gen", "passover", "closer", "standalone_loa"],
-    "EDF Energy":       ["lead_gen", "passover", "closer", "standalone_loa"],
-    "EDF":              ["lead_gen", "passover", "closer", "standalone_loa"],
-    "Pozitive":         ["lead_gen", "passover", "closer", "standalone_loa"],
-    "Pozitive Energy":  ["lead_gen", "passover", "closer", "standalone_loa"],
+    "E.ON":             _EON_PHASES,
+    "E.ON Next":        _EON_PHASES,
+    "EON":              _EON_PHASES,
+    "EON Next":         _EON_PHASES,
+    "E.On Energy Solutions Ltd": _EON_PHASES,
+    "British Gas":      _NON_EON_PHASES,
+    "British Gas Lite": _NON_EON_PHASES,
+    "BG Core":          _NON_EON_PHASES,
+    "BGL":              _NON_EON_PHASES,
+    "Scottish Power":   _NON_EON_PHASES,
+    "EDF Energy":       _NON_EON_PHASES,
+    "EDF":              _NON_EON_PHASES,
+    "Pozitive":         _NON_EON_PHASES,
+    "Pozitive Energy":  _NON_EON_PHASES,
 }
 
 
 def required_phases(supplier: str | None) -> list[str]:
-    """Required phases for a given supplier. Unknown suppliers default
-    to the full standalone-LOA variant (safer for compliance review).
-
-    Case-insensitive match so DB drift between "E.ON next" / "E.ON Next"
-    doesn't trigger the default 3-phase rule for bundled suppliers.
+    """Required phases for a given supplier. Case-insensitive.
+    Unknown suppliers default to the non-E.ON 3-phase variant.
     """
     if not supplier:
-        return ["lead_gen", "closer", "standalone_loa"]
-    # Direct hit first.
+        return list(_NON_EON_PHASES)
     if supplier in SUPPLIER_PHASE_MATRIX:
         return SUPPLIER_PHASE_MATRIX[supplier]
-    # Case-insensitive fallback.
     s_low = supplier.lower()
     for k, v in SUPPLIER_PHASE_MATRIX.items():
         if k.lower() == s_low:
             return v
-    return ["lead_gen", "closer", "standalone_loa"]
+    return list(_NON_EON_PHASES)
 
 
-# Map from Call.call_type to the supplier-matrix phase name.
-# 'passover' is the warm-handover between lead-gen and closer agents
-# (TS §3 segmentation stage). 'loa' aliases to 'standalone_loa'.
+# Map from Call.call_type to the supplier-matrix phase name. Locked to
+# the 4 canonical values; no legacy aliases.
 _CALL_TYPE_TO_PHASE: dict[str, str] = {
     "lead_gen": "lead_gen",
-    "passover": "passover",
-    "closer": "closer",
-    "verbal": "closer",
-    "standalone_loa": "standalone_loa",
-    "loa": "standalone_loa",
-    "amendment": "amendment",
-    "c_call": "c_call",
+    "pre_sales": "pre_sales",
+    "verbal": "verbal",
+    "loa": "loa",
 }
 
 
@@ -146,89 +117,75 @@ def call_type_to_phase(call_type: str | None) -> str | None:
     return _CALL_TYPE_TO_PHASE.get(call_type)
 
 
-def _completed_phases(calls: Iterable) -> set[str]:
-    """Collect the set of supplier-matrix phases for which *some* call
-    has finalized. We treat any call with ``completed_at`` set as
-    finalized — the caller is responsible for filtering to the right
-    deal.
-
-    Special case: a ``call_type == "full"`` recording captures the whole
-    deal in one go (typical for E.ON's bundled flow), so it covers BOTH
-    ``lead_gen`` and ``closer`` for lifecycle purposes. Without this, a
-    single full-call deal would never leave the ``open`` state because
-    "full" doesn't map to any phase. (audit-late B6.)
+def _phase_done_for(calls: Iterable, phase: str) -> bool:
+    """Latest-call-per-phase wins: phase is done iff the LATEST finalised
+    call of that phase has ``compliance_status == 'compliant'`` (or the
+    legacy ``compliant == True``). Earlier non-compliant calls don't
+    block the phase if a later re-record landed compliant.
     """
-    out: set[str] = set()
+    candidates = []
     for c in calls:
         if getattr(c, "completed_at", None) is None:
             continue
         ct = getattr(c, "call_type", None)
-        if ct == "full":
-            # A "full" recording captures the entire E.ON-style bundled
-            # flow on one call: lead-gen intro + passover/handover + closer
-            # (LOA bundled). Credit all three phases.
-            out.add("lead_gen")
-            out.add("passover")
-            out.add("closer")
+        if call_type_to_phase(ct) != phase:
             continue
-        phase = call_type_to_phase(ct)
-        if phase:
+        candidates.append(c)
+    if not candidates:
+        return False
+    # Sort by created_at ASC so the LAST element is the latest. created_at
+    # is always set at upload time; fallback to completed_at if missing.
+    candidates.sort(
+        key=lambda c: (getattr(c, "created_at", None) or getattr(c, "completed_at", None)) or 0
+    )
+    latest = candidates[-1]
+    status = (getattr(latest, "compliance_status", None) or "").lower()
+    if status == "compliant":
+        return True
+    legacy = getattr(latest, "compliant", None)
+    if legacy is True:
+        return True
+    return False
+
+
+def _completed_phases(calls: Iterable, supplier: str | None) -> set[str]:
+    """Latest-wins set of phases done for the given supplier's required
+    phase list."""
+    out: set[str] = set()
+    for phase in required_phases(supplier):
+        if _phase_done_for(calls, phase):
             out.add(phase)
     return out
 
 
 def derive_lifecycle_status(deal, calls: Iterable) -> str:
-    """Compute the deal's lifecycle_status from its finalized calls.
+    """Compute the deal's lifecycle_status from its finalised calls
+    under the new "latest call per phase wins" rule.
 
-    Last-writer-wins: ``finalize`` calls this every time a call
-    completes, so transient out-of-order states converge once all the
-    calls land. Returns the *current* status string — the caller is
-    responsible for persisting it.
-
-    Rejected is terminal: if the deal is already rejected, we keep it
-    rejected regardless of further call activity.
+    Returns the *current* status string — caller persists it.
+    ``rejected`` is terminal; never downgrades from it.
     """
     current = (getattr(deal, "lifecycle_status", None) or "open")
     if current == "rejected":
         return "rejected"
 
-    completed = _completed_phases(calls)
-    required = set(required_phases(getattr(deal, "supplier", None)))
+    supplier = getattr(deal, "supplier", None)
+    required = required_phases(supplier)
+    done = _completed_phases(calls, supplier)
 
-    has_lead_gen = "lead_gen" in completed
-    has_passover = "passover" in completed
-    has_closer = "closer" in completed
-    has_loa = "standalone_loa" in completed
-    has_amendment = "amendment" in completed
-    has_c_call = "c_call" in completed
-
-    # Verified: every required phase finalized.
-    if required.issubset(completed):
-        if has_c_call:
-            return "c_call_done"
-        if has_amendment:
-            return "amendment_done"
+    if set(required).issubset(done):
         return "verified"
 
-    # Corrective transitions take precedence over partial-progress
-    # states once Closer has happened.
-    if has_closer:
-        if has_c_call:
-            return "c_call_done"
-        if has_amendment:
-            return "amendment_done"
-        # Closer landed but a required follow-up (LOA) is still
-        # missing → closer_done.
-        return "closer_done"
+    # Progressive states — emit the most-advanced phase that's done.
+    # Order matters: we walk required list in reverse so verbal_done
+    # beats pre_sales_done beats lead_gen_done when multiple are
+    # complete.
+    for phase in reversed(required):
+        if phase in done:
+            return f"{phase}_done"
 
-    if has_passover:
-        return "passover_done"
-
-    if has_lead_gen:
-        return "lead_gen_done"
-
-    # No required phase finalized yet. Note: a c_call or amendment
-    # arriving before lead_gen is technically out of order — we keep
-    # the deal at `open` until the proper sequence catches up. This
-    # matches last-writer-wins convergence.
+    # Nothing required is done yet. Still might have a `loa` recording
+    # for E.ON which counted as part of verbal in the matrix — we don't
+    # surface a separate loa_done state because the matrix bundles LOA
+    # into verbal for E.ON.
     return "open"

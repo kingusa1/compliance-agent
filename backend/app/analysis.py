@@ -136,65 +136,54 @@ Consider the call context: Is this a new customer acquisition, a renewal, an upg
 Respond with ONLY the number of the best matching script (e.g., "1" or "2"). If truly uncertain, respond "1"."""
 
 
-DETECT_CALL_TYPE_PROMPT = """You are categorising a recorded UK energy-brokerage compliance call (Watt Utilities / TPI). Classify this transcript into exactly ONE of the six Ofgem-TPI lifecycle stages.
+DETECT_CALL_TYPE_PROMPT = """You are categorising a recorded UK energy-brokerage compliance call (Watt Utilities / TPI). Classify this transcript by the DOMINANT segment present. Pick exactly ONE of these four categories.
 
-The six categories (always lowercase snake_case) and their distinguishing signals:
+The four categories (always lowercase snake_case) and their distinguishing signals:
 
 1. lead_gen
-   The FIRST contact. Cold/warm intro. Agent introduces themselves and the
-   brokerage, qualifies interest, captures site / decision-maker / current
-   supplier / contract end date. NO verbal contract. NO LOA wording.
-   Signals: "is that [name]?", "I'm calling from [broker]", "are you the
-   decision maker", "your current contract", "shall I send across some
-   prices", "I'll pass you to my colleague who handles pricing".
+   The FIRST contact recording, taken by the lead-generation agent.
+   Cold/warm intro to a customer who's never spoken to Watt before.
+   Agent introduces themselves and Watt, qualifies the customer, captures
+   decision-maker + current supplier + contract end date.
+   NO verbal contract reading. NO LOA wording.
+   Signals: "is that [name]?", "I'm calling from Watt Utilities", "are
+   you the decision maker", "your current contract", "shall I send across
+   some prices", "I'll pass you to my colleague who handles pricing".
 
-2. passover
-   A WARM HANDOVER between two agents on the same call. Lead-gen agent
-   introduces a SECOND named agent (the closer) to the same customer, then
-   the second agent picks up. No legally-binding verbal contract reading.
-   Signals: "I'll just pass you over to [name] who's our pricing manager",
-   "hi [customer], my colleague [name] tells me…", two distinct agent
-   voices introducing each other inside the same recording.
+2. pre_sales
+   The WARM-UP at the START of the closer call. A second (closer) agent
+   re-introduces themselves to the customer after the lead-gen handover,
+   re-confirms identity + authority, and prepares for the verbal contract.
+   No legally-binding script reading yet — that's the "verbal" segment.
+   Signals: "thanks for taking my colleague's call, I'm [name] from
+   Watt", "let me re-confirm a few details", "are you still the decision
+   maker", "before we start the recording for the contract".
 
-3. closer
-   The LEGALLY BINDING VERBAL CONTRACT. Closer agent reads the supplier's
-   verbatim script: contract length, unit rate, standing charge, VAT/CCL,
-   cooling-off, Ombudsman, "do you accept?" or "yes I agree". For E.ON
-   variants, the LOA wording is bundled INTO this same call. For full-call
-   recordings that cover Lead Gen → Passover → Closer in one go, pick
-   `closer` (the closer content dominates the audit-relevant content).
-   Signals: explicit rate p/kWh + standing charge + contract length, "this
-   is a legally binding contract", "do you agree to be bound", customer
-   says "yes" to contractual affirmation blocks.
+3. verbal
+   The LEGALLY BINDING VERBAL CONTRACT reading. Closer agent reads the
+   supplier's verbatim verbal-contract script — contract length, unit
+   rate, standing charge, VAT/CCL, cooling-off, Ombudsman, with explicit
+   customer "yes / I agree" responses to affirmation blocks.
+   Signals: explicit rate p/kWh + standing charge + contract length,
+   "this is a legally binding contract", "do you agree to be bound",
+   "is that correct?" with customer "yes" responses.
 
-4. standalone_loa
-   A SEPARATE, dedicated Letter of Authority call. Required by every
-   supplier EXCEPT E.ON. Confirms customer authorises Watt to act on their
-   behalf with the supplier (data access, termination, objection, billing).
-   Pure LOA content with NO verbal contract rate reading.
-   Signals: "I'm calling for a Letter of Authority", "do you authorise
-   Watt to act on your behalf", "this gives us 12 months", "authority to
-   negotiate with [supplier]", no rate/contract-length reading.
-
-5. c_call
-   A CONFIRMATION CALLBACK after the main sale — sometimes by the supplier,
-   sometimes by Watt. Short, verifies the customer's identity + that they
-   knowingly entered the contract.
-   Signals: "calling to confirm you've signed up with [supplier]", "can you
-   confirm your name and the business address", "I just need to verify a
-   few details from your earlier call".
-
-6. amendment
-   A POST-SALE FIX-UP call to correct a specific mistake on a prior verbal
-   or LOA (rate misread, name correction, missing legal line). Always
-   references the earlier call.
-   Signals: "we noticed on your earlier call", "I need to re-read lines
-   11 to 14", "to amend the verbal contract you took yesterday".
+4. loa
+   The LETTER OF AUTHORITY wording. Customer authorises Watt to act on
+   their behalf with the supplier (data access, termination, objection,
+   billing). For E.ON this is bundled inside the closer recording; for
+   other suppliers LOA is on paper/DocuSign and rarely appears in audio.
+   Signals: "do you authorise Watt to act on your behalf", "letter of
+   authority", "this gives us 12 months", "authority to negotiate with
+   [supplier]", "to obtain information about your account".
 
 CRITICAL RULES:
-- Pick exactly ONE category. Do not invent new ones.
-- If a recording covers multiple stages but ONE dominates the audit content,
-  pick the dominant one (full bundled E.ON-style intake → `closer`).
+- Pick exactly ONE of: lead_gen, pre_sales, verbal, loa. No others.
+- This is the DOMINANT-segment classification only. If a recording
+  contains multiple segments stitched together (very common for closer
+  recordings: pre_sales + verbal + loa in one file), pick the segment
+  that takes the MOST minutes of audio. A downstream content-classifier
+  agent will identify per-segment boundaries separately.
 - If you genuinely cannot tell, pick `lead_gen` (least-binding default).
 - Output ONLY the snake_case label on a single line. No JSON, no
   explanation, no punctuation, no quotes.
@@ -419,22 +408,26 @@ async def detect_supplier(transcript: str) -> str:
 # Canonical lifecycle stage codes. MUST match
 # `app/deal_lifecycle.py:_CALL_TYPE_TO_PHASE` keys + frontend
 # CallType enum exactly.
+#
+# 2026-05-12 taxonomy rebuild \u2014 locked to 4 values only. The old
+# {passover, closer, standalone_loa, c_call, amendment, full, verbal}
+# vocabulary is GONE. New uploads must classify to one of these four,
+# and a separate content_classifier agent identifies per-segment
+# boundaries inside the recording for fine-grained grading.
 _VALID_CALL_TYPES: frozenset[str] = frozenset(
-    {"lead_gen", "passover", "closer", "standalone_loa", "c_call", "amendment"}
+    {"lead_gen", "pre_sales", "verbal", "loa"}
 )
 
 
 async def detect_call_type(transcript: str) -> str | None:
-    """Classify a recording's lifecycle stage from the transcript.
+    """Classify a recording's DOMINANT lifecycle stage from the transcript.
 
-    Returns one of the six canonical codes, or ``None`` if the LLM
-    failed / answered with anything unrecognised. Callers fall through
-    to ``call_type="full"`` in that case (the lifecycle resolver treats
-    ``full`` as Lead Gen + Passover + Closer for the E.ON bundled flow).
+    Returns one of the four canonical codes, or ``None`` if the LLM
+    failed / answered with anything unrecognised. Callers fall back to
+    leaving ``call.call_type`` unset and let the content_classifier do
+    the per-segment work.
 
-    No filename inputs. No regex. Pure transcript classification \u2014
-    the explicit product requirement (2026-05-11) to replace the
-    previous weak filename pre-pass with a content-aware AI call.
+    No filename inputs. Pure transcript classification.
     """
     if not transcript or len(transcript.strip()) < 50:
         return None

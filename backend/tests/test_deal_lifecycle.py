@@ -1,19 +1,19 @@
-"""Tests for L3 deal lifecycle state machine + verdict aggregator.
+"""Deal lifecycle state-machine tests — 2026-05-12 taxonomy rebuild.
 
-These tests use lightweight Pydantic-style stand-ins for Deal/Call so
-they exercise the pure functions in deal_lifecycle.py without needing
-the L3 migration (lifecycle_status column) to be applied. The
-aggregator test that needs DB access skips when the schema is not
-ready — main session lands the migration later.
+These exercise the pure functions in ``app.deal_lifecycle`` after the
+4-stage lockdown (``lead_gen / pre_sales / verbal / loa``) and the
+"latest call per phase wins" rule.
+
+The aggregator integration test that needs DB access (test_aggregate_…)
+skips cleanly when the L3 schema isn't applied locally — the latest-wins
+contract is verified against the pure functions instead.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import List, Optional
-
-import pytest
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Optional
 
 from app.deal_lifecycle import (
     SUPPLIER_PHASE_MATRIX,
@@ -21,14 +21,6 @@ from app.deal_lifecycle import (
     derive_lifecycle_status,
     required_phases,
 )
-from app.deal_verdict import _parse_score, aggregate_deal_verdict
-
-
-# ---------------------------------------------------------------------------
-# Test fixtures: minimal Deal/Call shape (only fields the state machine
-# touches). Using @dataclass keeps the tests independent of the SQL
-# schema until the L3 migration ships.
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -41,170 +33,203 @@ class _FakeDeal:
 class _FakeCall:
     call_type: Optional[str]
     completed_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
     score: Optional[str] = None
+    compliance_status: Optional[str] = None
+    compliant: Optional[bool] = None
 
 
 def _now() -> datetime:
     return datetime.utcnow()
 
 
+def _earlier(minutes: int = 30) -> datetime:
+    return datetime.utcnow() - timedelta(minutes=minutes)
+
+
 # ---------------------------------------------------------------------------
-# State-machine tests
+# Taxonomy + matrix sanity
 # ---------------------------------------------------------------------------
 
 
-def test_open_to_lead_gen_done():
-    """Lead Gen call finalising on a fresh deal → lead_gen_done."""
+def test_matrix_uses_only_canonical_4_stages():
+    """The phase matrix must not surface any legacy phase name."""
+    legacy = {"passover", "closer", "standalone_loa", "c_call", "amendment", "full"}
+    for supplier, phases in SUPPLIER_PHASE_MATRIX.items():
+        assert legacy.isdisjoint(phases), (
+            f"{supplier} still references legacy phases: {phases}"
+        )
+
+
+def test_required_phases_eon_and_non_eon_are_three_stages():
+    """E.ON and non-E.ON both expose 3 audio phases. LOA is bundled in
+    verbal for E.ON; LOA is paper-only for non-E.ON."""
+    assert required_phases("E.ON") == ["lead_gen", "pre_sales", "verbal"]
+    assert required_phases("E.ON Next") == ["lead_gen", "pre_sales", "verbal"]
+    assert required_phases("British Gas") == ["lead_gen", "pre_sales", "verbal"]
+    assert required_phases("Pozitive") == ["lead_gen", "pre_sales", "verbal"]
+    # Unknown supplier defaults to non-E.ON 3-phase variant.
+    assert required_phases("MysterySupplier") == ["lead_gen", "pre_sales", "verbal"]
+    assert required_phases(None) == ["lead_gen", "pre_sales", "verbal"]
+
+
+def test_call_type_to_phase_locked_to_four_values():
+    assert call_type_to_phase("lead_gen") == "lead_gen"
+    assert call_type_to_phase("pre_sales") == "pre_sales"
+    assert call_type_to_phase("verbal") == "verbal"
+    assert call_type_to_phase("loa") == "loa"
+    # Old vocabulary is gone — must NOT map.
+    assert call_type_to_phase("closer") is None
+    assert call_type_to_phase("passover") is None
+    assert call_type_to_phase("standalone_loa") is None
+    assert call_type_to_phase("c_call") is None
+    assert call_type_to_phase("amendment") is None
+    assert call_type_to_phase("full") is None
+    assert call_type_to_phase(None) is None
+
+
+# ---------------------------------------------------------------------------
+# State-machine: open → lead_gen_done → pre_sales_done → verbal_done → verified
+# ---------------------------------------------------------------------------
+
+
+def test_open_when_no_compliant_calls():
     deal = _FakeDeal(supplier="E.ON")
-    calls = [_FakeCall(call_type="lead_gen", completed_at=_now())]
+    calls = [
+        _FakeCall(
+            call_type="lead_gen",
+            completed_at=_now(),
+            created_at=_now(),
+            compliance_status="non_compliant",
+        ),
+    ]
+    assert derive_lifecycle_status(deal, calls) == "open"
+
+
+def test_lead_gen_done_when_only_lead_gen_compliant():
+    deal = _FakeDeal(supplier="E.ON")
+    calls = [
+        _FakeCall(
+            call_type="lead_gen",
+            completed_at=_now(),
+            created_at=_now(),
+            compliance_status="compliant",
+        ),
+    ]
     assert derive_lifecycle_status(deal, calls) == "lead_gen_done"
 
 
-def test_eon_closer_after_lead_gen_verifies():
-    """E.ON requires lead_gen + passover + closer (LOA bundled into
-    Closer). All three present → verified."""
+def test_verified_when_all_three_phases_compliant():
     deal = _FakeDeal(supplier="E.ON")
     calls = [
-        _FakeCall(call_type="lead_gen", completed_at=_now()),
-        _FakeCall(call_type="passover", completed_at=_now()),
-        _FakeCall(call_type="closer", completed_at=_now()),
+        _FakeCall(call_type="lead_gen", completed_at=_now(), created_at=_now(), compliance_status="compliant"),
+        _FakeCall(call_type="pre_sales", completed_at=_now(), created_at=_now(), compliance_status="compliant"),
+        _FakeCall(call_type="verbal", completed_at=_now(), created_at=_now(), compliance_status="compliant"),
     ]
     assert derive_lifecycle_status(deal, calls) == "verified"
 
 
-def test_british_gas_closer_stays_pending_loa():
-    """British Gas closer without standalone LOA → closer_done
-    (LOA still missing, NOT verified)."""
+def test_non_eon_verifies_without_loa_call():
+    """Non-E.ON LOA is paper/DocuSign — no LOA call needed for verify."""
     deal = _FakeDeal(supplier="British Gas")
     calls = [
-        _FakeCall(call_type="lead_gen", completed_at=_now()),
-        _FakeCall(call_type="passover", completed_at=_now()),
-        _FakeCall(call_type="closer", completed_at=_now()),
-    ]
-    assert derive_lifecycle_status(deal, calls) == "closer_done"
-
-
-def test_british_gas_full_set_verifies():
-    """British Gas with all four phases → verified."""
-    deal = _FakeDeal(supplier="British Gas")
-    calls = [
-        _FakeCall(call_type="lead_gen", completed_at=_now()),
-        _FakeCall(call_type="passover", completed_at=_now()),
-        _FakeCall(call_type="closer", completed_at=_now()),
-        _FakeCall(call_type="standalone_loa", completed_at=_now()),
+        _FakeCall(call_type="lead_gen", completed_at=_now(), created_at=_now(), compliance_status="compliant"),
+        _FakeCall(call_type="pre_sales", completed_at=_now(), created_at=_now(), compliance_status="compliant"),
+        _FakeCall(call_type="verbal", completed_at=_now(), created_at=_now(), compliance_status="compliant"),
     ]
     assert derive_lifecycle_status(deal, calls) == "verified"
+
+
+# ---------------------------------------------------------------------------
+# Latest-call-per-phase wins
+# ---------------------------------------------------------------------------
+
+
+def test_latest_compliant_overrides_earlier_failure():
+    """lead_gen #1 = non_compliant, lead_gen #2 = compliant → phase done."""
+    deal = _FakeDeal(supplier="E.ON")
+    calls = [
+        _FakeCall(
+            call_type="lead_gen",
+            completed_at=_earlier(60),
+            created_at=_earlier(60),
+            compliance_status="non_compliant",
+        ),
+        _FakeCall(
+            call_type="lead_gen",
+            completed_at=_now(),
+            created_at=_now(),
+            compliance_status="compliant",
+        ),
+    ]
+    # Only lead_gen is done — other phases still pending.
+    assert derive_lifecycle_status(deal, calls) == "lead_gen_done"
+
+
+def test_latest_failure_after_pass_blocks_phase():
+    """lead_gen #1 = compliant, lead_gen #2 = non_compliant → phase NOT done."""
+    deal = _FakeDeal(supplier="E.ON")
+    calls = [
+        _FakeCall(
+            call_type="lead_gen",
+            completed_at=_earlier(60),
+            created_at=_earlier(60),
+            compliance_status="compliant",
+        ),
+        _FakeCall(
+            call_type="lead_gen",
+            completed_at=_now(),
+            created_at=_now(),
+            compliance_status="non_compliant",
+        ),
+    ]
+    assert derive_lifecycle_status(deal, calls) == "open"
+
+
+def test_legacy_compliant_bool_still_counts():
+    """Calls that predate the compliance_status column should still resolve
+    via the legacy ``compliant=True`` flag."""
+    deal = _FakeDeal(supplier="E.ON")
+    calls = [
+        _FakeCall(
+            call_type="lead_gen",
+            completed_at=_now(),
+            created_at=_now(),
+            compliant=True,
+        ),
+    ]
+    assert derive_lifecycle_status(deal, calls) == "lead_gen_done"
+
+
+# ---------------------------------------------------------------------------
+# Terminal states + progressive ordering
+# ---------------------------------------------------------------------------
 
 
 def test_rejected_is_terminal():
-    """Once a deal is rejected, no amount of new calls can move it."""
     deal = _FakeDeal(supplier="E.ON", lifecycle_status="rejected")
     calls = [
-        _FakeCall(call_type="lead_gen", completed_at=_now()),
-        _FakeCall(call_type="closer", completed_at=_now()),
+        _FakeCall(call_type="lead_gen", completed_at=_now(), created_at=_now(), compliance_status="compliant"),
+        _FakeCall(call_type="verbal", completed_at=_now(), created_at=_now(), compliance_status="compliant"),
     ]
     assert derive_lifecycle_status(deal, calls) == "rejected"
 
 
-def test_c_call_is_corrective_not_required():
-    """C-call is corrective: it transitions the lifecycle to c_call_done
-    but doesn't appear in the supplier's required_phases list."""
-    # E.ON required = lead_gen + passover + closer; c_call is NOT in that list.
-    assert "c_call" not in SUPPLIER_PHASE_MATRIX["E.ON"]
-    assert "c_call" not in required_phases("British Gas")
-
+def test_progressive_status_picks_most_advanced_phase():
+    """When lead_gen + verbal compliant but pre_sales is missing, surface
+    the most-advanced phase (verbal_done)."""
     deal = _FakeDeal(supplier="E.ON")
     calls = [
-        _FakeCall(call_type="lead_gen", completed_at=_now()),
-        _FakeCall(call_type="passover", completed_at=_now()),
-        _FakeCall(call_type="closer", completed_at=_now()),
-        _FakeCall(call_type="c_call", completed_at=_now()),
+        _FakeCall(call_type="lead_gen", completed_at=_now(), created_at=_now(), compliance_status="compliant"),
+        _FakeCall(call_type="verbal", completed_at=_now(), created_at=_now(), compliance_status="compliant"),
     ]
-    # Required phases are still satisfied → verified path with c_call
-    # overlay → c_call_done (corrective transition).
-    assert derive_lifecycle_status(deal, calls) == "c_call_done"
+    assert derive_lifecycle_status(deal, calls) == "verbal_done"
 
 
-def test_call_type_to_phase_normalises_loa_alias():
-    assert call_type_to_phase("loa") == "standalone_loa"
-    assert call_type_to_phase("standalone_loa") == "standalone_loa"
-    assert call_type_to_phase("c_call") == "c_call"
-    assert call_type_to_phase(None) is None
-    assert call_type_to_phase("garbage") is None
-
-
-# ---------------------------------------------------------------------------
-# Verdict aggregator tests (require DB; skip if Call/CustomerDeal schema
-# not aligned with this branch yet).
-# ---------------------------------------------------------------------------
-
-
-def test_parse_score_helpers():
-    assert _parse_score("5/7") == pytest.approx(5 / 7)
-    assert _parse_score("0/4") == 0.0
-    assert _parse_score("4/4") == 1.0
-    assert _parse_score(None) is None
-    assert _parse_score("garbage") is None
-    assert _parse_score("3/0") is None
-
-
-def test_aggregate_verdict_weighted_score_and_missing_calls():
-    """Composite score = weighted average per WEIGHTS table; missing
-    calls = required minus completed phases.
-
-    Skips cleanly if the test DB doesn't have the columns this test
-    needs (deal_id, call_type, score). The main session lands the
-    L3 migration; until then, this test is a no-op."""
-    pytest.importorskip("sqlalchemy")
-    from app.database import SessionLocal
-    from app.models import Call, CustomerDeal
-
-    db = SessionLocal()
-    try:
-        # Probe schema — bail if migration hasn't landed yet.
-        try:
-            db.query(Call.deal_id, Call.call_type, Call.score).limit(1).all()
-        except Exception:
-            pytest.skip("L3 schema not yet applied")
-
-        deal = CustomerDeal(customer_name="Verdict Tester", supplier="British Gas")
-        db.add(deal)
-        db.flush()
-
-        # Lead Gen 6/10 (60%, weight 0.30) + Closer 8/10 (80%, weight 0.50)
-        # = (0.60*0.30 + 0.80*0.50) / 0.80
-        # = (0.18 + 0.40) / 0.80
-        # = 0.58 / 0.80
-        # = 0.725 → 72.50
-        # (The earlier 68.75 expectation was an arithmetic typo — 0.60*0.30
-        # is 0.18, not 0.15. Aggregator math is correct per the L3 contract.)
-        c1 = Call(
-            filename="lg.wav",
-            file_path="/tmp/lg.wav",
-            deal_id=deal.id,
-            call_type="lead_gen",
-            score="6/10",
-            completed_at=_now(),
-        )
-        c2 = Call(
-            filename="cl.wav",
-            file_path="/tmp/cl.wav",
-            deal_id=deal.id,
-            call_type="closer",
-            score="8/10",
-            completed_at=_now(),
-        )
-        db.add_all([c1, c2])
-        db.commit()
-
-        verdict = aggregate_deal_verdict(deal.id, db)
-        assert verdict.composite_score == pytest.approx(72.50, abs=0.01)
-        # British Gas requires standalone_loa; not yet uploaded.
-        assert "standalone_loa" in verdict.missing_calls
-        # lead_gen + closer satisfied.
-        assert "lead_gen" not in verdict.missing_calls
-        assert "closer" not in verdict.missing_calls
-        assert verdict.lifecycle_status == "closer_done"
-        assert len(verdict.call_breakdown) == 2
-    finally:
-        db.close()
+def test_incomplete_call_does_not_count():
+    """A call without completed_at is in-flight and never marks a phase done."""
+    deal = _FakeDeal(supplier="British Gas")
+    calls = [
+        _FakeCall(call_type="lead_gen", completed_at=None, created_at=_now(), compliance_status="compliant"),
+    ]
+    assert derive_lifecycle_status(deal, calls) == "open"

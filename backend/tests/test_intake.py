@@ -1,7 +1,8 @@
 """L7 — Structured intake tests.
 
-Eight tests cover the four documented intake paths plus four validation
-gates plus supplier canonicalization:
+Seven tests cover the four documented intake paths plus three validation
+gates plus supplier canonicalization (the supplier-phase gate was retired
+in the 2026-05-12 taxonomy rebuild):
 
   1. test_full_auto_path           — dev mode, audio only, all blank
   2. test_full_manual_path         — every field typed
@@ -10,8 +11,7 @@ gates plus supplier canonicalization:
   5. test_validation_at_least_one_meter — 422 when both meters blank
   6. test_validation_charity_consistency — warning when charity_number
       missing
-  7. test_validation_supplier_phase     — warning on E.ON+standalone_loa
-  8. test_supplier_canonicalization     — alias maps preserve E.ON-vs-
+  7. test_supplier_canonicalization     — alias maps preserve E.ON-vs-
       E.ON-Next distinction
 
 Tests run as pure-function unit tests against the schema, reconciler,
@@ -99,7 +99,7 @@ def test_full_manual_path():
             mprn_gas="9876543210",
             deal_value_gbp_annual="1390.00",
         ),
-        call=CallMeta(call_type="closer", sales_agent="Sarah Ali"),
+        call=CallMeta(call_type="verbal", sales_agent="Sarah Ali"),
         dev_auto_detect=False,
     )
     warnings = validate_payload(payload)
@@ -183,7 +183,7 @@ def test_validation_at_least_one_meter():
     payload = IntakePayload(
         customer=CustomerMeta(legal_name="Acme Ltd"),
         deal=DealMeta(supplier=SupplierEnum.BG_CORE),
-        call=CallMeta(call_type="closer"),
+        call=CallMeta(call_type="verbal"),
         dev_auto_detect=False,
     )
     with pytest.raises(ValidationGateError) as exc_info:
@@ -209,7 +209,7 @@ def test_validation_charity_consistency():
             supplier=SupplierEnum.BG_CORE,
             mpan_electricity="1234567890123",
         ),
-        call=CallMeta(call_type="closer"),
+        call=CallMeta(call_type="verbal"),
         dev_auto_detect=False,
     )
     warnings = validate_payload(payload)
@@ -222,26 +222,11 @@ def test_validation_charity_consistency():
 
 
 # ---------------------------------------------------------------------------
-# 7. Validation gate — E.ON + standalone_loa = supplier-phase mismatch.
+# 7. (Removed 2026-05-12 taxonomy rebuild) — the supplier_phase_match
+#    validator was retired with the old standalone_loa call_type.
+#    The classifier + non-E.ON LOA drop now enforces this guarantee
+#    inside ``app.agents.content_classifier``.
 # ---------------------------------------------------------------------------
-
-
-def test_validation_supplier_phase():
-    """call_type='standalone_loa' + supplier='E.ON' → warning. E.ON bundles
-    LOA in Closer; reviewer probably meant E.ON Next Energy. Warning, not
-    blocking."""
-    payload = IntakePayload(
-        customer=CustomerMeta(legal_name="Acme"),
-        deal=DealMeta(
-            supplier=SupplierEnum.EON,
-            mpan_electricity="1234567890123",
-        ),
-        call=CallMeta(call_type="standalone_loa"),
-        dev_auto_detect=False,
-    )
-    warnings = validate_payload(payload)
-    codes = [w.code for w in warnings]
-    assert "supplier_phase_mismatch" in codes
 
 
 # ---------------------------------------------------------------------------

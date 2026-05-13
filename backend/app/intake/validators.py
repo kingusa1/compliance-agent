@@ -7,11 +7,7 @@ Four gates per the L7 contract:
   2. ``charity_consistency`` (WARNING):
      If ``business_type='charity'`` and ``charity_number`` is blank,
      warn but allow submission.
-  3. ``supplier_phase_match`` (WARNING):
-     If ``call_type='standalone_loa'`` and ``supplier='E.ON'``, warn —
-     E.ON bundles LOA inside the closer, so a standalone_loa call
-     against E.ON likely indicates the wrong supplier was picked.
-  4. ``existing_deal_consistency`` (WARNING):
+  3. ``existing_deal_consistency`` (WARNING):
      If ``existing_deal_id`` is provided, downstream code is expected to
      compare the new deal fields against the existing row. We surface a
      hook here so the route can short-circuit warning emission when the
@@ -32,7 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List
 
-from app.intake.payload_schema import IntakePayload, SupplierEnum
+from app.intake.payload_schema import IntakePayload
 
 
 class ValidationGateError(Exception):
@@ -98,30 +94,6 @@ def charity_consistency(payload: IntakePayload) -> List[ValidationWarning]:
     return []
 
 
-def supplier_phase_match(payload: IntakePayload) -> List[ValidationWarning]:
-    """Warn when call_type='standalone_loa' is paired with E.ON.
-
-    E.ON bundles the LOA inside the Closer call (see digest §1 + L3
-    supplier_phase_matrix); if the reviewer marks a call as standalone_loa
-    against E.ON, they probably meant E.ON Next Energy (which IS a
-    standalone-LOA supplier) or another supplier. Warning, not blocking.
-    """
-    deal = payload.deal
-    call = payload.call
-    if call.call_type == "standalone_loa" and deal.supplier == SupplierEnum.EON:
-        return [
-            ValidationWarning(
-                code="supplier_phase_mismatch",
-                message=(
-                    "E.ON bundles LOA in Closer; standalone_loa not expected "
-                    "for this supplier (did you mean E.ON Next Energy?)"
-                ),
-                field="deal.supplier",
-            )
-        ]
-    return []
-
-
 def existing_deal_consistency(
     payload: IntakePayload,
     existing_deal_fields: dict | None = None,
@@ -164,6 +136,5 @@ def validate_payload(
     at_least_one_meter(payload)
     warnings: List[ValidationWarning] = []
     warnings.extend(charity_consistency(payload))
-    warnings.extend(supplier_phase_match(payload))
     warnings.extend(existing_deal_consistency(payload, existing_deal_fields))
     return warnings

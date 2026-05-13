@@ -1,24 +1,36 @@
-"""Rubric Router — pick which rule set applies to a given call.
+"""Rubric Router — pick which rule set applies to a given call OR segment.
 
-The pipeline used to load `call.script_id` unconditionally and grade
-EVERY call against the closer-script's verbal-contract checkpoints. That
-produced false-fails on lead-gen calls (the agent never reads the closer
-script during qualification) and on standalone-LOA calls (same reason).
+2026-05-12 taxonomy rebuild — locked to 4 call_type values:
+``{lead_gen, pre_sales, verbal, loa}``. The old vocabulary
+(passover, closer, c_call, amendment, full, standalone_loa) is gone.
 
-Aly's rule (from the Watt Sales Compliance Guide § Phrase Detection
-Dataset): lead-gen, passover, c-call, amendment recordings must be
-graded against PHRASE PACKS (88 Watt lead-gen rules + 32 verbal rules);
-only verbal-contract recordings (closer / verbal / full) should be
-graded against the supplier-specific verbal-contract checkpoints.
+Two entry points:
 
-This module owns that routing decision. Returns a single `Rubric` that
-the analyzer step consumes — the analyzer no longer has to know about
-phrase packs vs script checkpoints.
+  - ``route(call, db)`` — call-level routing (back-compat for callers
+    that haven't been updated to per-segment yet). Reads ``call.call_type``.
+
+  - ``route_for_segment(segment_type, call, db)`` — per-segment routing
+    used by the new content-classifier-based pipeline. Decoupled from
+    the Call row's own call_type so a single recording with multiple
+    segments can route each to its own rubric.
+
+Rubric mapping (both functions converge here):
+
+    lead_gen  → phrase-pack lead_gen (88 Watt rules)
+    pre_sales → phrase-pack pre_sales (88 Watt rules — SAME rule set as
+                lead_gen per Aly: different content, identical rules)
+    verbal    → supplier-specific verbal-contract script (E.ON NHH+HH
+                = 26 cps; British Gas Acquisition = 21 cps; …)
+    loa       → supplier-specific LOA script (E.ON TPI Verbal LOA = 11
+                cps). LOA audio only exists for E.ON; for non-E.ON the
+                LOA is always paper/DocuSign and the segment classifier
+                should drop any LOA segment before calling us.
 
 The phrase packs are stored as ordinary `Script` rows with a sentinel
-``supplier_name == "PHRASE_PACK"`` so the existing analyzer + checkpoint
+``supplier_name == "PHRASE_PACK"`` so the analyzer's existing checkpoint
 JSON loader path works without a schema change.
 """
+
 from __future__ import annotations
 
 import json
@@ -30,29 +42,23 @@ from app.logger import log
 from app.models import Call, Script
 
 
-# Marker we set on the synthetic phrase-pack Script rows. Keeps them
-# discoverable by lifecycle_phase + supplier without colliding with real
-# supplier scripts.
+# Marker we set on the synthetic phrase-pack Script rows.
 PHRASE_PACK_SUPPLIER = "PHRASE_PACK"
 
-# Maps each call_type to the lifecycle_phase the phrase-pack Script row
-# should advertise. Used to look up the pack when no supplier-specific
-# verbal-contract script applies.
-_CALL_TYPE_PHRASE_PACK_PHASE: dict[str, str] = {
+# Maps each call_type or segment_type to the lifecycle_phase the
+# phrase-pack Script row should advertise. Pre-sales uses the lead_gen
+# pack per user spec (same 88 rules grade both — different content).
+_PHRASE_PACK_PHASE: dict[str, str] = {
     "lead_gen": "lead_gen",
-    "passover": "passover",
-    "c_call": "c_call",
-    "amendment": "amendment",
+    "pre_sales": "lead_gen",
 }
 
-# Verbal-contract call types — these grade against the supplier-specific
-# checkpoints already on `call.script_id`.
-_VERBAL_CONTRACT_CALL_TYPES: set[str] = {"closer", "verbal", "full"}
+# Segment types that grade against a supplier-specific verbal-contract
+# script (the closer's binding contract reading).
+_VERBAL_SEGMENT_TYPES: set[str] = {"verbal"}
 
-# Standalone LOA grades against the supplier's LOA script (e.g. "E.ON TPI
-# Verbal LOA"). Different lifecycle_phase tag so it's picked up by
-# `_resolve_loa_script`.
-_LOA_CALL_TYPES: set[str] = {"standalone_loa", "loa"}
+# Segment types that grade against a supplier-specific LOA script.
+_LOA_SEGMENT_TYPES: set[str] = {"loa"}
 
 
 @dataclass(frozen=True)
@@ -60,11 +66,12 @@ class Rubric:
     """The single decision the analyzer needs.
 
     Attributes:
-        kind: one of "script_checkpoints", "phrase_pack", "loa_script", "fallback_v1"
-        script: the Script row whose `checkpoints` JSON the analyzer should grade against.
-                None for "fallback_v1".
-        reason: one-line audit explanation written to the agent_trace + log.
-        call_type: echo of the call_type that led to this routing decision.
+        kind: one of "script_checkpoints" (supplier verbal),
+              "loa_script", "phrase_pack", "fallback_v1".
+        script: the Script row whose `checkpoints` JSON the analyzer
+                grades against. None for "fallback_v1".
+        reason: one-line audit explanation.
+        call_type: echo of the call_type or segment_type that led here.
     """
 
     kind: str
@@ -74,7 +81,7 @@ class Rubric:
 
 
 def _resolve_phrase_pack(db: Session, phase: str) -> Script | None:
-    """Look up the phrase-pack Script row for the given phase. Case-insensitive
+    """Look up the phrase-pack Script row for a given phase. Case-insensitive
     on supplier so seed mishaps don't blow this up.
     """
     return (
@@ -87,10 +94,8 @@ def _resolve_phrase_pack(db: Session, phase: str) -> Script | None:
 
 
 def _resolve_loa_script(db: Session, supplier: str | None) -> Script | None:
-    """Pick the LOA script for the call's supplier. E.ON has a dedicated
-    LOA script (lifecycle_phase='loa'). Other suppliers usually bundle
-    the LOA into the closer — in that case we fall through to the
-    closer rubric since standalone-LOA is the exception there.
+    """Pick the LOA script for the call's supplier. Only E.ON has one
+    in the seeded corpus (lifecycle_phase='loa' or 'standalone_loa').
     """
     q = db.query(Script).filter(Script.active == True)  # noqa: E712
     q = q.filter(Script.lifecycle_phase.in_(("loa", "standalone_loa")))
@@ -99,23 +104,20 @@ def _resolve_loa_script(db: Session, supplier: str | None) -> Script | None:
     return q.first()
 
 
-def route(call: Call, db: Session) -> Rubric:
-    """Decide which rubric applies to this call. Pure read-only — the
-    caller persists the result via agent_trace if it wants an audit row.
-    """
-    ct_raw = (call.call_type or "").strip().lower()
-    if not ct_raw:
-        ct = "full"  # treat unclassified as full-call → closer rubric
-    else:
-        ct = ct_raw
+def _resolve_for(
+    segment_type: str,
+    call: Call,
+    db: Session,
+) -> Rubric:
+    """Shared routing core used by both ``route`` and ``route_for_segment``."""
+    sg = (segment_type or "").strip().lower()
 
-    # 1. Verbal contract / closer / full — grade against supplier-specific
-    # checkpoints that the script-matcher already attached to the call.
-    if ct in _VERBAL_CONTRACT_CALL_TYPES:
+    # Verbal — supplier-specific verbal-contract checkpoints attached
+    # to the call as call.script_id by detect_metadata.
+    if sg in _VERBAL_SEGMENT_TYPES:
         if call.script_id:
             script = db.query(Script).filter_by(id=call.script_id).first()
             if script:
-                cp_count = 0
                 try:
                     cp_count = len(json.loads(script.checkpoints or "[]") or [])
                 except Exception:
@@ -125,59 +127,81 @@ def route(call: Call, db: Session) -> Rubric:
                         kind="script_checkpoints",
                         script=script,
                         reason=(
-                            f"call_type={ct!r} → supplier-script "
+                            f"segment={sg!r} → supplier-script "
                             f"\"{script.script_name}\" ({cp_count} cps)"
                         ),
-                        call_type=ct,
+                        call_type=sg,
                     )
-                # script row exists but has no rules — fall through to
-                # phrase pack rather than scoring against nothing.
                 log.warning(
-                    f"📋 ROUTER closer call has script with empty checkpoints "
-                    f"(script_id={call.script_id}); falling through to phrase pack"
+                    f"📋 ROUTER verbal segment has script with empty "
+                    f"checkpoints (script_id={call.script_id})"
                 )
 
-    # 2. Standalone LOA — supplier-specific LOA script (only E.ON has one
-    # in the seeded corpus today; other suppliers bundle the LOA into the
-    # closer so this branch returns no script and we fall through).
-    if ct in _LOA_CALL_TYPES:
-        loa = _resolve_loa_script(db, call.detected_supplier)
+    # LOA — supplier-specific LOA script. Only E.ON has one in the
+    # seeded corpus today.
+    if sg in _LOA_SEGMENT_TYPES:
+        loa = _resolve_loa_script(db, getattr(call, "detected_supplier", None))
         if loa and loa.checkpoints and loa.checkpoints != "[]":
             cp_count = len(json.loads(loa.checkpoints) or [])
             return Rubric(
                 kind="loa_script",
                 script=loa,
                 reason=(
-                    f"call_type={ct!r} → LOA script "
+                    f"segment={sg!r} → LOA script "
                     f"\"{loa.script_name}\" ({cp_count} cps)"
                 ),
-                call_type=ct,
+                call_type=sg,
             )
 
-    # 3. Lead-gen / passover / c-call / amendment — phrase pack.
-    pack_phase = _CALL_TYPE_PHRASE_PACK_PHASE.get(ct, "lead_gen")
-    pack = _resolve_phrase_pack(db, pack_phase)
-    if pack and pack.checkpoints and pack.checkpoints != "[]":
-        cp_count = len(json.loads(pack.checkpoints) or [])
-        return Rubric(
-            kind="phrase_pack",
-            script=pack,
-            reason=(
-                f"call_type={ct!r} → phrase-pack/{pack_phase} "
-                f"({cp_count} rules)"
-            ),
-            call_type=ct,
-        )
+    # Lead-gen / Pre-sales — phrase pack (both share the 88-rule
+    # lead_gen pack per Aly's spec).
+    pack_phase = _PHRASE_PACK_PHASE.get(sg)
+    if pack_phase:
+        pack = _resolve_phrase_pack(db, pack_phase)
+        if pack and pack.checkpoints and pack.checkpoints != "[]":
+            cp_count = len(json.loads(pack.checkpoints) or [])
+            return Rubric(
+                kind="phrase_pack",
+                script=pack,
+                reason=(
+                    f"segment={sg!r} → phrase-pack/{pack_phase} "
+                    f"({cp_count} rules)"
+                ),
+                call_type=sg,
+            )
 
-    # 4. No script + no phrase pack matched — the analyzer will fall
-    # through to V1 third-party-disclosure. We surface it explicitly so
-    # the reviewer queue can prioritise these.
+    # Nothing matched — surface explicit fallback so reviewer sees it.
     return Rubric(
         kind="fallback_v1",
         script=None,
         reason=(
-            f"call_type={ct!r} → no script + no phrase pack matched; "
+            f"segment={sg!r} → no script + no phrase pack matched; "
             "falling through to V1 third-party-disclosure analyzer"
         ),
-        call_type=ct,
+        call_type=sg,
     )
+
+
+def route(call: Call, db: Session) -> Rubric:
+    """Call-level routing — picks one rubric for the WHOLE recording
+    based on ``call.call_type``. Back-compat path; the new pipeline
+    uses ``route_for_segment`` instead so a single recording can have
+    multiple rubrics applied to different segments.
+    """
+    ct = (call.call_type or "").strip().lower()
+    return _resolve_for(ct, call, db)
+
+
+def route_for_segment(
+    segment_type: str,
+    call: Call,
+    db: Session,
+) -> Rubric:
+    """Per-segment routing — used by the new pipeline.
+
+    The segment_type comes from the content_classifier agent's output,
+    NOT from call.call_type. So a single recording classified as 'verbal'
+    overall can still have a 'pre_sales' segment at the start that
+    grades against the phrase pack.
+    """
+    return _resolve_for(segment_type, call, db)
