@@ -18,10 +18,11 @@ tags: [index, brain]
 
 ## 🚨 Read FIRST when resuming a session
 
-**As of 2026-05-13: TAXONOMY REBUILD DEPLOYED + 19/19 SCRIPTS FILLED.**
+**As of 2026-05-14: PHASE 5 UI OVERHAUL COMPLETE + CI GREEN + INTELLIGENCE PANEL LIVE.**
 Read in order:
 
-1. [[04_Sessions/2026-05-13_Session_deploy_and_19of19]] — **MOST RECENT.** Today's deploy of the taxonomy rebuild, the silent alembic-chain failure since 2026-05-06 that we unblocked, the 4-pass extractor that filled the last 3 prose-heavy scripts, and the /scripts UI upload rewire. Open gaps + resume guide at bottom.
+1. [[04_Sessions/2026-05-14_Session_phase5_complete]] — **MOST RECENT.** Today: shipped all 9 Phase 5 sub-tasks (a-i) + 4 intelligence endpoints + per-segment cards on call detail. Found+fixed the 7th CI-red test (non_compliant_v2 — same severity-weighted fix pattern as partial_v2). Fixed a runtime SQLAlchemy bug in intelligence_routes (`func.cast` → `case-when`). All CI green. Vercel + Railway both deployed.
+2. [[04_Sessions/2026-05-13_Session_deploy_and_19of19]] — Yesterday's deploy of the taxonomy rebuild, the silent alembic-chain failure since 2026-05-06 that we unblocked, the 4-pass extractor that filled the last 3 prose-heavy scripts, and the /scripts UI upload rewire.
 2. [[05_State/Live_State]] — current commit tip (`394c438`), deploy URLs, DB state (0 calls — wiped), Script counts (19/19), full recent-commit chain.
 3. [[04_Sessions/2026-05-12_Session_taxonomy_rebuild]] — yesterday's design + Phase 0-4 backend work (uncommitted then, all shipped now).
 4. The plan file: `C:\Users\kingu\.claude\plans\magical-booping-crown.md` (user-approved).

@@ -1,12 +1,31 @@
 ---
 created: 2026-05-10
-updated: 2026-05-13
-tags: [state, live, ground-truth, taxonomy-rebuild-deployed]
+updated: 2026-05-14
+tags: [state, live, ground-truth, phase-5-complete]
 ---
 
-# Live State — taxonomy rebuild deployed 2026-05-13
+# Live State — Phase 5 complete + CI green 2026-05-14
 
-> ✅ **Backend Phases 0-4 + Phase 5j (upload-boundary fix) DEPLOYED 2026-05-13.**
+> ✅ **Full Phase 5 (a-j) UI overhaul + 4 intelligence endpoints DEPLOYED 2026-05-14.**
+> Tip commit `8ccef2b` (intelligence SQL fix), prior tips: `2801fb0`
+> (Phase 5 a-i UI + intelligence + SegmentCards), `5de5820`
+> (non_compliant_call_v2 test fix — first GREEN CI in 3 pushes),
+> `1ae31ee` (6 tests fixed + pipeline excerpt + checkpoint_results),
+> `3f222d4` (BRAIN). All 19/19 supplier scripts filled. CI test +
+> coverage both GREEN. Frontend `next build` passes locally.
+>
+> Vercel: `dpl_B5i1YNKkrcJptkiAt8hTL7b59XUz` (commit `2801fb0`).
+> Backend (Railway): tip `8ccef2b`. Both healthy.
+>
+> Reviewer-facing surface is now reduced to 3 verdict buttons
+> (Pass / Needs Review / Non-Compliant); coaching + block buckets stay
+> server-side. Risk tags only render on non-pass verdicts. AGENT /
+> CUSTOMER labels are loud. 1-click pass commits immediately. New
+> Intelligence panel on /dashboard shows compliance % by supplier,
+> top-10 agents, calls by call_type donut, and 30-day trend. New
+> SegmentCards stack on /calls/[id] surfaces per-segment verdicts.
+>
+> ✅ **2026-05-13 — Backend Phases 0-4 + Phase 5j (upload-boundary fix) DEPLOYED.**
 > Tip commit `ddfdb23` (Call.segments + Call.flags relationships fix
 > the 500 on upload-response serialization). Prior tips: `796fb62`
 > (per-script commit in ingest endpoint), `a0c2da0` (V1 fallback +
