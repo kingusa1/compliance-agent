@@ -20,10 +20,20 @@ script_router = APIRouter()
 
 @script_router.post("/api/scripts/upload")
 async def upload_and_parse_script(file: UploadFile = File(...)):
+    """Parse an uploaded script file into checkpoint JSON.
+
+    2026-05-13 hardening: now uses the same 4-pass hardened extractor
+    (strict prose → prose-mode retry → per-page split → deterministic
+    heading fallback) as the bulk admin ingest endpoint, so the /scripts
+    UI upload never yields 0 checkpoints for a non-trivial file.
+    """
     allowed_types = {".pdf", ".docx", ".md", ".markdown", ".txt"}
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in allowed_types:
-        raise HTTPException(400, f"Invalid file type: {ext}. Allowed: {', '.join(sorted(allowed_types))}")
+        raise HTTPException(
+            400,
+            f"Invalid file type: {ext}. Allowed: {', '.join(sorted(allowed_types))}",
+        )
 
     os.makedirs(settings.upload_dir, exist_ok=True)
     temp_path = os.path.join(settings.upload_dir, f"script_{uuid.uuid4()}{ext}")
@@ -32,14 +42,33 @@ async def upload_and_parse_script(file: UploadFile = File(...)):
         f.write(content)
 
     try:
-        checkpoints = await parse_script_to_checkpoints(temp_path)
+        # Seed supplier/script names from the filename so the extractor
+        # prompt has at least some context. The reviewer can override
+        # both in the preview before saving.
+        stem = os.path.splitext(os.path.basename(file.filename))[0]
+        seed_script_name = stem.replace("_", " ").strip() or "Unknown"
+        try:
+            checkpoints = await parse_script_to_checkpoints(
+                temp_path,
+                supplier_name="Unknown",
+                script_name=seed_script_name,
+                script_type="acquisition",
+            )
+        except ValueError as ve:
+            raise HTTPException(400, str(ve))
+        except Exception as ee:
+            raise HTTPException(
+                500,
+                f"Script extraction failed: {type(ee).__name__}: {ee}",
+            )
         return {
             "filename": file.filename,
             "checkpoints": checkpoints,
             "checkpoint_count": len(checkpoints),
         }
     finally:
-        os.unlink(temp_path)
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
 
 
 @script_router.post("/api/scripts", response_model=ScriptResponse)

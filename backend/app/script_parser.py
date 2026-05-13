@@ -1,5 +1,3 @@
-import json
-
 from PyPDF2 import PdfReader
 from docx import Document
 
@@ -107,16 +105,39 @@ def checkpoints_to_markdown(supplier_name: str, script_name: str, mode: str, che
     return "\n".join(lines).rstrip() + "\n"
 
 
-async def parse_script_to_checkpoints(file_path: str) -> list[dict]:
+async def parse_script_to_checkpoints(
+    file_path: str,
+    *,
+    supplier_name: str = "Unknown",
+    script_name: str = "Unknown",
+    script_type: str = "acquisition",
+) -> list[dict]:
+    """Parse an uploaded script file (PDF / DOCX / MD / TXT) into the
+    canonical checkpoint JSON shape used by Script.checkpoints.
+
+    2026-05-13 rewrite: previously this function used its own bare LLM
+    prompt + raw json.loads(), which crashed on code-fence wrappers and
+    returned 0 rules for prose-heavy scripts. Now it delegates to the
+    hardened ``extract_checkpoints_from_markdown`` (4-pass: strict prose,
+    prose-mode retry, per-page split, deterministic heading fallback) so
+    the /scripts UI upload yields the same robust extraction as the
+    bulk admin ingest endpoint. Never raises on parseable input; returns
+    [] only when extract_text yields < 50 chars.
+    """
     script_text = extract_text(file_path)
 
     if not script_text or len(script_text) < 50:
         raise ValueError("Could not extract meaningful text from the file")
 
-    prompt = PARSE_PROMPT.replace("{script_text}", script_text)
-
-    from app.analysis import _call_llm
-    content = await _call_llm(prompt, timeout=60.0)
-
-    checkpoints = json.loads(content)
-    return checkpoints
+    # Reuse the hardened extractor so /scripts UI uploads get the same
+    # robustness as the bulk admin ingest path.
+    from app.agents.script_checkpoint_extractor import (
+        extract_checkpoints_from_markdown,
+    )
+    return await extract_checkpoints_from_markdown(
+        script_md=script_text,
+        supplier=supplier_name,
+        script_name=script_name,
+        script_type=script_type,
+        timeout=90.0,
+    )

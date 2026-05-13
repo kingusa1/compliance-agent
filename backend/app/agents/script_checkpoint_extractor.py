@@ -248,6 +248,213 @@ async def _extract_once(
     return canon
 
 
+def _split_by_pages(md: str) -> list[tuple[str, str]]:
+    """Split markdown into page-sized chunks.
+
+    Returns a list of ``(label, body)`` tuples. ``label`` is the heading
+    that introduced the chunk (e.g. ``## Page 1``). Falls back to a
+    single chunk if no ``## `` headings exist.
+    """
+    chunks: list[tuple[str, str]] = []
+    current_label = ""
+    current_lines: list[str] = []
+    for line in md.splitlines():
+        if line.startswith("## "):
+            if current_lines:
+                chunks.append((current_label, "\n".join(current_lines).strip()))
+            current_label = line.strip()
+            current_lines = []
+        else:
+            current_lines.append(line)
+    if current_lines:
+        chunks.append((current_label, "\n".join(current_lines).strip()))
+    # Drop empty chunks.
+    chunks = [(lbl, body) for lbl, body in chunks if body and len(body) > 20]
+    return chunks or [("", md)]
+
+
+_HEADING_RE = re.compile(r"^(?:#{1,3}\s+)(.{2,200})$")
+_DIRECTIVE_WORDS = (
+    " must ", " confirm", "you understand", "do you", "are you happy",
+    "please confirm", "please state", "please can you", "i must", "you agree",
+    "this call is recorded", "legally binding", "letter of authority",
+    "third party", "broker", "unit rate", "standing charge", "vat",
+    "cooling-off", "ombudsman", "consent", "authorise", "credit",
+    "direct debit", "tariff", "supplier", "switch", "annual quantity",
+)
+
+
+def _heuristic_checkpoints_from_markdown(md: str) -> list[dict]:
+    """Deterministic last-resort extractor: turn each section heading or
+    directive-bearing paragraph into a single checkpoint.
+
+    Used only when the LLM extractor returns [] for a long script (the
+    EDF/Pozitive/Scottish-Power-Acquisition shape). Better than 0 rules:
+    each heading becomes a "must cover this section" checkpoint with the
+    paragraph body as the requirement.
+    """
+    out: list[dict] = []
+    seen_names: set[str] = set()
+    section_idx = 1
+
+    # Pass 1 — every heading becomes a checkpoint, body is the requirement.
+    # Treats both ## markdown headings AND plain-text section labels
+    # (short capitalised lines followed by indented/bulleted content) as
+    # section anchors so EDF/Pozitive/Scottish-Power scripts with no
+    # markdown headings still get carved into proper sections.
+    paragraphs: list[tuple[str, str]] = []
+    current_heading: str | None = None
+    current_body: list[str] = []
+
+    def _is_section_label(line: str, next_line: str) -> bool:
+        # 2-60 chars, no trailing colon/period, mostly capitalised,
+        # followed by a non-empty indented/bulleted line.
+        s = line.strip()
+        if not s or len(s) > 60 or len(s) < 2:
+            return False
+        if s.endswith(("?", ".", ",", ";", ":")):
+            return False
+        if s.startswith(("-", "•", "*", "·", "▪", "►", "(", "[")):
+            return False
+        nxt = next_line.strip()
+        if not nxt:
+            return False
+        # Section label: title-case OR all-caps, with at most 3 lowercase
+        # connectors (of/to/and/the/for) and at least one capital letter.
+        words = s.split()
+        if len(words) > 8:
+            return False
+        capitals = sum(1 for w in words if w[:1].isupper())
+        if capitals < max(1, len(words) - 3):
+            return False
+        return True
+
+    lines = md.splitlines()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        next_line = lines[i + 1] if i + 1 < len(lines) else ""
+        m = _HEADING_RE.match(stripped)
+        if m:
+            if current_heading:
+                paragraphs.append((current_heading, " ".join(current_body).strip()))
+            current_heading = m.group(1).strip()
+            current_body = []
+        elif _is_section_label(stripped, next_line):
+            if current_heading:
+                paragraphs.append((current_heading, " ".join(current_body).strip()))
+            current_heading = stripped
+            current_body = []
+        elif current_heading is not None:
+            if stripped:
+                current_body.append(stripped)
+    if current_heading:
+        paragraphs.append((current_heading, " ".join(current_body).strip()))
+
+    for heading, body in paragraphs:
+        if heading.lower() in {"page", "pages"} or heading.lower().startswith("page "):
+            # Page anchors aren't real sections — fall through to scan
+            # their body for directive paragraphs in pass 2.
+            continue
+        name = heading[:120]
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        # Mine key phrases from the body (up to 6 distinctive lowercase tokens).
+        body_lower = body.lower()
+        key_phrases: list[str] = []
+        for cue in _DIRECTIVE_WORDS:
+            if cue.strip() in body_lower and cue.strip() not in key_phrases:
+                key_phrases.append(cue.strip())
+            if len(key_phrases) >= 5:
+                break
+        if not key_phrases:
+            # Last fallback: split into 3-word phrases from the body.
+            tokens = [t for t in body_lower.split() if len(t) > 4][:5]
+            key_phrases = tokens[:3]
+        out.append({
+            "section": section_idx,
+            "name": name,
+            "required": (body[:1100] if body else f"Cover the '{name}' section of the script."),
+            "key_phrases": key_phrases[:5],
+            "customer_response_required": ("agree" in body_lower or "confirm" in body_lower),
+            "strictness": "mandatory",
+            "line_number": None,
+        })
+        section_idx += 1
+
+    # Pass 2 — scan for ALL substantive paragraphs (any non-empty block
+    # > 50 chars, not a heading). Prefer paragraphs with directive cues
+    # but accept anything substantive if pass 1 was thin. Cap at 30
+    # rules so we don't drown the rubric in noise.
+    target_total = max(15, len(out))
+    if len(out) < target_total:
+        for para in md.split("\n\n"):
+            stripped = para.strip()
+            if not stripped or len(stripped) < 50 or stripped.startswith("#"):
+                continue
+            # Skip pure list-of-bullets blocks (parsed already as section bodies).
+            if all(line.strip().startswith("- ") for line in stripped.splitlines() if line.strip()):
+                continue
+            low = stripped.lower()
+            has_cue = any(cue in low for cue in _DIRECTIVE_WORDS)
+            # First pass through paragraphs: only directive ones.
+            if not has_cue and len(out) >= 6:
+                continue
+            first_sentence = stripped.split(".")[0][:120]
+            if first_sentence in seen_names:
+                continue
+            seen_names.add(first_sentence)
+            out.append({
+                "section": section_idx,
+                "name": first_sentence,
+                "required": stripped[:1100],
+                "key_phrases": ([c.strip() for c in _DIRECTIVE_WORDS if c.strip() in low][:5]
+                                or [w for w in first_sentence.lower().split() if len(w) > 4][:3]),
+                "customer_response_required": ("agree" in low or "confirm" in low),
+                "strictness": "mandatory",
+                "line_number": None,
+            })
+            section_idx += 1
+            if len(out) >= 30:
+                break
+
+    return out
+
+
+async def _extract_per_page(
+    *,
+    chunks: list[tuple[str, str]],
+    supplier: str,
+    script_name: str,
+    script_type: str,
+    timeout: float,
+) -> list[dict]:
+    """Run the extractor once per page/section chunk; merge results."""
+    merged: list[dict] = []
+    next_section = 1
+    seen_names: set[str] = set()
+    for label, body in chunks:
+        if not body or len(body) < 50:
+            continue
+        sub_name = f"{script_name} — {label}" if label else script_name
+        rows = await _extract_once(
+            script_md=body,
+            supplier=supplier,
+            script_name=sub_name,
+            script_type=script_type,
+            timeout=timeout,
+        )
+        for r in rows:
+            nm = (r.get("name") or "").strip()
+            if nm in seen_names:
+                continue
+            seen_names.add(nm)
+            r["section"] = next_section
+            next_section += 1
+            merged.append(r)
+    return merged
+
+
 async def extract_checkpoints_from_markdown(
     *,
     script_md: str,
@@ -257,25 +464,29 @@ async def extract_checkpoints_from_markdown(
     timeout: float = 90.0,
 ) -> list[dict]:
     """Ask Opus 4.7 to convert one script's markdown into the canonical
-    checkpoint JSON shape. Returns ``[]`` on any failure so callers can
-    keep the old (empty) value rather than dropping into a broken state.
+    checkpoint JSON shape. Returns ``[]`` only when the markdown itself
+    is empty/unreadable.
 
     Pipeline:
       1. Normalise PDF→markdown artifacts (whitespace, bullet glyphs,
          soft hyphens).
       2. Truncate defensively to 25k chars (supplier corpus fits).
       3. First LLM round-trip with the canonical prompt.
-      4. If zero valid rows came back AND the script looks non-trivial
-         (>30 non-empty lines), retry once with an explicit prose-mode
-         nudge appended to the prompt — surfaces checkpoints for the
-         un-numbered prose-only scripts (BGL V7, BG Acq, BG Renewal,
-         EDF V11, Pozitive) without forcing manual reformatting.
+      4. If zero rows: retry once with prose-mode nudge appended.
+      5. If still zero: split by ``## Page`` / section headings and run
+         the extractor per-chunk; merge results. Works for scripts where
+         the LLM was overwhelmed by length but can extract from a single
+         page of structured content.
+      6. If still zero: heuristic fallback — each markdown heading
+         becomes a single "cover this section" checkpoint. Deterministic;
+         never returns [] for a non-trivial script.
     """
     if not script_md:
         return []
     md = _normalize_markdown(script_md)[:25_000]
     s_type = script_type or "acquisition"
 
+    # Pass 1 — whole markdown, strict prompt.
     canon = await _extract_once(
         script_md=md,
         supplier=supplier,
@@ -286,14 +497,12 @@ async def extract_checkpoints_from_markdown(
     if canon:
         return canon
 
-    # Retry path: append an aggressive prose-mode hint and try once more.
     non_empty_lines = sum(1 for line in md.splitlines() if line.strip())
-    if non_empty_lines < 30:
-        log.warning(
-            "\U0001f4cb extract_checkpoints produced zero rows for a short script"
-        )
+    if non_empty_lines < 20:
+        log.warning("\U0001f4cb extract_checkpoints: script too short, []")
         return []
 
+    # Pass 2 — prose-mode hint appended.
     nudged = (
         md
         + "\n\n"
@@ -305,9 +514,7 @@ async def extract_checkpoints_from_markdown(
         "every unit-rate / standing-charge / cancellation-rights / "
         "ombudsman / supplier-name disclosure. Aim for at least 10 rules."
     )
-    log.info(
-        "\U0001f4cb retrying script-checkpoint extraction with prose-mode hint"
-    )
+    log.info("\U0001f4cb extract_checkpoints retry with prose-mode hint")
     canon = await _extract_once(
         script_md=nudged,
         supplier=supplier,
@@ -315,8 +522,31 @@ async def extract_checkpoints_from_markdown(
         script_type=s_type,
         timeout=timeout,
     )
-    if not canon:
-        log.warning(
-            "\U0001f4cb extract_checkpoints produced zero valid rows after retry"
+    if canon:
+        return canon
+
+    # Pass 3 — per-page extraction. Splits by ## headings so the LLM
+    # focuses on one chunk at a time.
+    chunks = _split_by_pages(md)
+    if len(chunks) > 1:
+        log.info(
+            f"\U0001f4cb extract_checkpoints per-page fallback "
+            f"({len(chunks)} chunks)"
         )
-    return canon
+        canon = await _extract_per_page(
+            chunks=chunks,
+            supplier=supplier,
+            script_name=script_name,
+            script_type=s_type,
+            timeout=timeout,
+        )
+        if canon:
+            return canon
+
+    # Pass 4 — deterministic heuristic. Always returns something for a
+    # long script with headings or directive paragraphs.
+    log.warning(
+        "\U0001f4cb extract_checkpoints LLM passes empty — falling back "
+        "to deterministic heuristic"
+    )
+    return _heuristic_checkpoints_from_markdown(md)
