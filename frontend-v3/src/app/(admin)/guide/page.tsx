@@ -160,7 +160,7 @@ const PIPELINE_STEPS: { num: number; title: string; description: string }[] = [
   { num: 3, title: "Inngest event (optional)", description: "Durable workflow path emits call/uploaded so each step can retry independently. Live deployments currently use the asyncio path (USE_INNGEST_PIPELINE=false) — Inngest stays warmed for failover." },
   { num: 4, title: "Transcribe", description: "Deepgram Nova-3 (en-GB, EU region) with diarisation + smart-format + sentiment + intents + topics + summary. Per-word speakers come back as numeric ids and are role-tagged AGENT/CUSTOMER server-side." },
   { num: 5, title: "Detect supplier (AI)", description: "Opus 4.7 receives the first ~3000 words and names the energy supplier whose tariff is being sold. Sibling-supplier inheritance fills in when an LOA-only call doesn't mention the supplier explicitly." },
-  { num: 6, title: "Detect call_type (AI)", description: "Opus 4.7 reads the transcript and classifies it as lead_gen / passover / closer / standalone_loa / c_call / amendment. Filename hints are NOT used — pure content classification. Existing call_types set by reviewers are preserved." },
+  { num: 6, title: "Content classifier (AI, 2026-05-12 rebuild)", description: "Opus 4.7 reads the transcript and emits 1–4 segments — lead_gen / pre_sales / verbal / loa — with word-index boundaries. Each segment grades against its OWN rubric; worst-bucket-wins aggregates to one call-level verdict. Filename hints are NOT used; pure content classification. SegmentCards on the call detail show the AI's per-segment reasoning + time range." },
   { num: 7, title: "Detect names + meters", description: "detect_names() pulls agent + customer; name_normaliser snaps to existing roster entries above a 0.78 similarity threshold. meter_extractor regex pulls MPAN (13 digits) + MPRN (6-10 digits) into CustomerDeal." },
   { num: 8, title: "Phrase pre-pass", description: "15 cheap regex patterns scan for Critical signals (Watt identity false-employ, VAT-not-clear, guaranteed-rates, savings-misrep, vulnerability indicators). Hits become CRITICAL evidence injected into the LLM prompt." },
   { num: 9, title: "Watt analyzer (Opus 4.7)", description: "Per-checkpoint analyzer reads the matched supplier-script's checkpoint list and grades each one PASS / PARTIAL / FAIL with evidence quotes + line numbers." },
@@ -179,29 +179,19 @@ const AI_CLASSIFIER_RULES: { stage: string; tell: string; signals: string }[] = 
     signals: "\"is that [name]?\", \"I'm calling from [broker]\", \"are you the decision maker\", \"shall I send across some prices\", \"I'll pass you to my colleague\"",
   },
   {
-    stage: "passover",
-    tell: "WARM HANDOVER between two named agents on the same call. Lead-gen introduces the closer, then drops off.",
-    signals: "\"I'll just pass you over to [name]\", \"my colleague [name] tells me…\", two distinct agent voices introduced inside one recording.",
+    stage: "pre_sales",
+    tell: "WARM HANDOVER + pre-contract recap at the start of the closer recording. Lead-gen agent transfers, closer reconfirms identity / postcode / authority before reading the contract.",
+    signals: "\"I'll just pass you over to [name]\", \"my colleague [name] tells me…\", \"let me re-confirm your details\", two distinct agent voices in one recording.",
   },
   {
-    stage: "closer",
-    tell: "LEGALLY BINDING verbal contract. Rate p/kWh + standing charge + contract length + Ombudsman + customer \"yes\". For E.ON, LOA wording is bundled INTO this call.",
+    stage: "verbal",
+    tell: "LEGALLY BINDING verbal contract. Rate p/kWh + standing charge + contract length + Ombudsman + customer \"yes\". For E.ON, LOA wording is bundled INTO this segment.",
     signals: "\"this is a legally binding contract\", \"do you agree to be bound\", customer says \"yes\" to affirmation blocks, explicit rate + standing charge read.",
   },
   {
-    stage: "standalone_loa",
-    tell: "Separate Letter of Authority call. Required by every supplier EXCEPT E.ON. No rate/contract reading.",
-    signals: "\"I'm calling for a Letter of Authority\", \"do you authorise Watt to act on your behalf\", \"12 months\", \"authority to negotiate with [supplier]\".",
-  },
-  {
-    stage: "c_call",
-    tell: "CONFIRMATION CALLBACK after sale. Short. Verifies identity + intent to contract.",
-    signals: "\"calling to confirm you've signed up with [supplier]\", \"can you confirm your name and the business address\".",
-  },
-  {
-    stage: "amendment",
-    tell: "POST-SALE fix-up call. References an earlier verbal/LOA mistake (rate misread, name correction, missing line).",
-    signals: "\"we noticed on your earlier call\", \"I need to re-read lines 11 to 14\", \"to amend the verbal contract you took yesterday\".",
+    stage: "loa",
+    tell: "Letter of Authority. Standalone call for non-E.ON suppliers; bundled into the verbal segment for E.ON.",
+    signals: "\"verbal letter of authorization\", \"do you authorise Watt to act on your behalf\", \"12 months\", \"authority to negotiate with [supplier]\".",
   },
 ];
 
@@ -232,26 +222,37 @@ const COMPLIANCE_TAXONOMY: { title: string; description: string; rows: string[] 
     ],
   },
   {
-    title: "Severity → action",
-    description: "Severity ranks the breach; the action is the verdict the system pushes.",
+    title: "Severity → bucket (server) → reviewer surface",
+    description: "Severity ranks the breach; the server computes a bucket; the reviewer sees only three buttons (2026-05-13 rebuild).",
     rows: [
-      "CRITICAL → BLOCK (Ofgem-reportable risk, refuse the deal)",
-      "HIGH → REVIEW (reviewer must decide)",
-      "MEDIUM → COACH (coaching note only, deal still ships)",
+      "CRITICAL → bucket=blocked → reviewer surface: Non-Compliant",
+      "HIGH → bucket=review → reviewer surface: Needs Review",
+      "MEDIUM → bucket=coaching → reviewer surface: Pass (note logged)",
+      "Reviewer's 3-pill choice: Pass / Needs Review / Non-Compliant — COACHING + BLOCK are server-only.",
     ],
   },
   {
-    title: "4 risk tags",
-    description: "What kind of regulatory exposure this call carries.",
+    title: "5 risk tags (Plan §5b)",
+    description: "What kind of regulatory exposure this call carries. Only rendered on Needs Review / Non-Compliant verdicts.",
     rows: [
-      "ombudsman_risk · mis_selling_risk · complaint_risk · cancellation_risk",
+      "Ombudsman · Mis-selling · Complaint · Cancellation · Vulnerable",
     ],
   },
   {
-    title: "8 call types",
-    description: "What stage of the deal this recording covers.",
+    title: "4 canonical segments (2026-05-12 lockdown)",
+    description: "What stage of the deal this recording's content covers. The AI emits 1–4 segments per recording; each grades against its own rubric.",
     rows: [
-      "lead_gen · passover · closer · verbal · loa · c_call · amendment · full",
+      "lead_gen · pre_sales · verbal · loa",
+    ],
+  },
+  {
+    title: "Intelligence panel (Plan §5f, 2026-05-13)",
+    description: "Dashboard surfaces 4 read-only aggregations over completed calls.",
+    rows: [
+      "Compliance % by supplier — bar chart, descending by call volume.",
+      "Top-10 agents by compliance % — min 3 calls.",
+      "Calls by call_type — donut (lead_gen / pre_sales / verbal / loa).",
+      "30-day compliance trend — weekly buckets, polyline.",
     ],
   },
 ];
@@ -259,42 +260,42 @@ const COMPLIANCE_TAXONOMY: { title: string; description: string; rows: string[] 
 const LIFECYCLE_TABLE: { supplier: string; phases: string[]; required: number; corrective: string[]; note: string }[] = [
   {
     supplier: "E.ON Next",
-    phases: ["lead_gen", "passover", "closer"],
+    phases: ["lead_gen", "pre_sales", "verbal"],
     required: 3,
     corrective: ["c_call", "amendment"],
-    note: "LOA wording is bundled INTO the Closer call — no separate LOA recording needed.",
+    note: "LOA wording is bundled INTO the Verbal segment — no separate LOA recording needed.",
   },
   {
     supplier: "British Gas",
-    phases: ["lead_gen", "passover", "closer", "standalone_loa"],
+    phases: ["lead_gen", "pre_sales", "verbal", "loa"],
     required: 4,
     corrective: ["c_call", "amendment"],
-    note: "Standalone LOA call required after Closer.",
+    note: "Standalone LOA segment after the Verbal contract.",
   },
   {
     supplier: "British Gas Lite (BGL)",
-    phases: ["lead_gen", "passover", "closer", "standalone_loa"],
+    phases: ["lead_gen", "pre_sales", "verbal", "loa"],
     required: 4,
     corrective: ["c_call", "amendment"],
-    note: "Standalone LOA call required after Closer.",
+    note: "Standalone LOA segment after the Verbal contract.",
   },
   {
     supplier: "EDF Energy",
-    phases: ["lead_gen", "passover", "closer", "standalone_loa"],
+    phases: ["lead_gen", "pre_sales", "verbal", "loa"],
     required: 4,
     corrective: ["c_call", "amendment"],
-    note: "DDWA verbal + LOA are separate recordings.",
+    note: "DDWA verbal + LOA are separate segments.",
   },
   {
     supplier: "Scottish Power",
-    phases: ["lead_gen", "passover", "closer", "standalone_loa"],
+    phases: ["lead_gen", "pre_sales", "verbal", "loa"],
     required: 4,
     corrective: ["c_call", "amendment"],
-    note: "For-Business tariff requires a standalone authority confirmation call.",
+    note: "For-Business tariff requires a standalone authority confirmation segment.",
   },
   {
     supplier: "Pozitive",
-    phases: ["lead_gen", "passover", "closer", "standalone_loa"],
+    phases: ["lead_gen", "pre_sales", "verbal", "loa"],
     required: 4,
     corrective: ["c_call", "amendment"],
     note: "Micro-business threshold + GDPR T&Cs each require explicit consent on a standalone LOA.",
@@ -315,56 +316,43 @@ const STAGE_DETAILS: {
     filenameHints: ["lead.mp3", "Lead Gen.mp3", "LG.mp3", "lg.mp3"],
   },
   {
-    key: "passover",
-    label: "Passover",
+    key: "pre_sales",
+    label: "Pre-Sales",
     blurb:
-      "Warm handover from the Lead Gen agent to the Closer. The lead agent stays on the line, introduces the closer, then drops off. Without a clean passover, the closer is essentially a cold call again.",
-    filenameHints: ["passover.mp3", "Passover.mp3", "pass over"],
+      "Warm handover + pre-contract recap inside the closer recording. Lead-gen passes the customer to the closer; closer re-confirms identity, postcode, decision-maker authority before reading the verbal contract.",
+    filenameHints: ["passover.mp3", "pre-sales.mp3"],
   },
   {
-    key: "closer",
-    label: "Closer",
+    key: "verbal",
+    label: "Verbal",
     blurb:
-      "The legally-binding verbal contract reading. Closer agent reads the supplier script, customer agrees, deal is captured. For E.ON, the LOA section is bundled INTO this call.",
+      "Legally-binding verbal contract reading. Closer agent reads the supplier script, customer agrees, deal is captured. For E.ON, the LOA section is bundled INTO this segment.",
     filenameHints: ["verbal.mp3", "closer.mp3", "full call.mp3"],
   },
   {
-    key: "standalone_loa",
-    label: "Standalone LOA",
+    key: "loa",
+    label: "LOA",
     blurb:
-      "Separate Letter-of-Authority call required by every supplier EXCEPT E.ON. Confirms the customer authorises Watt to act on their behalf with the new supplier. 12-month validity.",
+      "Letter-of-Authority. Standalone for every supplier EXCEPT E.ON; for E.ON it's bundled into the Verbal segment. 12-month validity.",
     filenameHints: ["loa.mp3", "letter of authority"],
-  },
-  {
-    key: "c_call",
-    label: "C-Call",
-    blurb:
-      "Confirmation callback — sometimes from the supplier side, sometimes Watt. Optional corrective step, NOT required for verification but available on any supplier.",
-    filenameHints: ["c call.mp3", "c_call.mp3"],
-  },
-  {
-    key: "amendment",
-    label: "Amendment",
-    blurb:
-      "Post-sale fix-up call when something went wrong on the verbal or LOA (wrong rate read, name correction, missing line). Optional corrective; doesn't block verified.",
-    filenameHints: ["amendment.mp3"],
   },
 ];
 
 const LIFECYCLE_STATES: { state: string; meaning: string }[] = [
   { state: "open", meaning: "No qualifying call yet." },
   { state: "lead_gen_done", meaning: "Lead Gen done; nothing else yet." },
-  { state: "passover_done", meaning: "Passover landed; Closer still pending." },
+  { state: "pre_sales_done", meaning: "Pre-Sales landed; Verbal still pending." },
   {
-    state: "closer_done",
+    state: "verbal_done",
     meaning:
-      "Closer in; one or more required follow-ups still missing (e.g. Standalone LOA for non-E.ON).",
+      "Verbal in; LOA still pending for non-E.ON suppliers (E.ON skips this — Verbal includes the LOA wording).",
+  },
+  {
+    state: "loa_done",
+    meaning:
+      "LOA captured (non-E.ON only). Deal is one step from verified.",
   },
   { state: "verified", meaning: "Every required stage finalised. Deal is contractually complete." },
-  {
-    state: "amendment_done / c_call_done",
-    meaning: "Corrective post-verification states.",
-  },
   { state: "rejected", meaning: "Terminal. Manual reviewer override." },
 ];
 

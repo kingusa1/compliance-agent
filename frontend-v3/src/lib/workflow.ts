@@ -1,21 +1,24 @@
 /**
  * Shared single source of truth for the supplier → workflow rule.
  *
- *   E.ON variants → 3 required stages (Lead Gen → Passover → Closer)
- *                   LOA is bundled into the Closer.
- *   Everyone else → 4 required stages (… → Standalone LOA)
+ *   E.ON variants → 3 required stages (Lead Gen → Pre-Sales → Verbal)
+ *                   LOA is bundled into the Verbal call.
+ *   Everyone else → 4 required stages (… → LOA)
  *
- * Mirrors `backend/app/deal_lifecycle.py:SUPPLIER_PHASE_MATRIX`.
- * The supplier label comes from `Call.detected_supplier` (AI-detected at
- * upload time) or `CustomerDeal.supplier`, so the workflow type below
- * is auto-derived end-to-end. No manual tagging.
+ * Mirrors `backend/app/deal_lifecycle.py:SUPPLIER_PHASE_MATRIX`. Updated
+ * 2026-05-14 to follow the 2026-05-12 taxonomy lockdown — the legacy
+ * "passover / closer / standalone_loa" labels are replaced with the
+ * canonical `lead_gen / pre_sales / verbal / loa`. The supplier label
+ * comes from `Call.detected_supplier` (AI-detected at upload) or
+ * `CustomerDeal.supplier`, so the workflow type is auto-derived end-to-end.
+ * No manual tagging.
  */
 
 export type LifecyclePhase =
   | "lead_gen"
-  | "passover"
-  | "closer"
-  | "standalone_loa"
+  | "pre_sales"
+  | "verbal"
+  | "loa"
   | "amendment"
   | "c_call";
 
@@ -26,20 +29,20 @@ export const CORRECTIVE_PHASES: readonly LifecyclePhase[] = [
 
 export const PHASE_LABEL: Record<LifecyclePhase, string> = {
   lead_gen: "Lead Gen",
-  passover: "Passover",
-  closer: "Closer",
-  standalone_loa: "Standalone LOA",
+  pre_sales: "Pre-Sales",
+  verbal: "Verbal",
+  loa: "LOA",
   amendment: "Amendment",
   c_call: "C-Call",
 };
 
 /** Sublabel surfaced underneath a phase chip to explain the supplier-specific
- *  twist (e.g. E.ON's Closer includes the LOA verbatim). */
+ *  twist (e.g. E.ON's Verbal contract reading also covers the LOA wording). */
 export const PHASE_SUBLABEL: Partial<Record<string, string>> = {
   // Keyed by `${supplierKey}.${phase}`.
-  "eon.closer": "LOA bundled",
-  "eon_next.closer": "LOA bundled",
-  "non_eon.standalone_loa": "Separate LOA call",
+  "eon.verbal": "LOA bundled",
+  "eon_next.verbal": "LOA bundled",
+  "non_eon.loa": "Separate LOA call",
 };
 
 const E_ON_NAMES = new Set<string>([
@@ -54,11 +57,11 @@ const E_ON_NAMES = new Set<string>([
 
 const NON_EON_PHASES: LifecyclePhase[] = [
   "lead_gen",
-  "passover",
-  "closer",
-  "standalone_loa",
+  "pre_sales",
+  "verbal",
+  "loa",
 ];
-const EON_PHASES: LifecyclePhase[] = ["lead_gen", "passover", "closer"];
+const EON_PHASES: LifecyclePhase[] = ["lead_gen", "pre_sales", "verbal"];
 
 /** True if the supplier label resolves to an E.ON variant. Case-insensitive. */
 export function isEonSupplier(supplier: string | null | undefined): boolean {
@@ -96,9 +99,9 @@ export function workflowSummary(
   supplier: string | null | undefined,
 ): string {
   if (isEonSupplier(supplier)) {
-    return `${supplier ?? "E.ON"} bundles the LOA into the Closer call, so this deal needs 3 stages: Lead Gen → Passover → Closer.`;
+    return `${supplier ?? "E.ON"} bundles the LOA wording into the Verbal call, so this deal needs 3 stages: Lead Gen → Pre-Sales → Verbal.`;
   }
-  return `${supplier ?? "This supplier"} requires a separate LOA call after the Closer, so this deal needs 4 stages: Lead Gen → Passover → Closer → Standalone LOA.`;
+  return `${supplier ?? "This supplier"} requires a separate LOA call after the Verbal, so this deal needs 4 stages: Lead Gen → Pre-Sales → Verbal → LOA.`;
 }
 
 /** Tone classification for the pill — emerald for E.ON, blue for others. */

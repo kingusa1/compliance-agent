@@ -45,12 +45,11 @@ function workflowStepsFor(supplier: string | null | undefined): string[] {
 
 function completedPhaseCount(deal: { calls: { call_type?: string | null }[] }, steps: string[]): number {
   // Count distinct workflow phases that this deal's calls have covered.
-  // call_type "loa" maps to "standalone_loa" per backend
-  // _CALL_TYPE_TO_PHASE; we collapse here too.
+  // The 2026-05-12 taxonomy rebuild canonicalised call_type to
+  // lead_gen / pre_sales / verbal / loa — no remapping needed any more.
   const seen = new Set<string>();
   for (const c of deal.calls) {
-    let p = (c.call_type ?? "").toLowerCase();
-    if (p === "loa") p = "standalone_loa";
+    const p = (c.call_type ?? "").toLowerCase();
     if (steps.includes(p)) seen.add(p);
   }
   // For the progress-bar position we treat every distinct workflow
@@ -150,11 +149,11 @@ function WorkflowBar({
           const done = i < current;
           const active = i === current;
           const corrective = correctiveSet.has(s);
-          const isClosingEon = eon && s === "closer";
-          const isStandaloneLoa = !eon && s === "standalone_loa";
+          const isVerbalEon = eon && s === "verbal";
+          const isStandaloneLoa = !eon && s === "loa";
           // Sublabel surfaces the supplier-specific twist (LOA bundled or
           // separate LOA call) so reviewers see the rule at a glance.
-          const subLabel = isClosingEon
+          const subLabel = isVerbalEon
             ? "+ LOA bundled"
             : isStandaloneLoa
               ? "separate LOA call"
@@ -193,10 +192,10 @@ function WorkflowBar({
                 title={
                   corrective
                     ? "Corrective step — optional for any supplier"
-                    : isClosingEon
-                      ? "E.ON reads the LOA wording inside the Closer call — no separate LOA needed."
+                    : isVerbalEon
+                      ? "E.ON reads the LOA wording inside the Verbal contract call — no separate LOA needed."
                       : isStandaloneLoa
-                        ? "Non-E.ON suppliers require a separate LOA call after the Closer."
+                        ? "Non-E.ON suppliers require a separate LOA call after the Verbal contract."
                         : PHASE_LABEL[s as keyof typeof PHASE_LABEL]
                 }
               >
