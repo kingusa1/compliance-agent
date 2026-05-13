@@ -57,33 +57,24 @@ export const DealStatus = z.enum([
   "closed_lost",
 ]);
 
-// Aligned with the Watt Utilities call workflow as observed in the actual
-// customer folders + tracker XLSX. Earlier draft used sales-funnel terms
-// (intro/qualification/pitch/transfer/close) which did not match the
-// real call types in the user's data. Backend phase model in
-// app/deal_lifecycle.py:_CALL_TYPE_TO_PHASE is the source of truth.
+// 2026-05-12 taxonomy rebuild — locked to the 4 canonical segment types.
+// Reviewers no longer pick a call_type at upload; the new content
+// classifier (backend/app/agents/content_classifier.py) auto-detects
+// which segments are present per recording. This enum exists for the
+// admin-edit path (manually correcting a misclassified call) and the
+// (now-hidden) manual-mode radio in L7Form.
 export const CallType = z.enum([
-  "lead_gen",     // Lead generation / cold-contact qualification call
-  "passover",     // Handover from lead-gen agent to closer
-  "closer",       // Closer call where pricing is presented
-  "verbal",       // Verbal contract confirmation (legally binding script)
-  "loa",          // Letter of Authority (verbal or written)
-  "c_call",       // Compliance call (post-sale verification)
-  "amendment",    // Post-sale amendment call (fixing a verbal/LOA)
-  "full",         // End-to-end recording (all stages in one file)
+  "lead_gen",   // Opener / first contact
+  "pre_sales",  // Closer warm-up (re-confirm before binding script)
+  "verbal",     // Legally binding verbal contract reading
+  "loa",        // Letter of Authority wording (E.ON audio only)
 ]);
 
-// Human labels for the dropdown — keep here so the UI imports a single
-// source of truth and stays in sync with the enum values.
 export const CALL_TYPE_LABELS: Record<z.infer<typeof CallType>, string> = {
   lead_gen: "Lead Gen",
-  passover: "Passover",
-  closer: "Closer",
-  verbal: "Verbal Contract",
-  loa: "Letter of Authority",
-  c_call: "Compliance Call",
-  amendment: "Amendment",
-  full: "Full Call",
+  pre_sales: "Pre-Sales",
+  verbal: "Verbal",
+  loa: "LOA",
 };
 
 export const Language = z.enum(["en", "fr", "de", "es", "it", "nl"]);
@@ -184,13 +175,6 @@ export const L7IntakeSchema = z
         code: z.ZodIssueCode.custom,
         path: ["deal", "supplier"],
         message: "Supplier required",
-      });
-    }
-    if (!v.call.call_type) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["call", "call_type"],
-        message: "Call type required",
       });
     }
     // Manual mode: each meter row must have an MPAN or MPRN.

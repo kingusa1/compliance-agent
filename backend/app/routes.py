@@ -130,7 +130,11 @@ async def upload_call(
     script_id: str | None = None,
     stream: bool = False,
     deal_id: str | None = Form(default=None),
-    call_type: str | None = Form(default="full"),
+    # 2026-05-12 taxonomy rebuild — reviewers no longer pick a call_type
+    # at upload. Default is None; AI content_classifier auto-detects
+    # segments in _step_classify_content. Accepts the 4 canonical values
+    # when explicitly provided via the legacy form-field path.
+    call_type: str | None = Form(default=None),
     customer_name: str | None = Form(default=None),
     # L7 — structured intake envelope. When the frontend sends the new
     # form, ``metadata`` is a JSON string matching ``IntakePayload``;
@@ -346,13 +350,20 @@ async def upload_call(
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
-    # call_type is determined ENTIRELY by the AI now. We keep "full" as
-    # the placeholder until the pipeline's transcript-based classifier
-    # (analysis.detect_call_type → pipeline._step_detect_metadata) sets
-    # the real lifecycle stage. The previous filename pre-pass was
-    # removed 2026-05-11 — filenames are unreliable (suppliers send the
-    # same recording with arbitrary names) and the user explicitly
-    # asked for AI-only categorisation.
+    # 2026-05-12 taxonomy rebuild: call_type starts NULL and the new
+    # content_classifier (pipeline._step_classify_content) emits 1-4
+    # CallSegment rows per recording, each graded against its own rubric.
+    # The Call.call_type column is back-compat only — segments are the
+    # source of truth for grading.
+    # Enforce the DB CHECK at the route boundary so a stale client sending
+    # a legacy value (e.g. "full" / "closer") gets a clean 422.
+    _ALLOWED_CALL_TYPES = {"lead_gen", "pre_sales", "verbal", "loa", None}
+    if call_type not in _ALLOWED_CALL_TYPES:
+        raise HTTPException(
+            422,
+            f"invalid call_type {call_type!r} (allowed: lead_gen, pre_sales, "
+            "verbal, loa, or omit)",
+        )
 
     call = Call(
         id=call_id,

@@ -166,14 +166,16 @@ export function useEditCallMetadata(callId: string) {
 export function buildUploadFormData(input: {
   customer: { name: string; [k: string]: unknown };
   deal: { supplier: string; [k: string]: unknown };
-  call: { call_type: string; audio_file: File; [k: string]: unknown };
+  call: { call_type: string | null; audio_file: File; [k: string]: unknown };
   customer_slug?: string;
   supplier_override?: "manual" | "auto";
   dev_auto_detect?: boolean;
 }): FormData {
   const fd = new FormData();
   fd.append("file", input.call.audio_file);
-  fd.append("call_type", input.call.call_type);
+  if (input.call.call_type) {
+    fd.append("call_type", input.call.call_type);
+  }
   fd.append("customer_name", input.customer.name);
   if (input.customer_slug) fd.append("customer_slug", input.customer_slug);
   if (input.supplier_override) fd.append("supplier_override", input.supplier_override);

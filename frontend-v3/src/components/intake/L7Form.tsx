@@ -59,21 +59,15 @@ const DEAL_STATUSES = [
   { value: "closed_lost", label: "Closed — lost" },
 ] as const;
 
-// Aligned with the Watt Utilities call workflow (see backend
-// app/deal_lifecycle.py:_CALL_TYPE_TO_PHASE for the source of truth).
-// Earlier draft used sales-funnel terms (intro/qualification/pitch/
-// transfer/close) which did not match the actual call types in the
-// user's data — Lead Gen, Passover, Verbal Contract, LOA, Compliance,
-// Amendment, Closer, Full Call.
+// 2026-05-12 taxonomy rebuild — locked to the 4 canonical segment
+// types. AI auto-classifies which are present in the recording; this
+// dropdown is now a manual-override path only (hidden when
+// dev_auto_detect is on, which is the default).
 const CALL_TYPES = [
   { value: "lead_gen", label: "Lead Gen" },
-  { value: "passover", label: "Passover" },
-  { value: "closer", label: "Closer" },
-  { value: "verbal", label: "Verbal Contract" },
-  { value: "loa", label: "Letter of Authority" },
-  { value: "c_call", label: "Compliance Call" },
-  { value: "amendment", label: "Amendment" },
-  { value: "full", label: "Full Call" },
+  { value: "pre_sales", label: "Pre-Sales" },
+  { value: "verbal", label: "Verbal" },
+  { value: "loa", label: "LOA" },
 ] as const;
 
 const LANGUAGES = [
@@ -275,15 +269,10 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
   });
 
   const onSubmit = (values: L7IntakeInput, override?: "manual" | "auto") => {
-    // Frontend CallType enum is now aligned with the backend phase model.
-    // Pass through verbatim; no remap needed. `loa` maps to backend
-    // `standalone_loa` for the deal_lifecycle phase resolver — keep this
-    // single explicit mapping to honor the legacy backend phase name.
-    const callTypeMap: Record<string, string> = {
-      loa: "standalone_loa",
-    };
-    const rawCallType = values.call.call_type ?? "full";
-    const mappedCallType = callTypeMap[rawCallType] ?? rawCallType;
+    // 2026-05-12 taxonomy rebuild — backend accepts the 4 canonical
+    // values or null. AI auto-classifies on null. No remap needed; the
+    // legacy "full" / "standalone_loa" mappings are gone.
+    const mappedCallType: string | null = values.call.call_type ?? null;
 
     // Frontend supplier list uses display labels; backend SupplierEnum
     // is stricter (e.g. "Pozitive" not "Pozitive Energy"; "TotalEnergies
