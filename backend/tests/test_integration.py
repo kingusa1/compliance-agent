@@ -264,6 +264,11 @@ async def test_integration_non_compliant_call_v2(test_db):
     script = _make_script(test_db, supplier_name="Energy Solutions")
     call = _make_call(test_db, call_id="integ-002")
 
+    # Tag the failed checkpoints as severity=high so under the
+    # severity-weighted analyzer (introduced 2026-05-10) they roll up to
+    # bucket=review → compliant=False. Same intent as the original test
+    # ("call with failed checkpoints must not be compliant") — just
+    # expressed in the severity language the analyzer now requires.
     mixed_checkpoints = [
         {
             "section": 1,
@@ -271,6 +276,7 @@ async def test_integration_non_compliant_call_v2(test_db):
             "status": "pass",
             "evidence": "We are a third party",
             "notes": None,
+            "severity": "high",
         },
         {
             "section": 2,
@@ -278,6 +284,7 @@ async def test_integration_non_compliant_call_v2(test_db):
             "status": "pass",
             "evidence": "we are not an energy supplier",
             "notes": None,
+            "severity": "high",
         },
         {
             "section": 3,
@@ -285,6 +292,7 @@ async def test_integration_non_compliant_call_v2(test_db):
             "status": "fail",
             "evidence": "NOT FOUND IN TRANSCRIPT",
             "notes": "Agent did not describe their role as a broker or intermediary.",
+            "severity": "high",
         },
         {
             "section": 4,
@@ -292,6 +300,7 @@ async def test_integration_non_compliant_call_v2(test_db):
             "status": "fail",
             "evidence": "NOT FOUND IN TRANSCRIPT",
             "notes": "Agent did not mention referral fee or commission.",
+            "severity": "high",
         },
     ]
 
