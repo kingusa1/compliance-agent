@@ -118,23 +118,26 @@ async def process_call(call_id: str, file_path: str, db: Session, script_id: str
         await _trace_step(
             call_id, "detect_metadata", _step_detect_metadata, call_id, transcript_data, db, script_id
         )
+        # 2026-05-12 taxonomy rebuild: classify_content runs BEFORE
+        # analyze so per-segment routing knows which segments exist.
+        classify_result = await _trace_step(
+            call_id, "classify_content", _step_classify_content, call_id, transcript_data, db
+        )
+        if classify_result.get("halted"):
+            # Zero-segment recording — halt and let reviewer triage.
+            log.warning(f"\U0001f6d1 PIPELINE halted call_id={call_id} status=needs_classification")
+            return
         analysis = await _trace_step(
             call_id, "analyze_checkpoints", _step_analyze_checkpoints, call_id, transcript_data, db
         )
         await _trace_step(call_id, "score", _step_score, call_id, analysis, db)
-        # Sprint A5: auto-create a Rejection row when score < threshold.
-        # Runs AFTER _step_score commits so the helper sees the finalized
-        # call.score, and BEFORE _step_finalize so derive_compliance can
-        # observe the new Rejection. Failures degrade silently — a bad
-        # rejection insert must never block call finalisation.
-        try:
-            score_call = db.query(Call).filter_by(id=call_id).first()
-            if score_call is not None:
-                await _trace_step(call_id, "create_rejection", _maybe_create_rejection, score_call, db)
-                db.commit()
-        except Exception as rej_err:
-            log.error(f"\U0001f6a9 REJECTION_CREATE_FAILED call_id={call_id} err={rej_err!r}")
-            db.rollback()
+        # 2026-05-12: AI-auto rejection creation is DISABLED. Per the
+        # client-feedback PDF, the /rejections module should only contain
+        # rejections the human reviewer themselves opened in the queue —
+        # not AI-non-compliant calls. The AI verdict stays on the Call
+        # row (compliance_status / bucket); reviewers create Rejection
+        # rows manually via the reviewer flow. Old _maybe_create_rejection
+        # call was here and is intentionally removed.
         await _trace_step(call_id, "finalize", _step_finalize, call_id, db)
 
         # Tracker-autofill specialist agents (2026-05-10):
@@ -849,18 +852,337 @@ async def _step_detect_metadata(
     db.commit()
 
 
+# ── Step 3.5: classify_content (NEW 2026-05-12) ──────────────────────────
+async def _step_classify_content(
+    call_id: str,
+    transcript_data: dict,
+    db: Session,
+) -> dict:
+    """Run the AI content classifier and persist its segments.
+
+    Returns ``{"halted": True}`` when no segment was identified — caller
+    should bail the pipeline and surface ``call.status = needs_classification``
+    so reviewer can manually triage.
+
+    Otherwise writes 1-4 CallSegment rows (one per detected segment) and
+    returns ``{"halted": False, "segments": N}``.
+    """
+    from app.agents.content_classifier import classify_content as _classify
+    from app.models import CallSegment as _CallSegment, AgentTrace as _AgentTrace
+    import uuid as _uuid
+
+    call = db.query(Call).filter_by(id=call_id).first()
+    if not call:
+        raise RuntimeError(f"classify_content: call {call_id} not found")
+
+    transcript = transcript_data.get("transcript") or ""
+    word_data: list[dict] = []
+    if call.word_data:
+        try:
+            word_data = json.loads(call.word_data) or []
+        except Exception:
+            word_data = []
+
+    segments = await _classify(
+        transcript,
+        word_data,
+        supplier=call.detected_supplier,
+    )
+
+    # Idempotency — wipe existing CallSegment rows before inserting fresh.
+    db.query(_CallSegment).filter_by(call_id=call_id).delete()
+    db.flush()
+
+    if not segments:
+        call.status = "needs_classification"
+        call.reason = (
+            "AI couldn't identify any compliance-relevant segment in this "
+            "recording. Reviewer please classify manually."
+        )
+        db.commit()
+        log.warning(
+            f"\U0001f3af classify_content empty call_id={call_id} → needs_classification"
+        )
+        return {"halted": True, "segments": 0}
+
+    # Persist one row per segment. Record start/end timestamps from
+    # word_data when available so the UI can deep-link audio.
+    for idx, seg in enumerate(segments):
+        start_s = None
+        end_s = None
+        if seg.start_word_idx < len(word_data):
+            start_s = word_data[seg.start_word_idx].get("start")
+        if seg.end_word_idx < len(word_data):
+            end_s = word_data[seg.end_word_idx].get("end")
+        # Build the segment's transcript excerpt slice for quick UI preview.
+        seg_words = word_data[seg.start_word_idx : seg.end_word_idx + 1]
+        excerpt = " ".join(
+            (w.get("punctuated_word") or w.get("word") or "").strip() for w in seg_words
+        )
+        db.add(
+            _CallSegment(
+                call_id=call_id,
+                idx=idx,
+                stage=seg.segment_type,
+                transcript_excerpt=excerpt[:2000],
+                start_word_idx=seg.start_word_idx,
+                end_word_idx=seg.end_word_idx,
+                start_s=start_s,
+                end_s=end_s,
+                confidence=seg.confidence,
+                classifier_reasoning=seg.reasoning,
+            )
+        )
+
+    # Audit row.
+    try:
+        db.add(
+            _AgentTrace(
+                id=str(_uuid.uuid4()),
+                call_id=call_id,
+                run_id=str(_uuid.uuid4()),
+                turn=0,
+                role="tool",
+                tool_name="content_classifier",
+                tool_input=json.dumps({"transcript_chars": len(transcript)}),
+                tool_output=json.dumps(
+                    [
+                        {
+                            "stage": s.segment_type,
+                            "start_word_idx": s.start_word_idx,
+                            "end_word_idx": s.end_word_idx,
+                            "confidence": s.confidence,
+                        }
+                        for s in segments
+                    ]
+                ),
+                content=f"{len(segments)} segment(s) detected",
+                model="opus-4.7",
+            )
+        )
+    except Exception as _e:
+        log.warning(f"agent_trace skipped for classify_content: {_e}")
+
+    db.commit()
+    return {"halted": False, "segments": len(segments)}
+
+
 # ── Step 4: analyze_checkpoints ──────────────────────────────────────────
 async def _step_analyze_checkpoints(
     call_id: str,
     transcript_data: dict,
     db: Session,
 ) -> dict:
-    """Run analyze_all_checkpoints (or v1 fallback when no script matched).
+    """Per-segment analyzer (2026-05-12 rebuild).
 
-    IDEMPOTENT: deletes existing CallCheckpoint rows for the call_id before
-    inserting fresh ones, so a retried step never double-writes. Returns the
-    raw analysis dict (script-path) or v1 result-shaped dict (v1 path),
-    distinguished by the 'mode' key.
+    Loops over the CallSegment rows _step_classify_content just wrote;
+    routes each segment to its rubric via ``route_for_segment``; grades the
+    segment's transcript slice via ``analyze_all_checkpoints``; persists
+    a per-segment verdict back onto the CallSegment row + a CallCheckpoint
+    row per rule with ``segment_id`` set.
+
+    Returns ``{"mode": "segments", "segments": [...summaries], "results": [...flat]}``.
+    """
+    from app.agents.rubric_router import route_for_segment
+    from app.models import CallSegment as _CallSegment, AgentTrace as _AgentTrace
+    import uuid as _uuid
+
+    call = db.query(Call).filter_by(id=call_id).first()
+    if not call:
+        raise RuntimeError(f"analyze_checkpoints: call {call_id} not found")
+
+    transcript = transcript_data.get("transcript") or ""
+    word_data: list[dict] = []
+    if call.word_data:
+        try:
+            word_data = json.loads(call.word_data) or []
+        except Exception:
+            word_data = []
+
+    # Idempotency — wipe existing CallCheckpoint rows for the call.
+    db.query(CallCheckpoint).filter_by(call_id=call_id).delete()
+    db.flush()
+
+    segments_rows = (
+        db.query(_CallSegment)
+        .filter_by(call_id=call_id)
+        .order_by(_CallSegment.idx.asc())
+        .all()
+    )
+
+    if not segments_rows:
+        # Defensive — classify_content should have halted, but just in case.
+        log.warning(
+            f"\U0001f4cb analyze_checkpoints: no segments for call_id={call_id} — "
+            "treating as halted, no analysis run"
+        )
+        return {"mode": "segments", "segments": [], "results": []}
+
+    segment_summaries: list[dict] = []
+    all_results: list[dict] = []
+
+    for seg in segments_rows:
+        rubric = route_for_segment(seg.stage, call, db)
+        log.info(
+            f"\U0001f4cb segment={seg.stage}[{seg.idx}] rubric={rubric.kind} · {rubric.reason}"
+        )
+
+        # Slice the transcript text for this segment from word_data.
+        try:
+            start_idx = int(seg.start_word_idx or 0)
+            end_idx = int(seg.end_word_idx or 0)
+        except (TypeError, ValueError):
+            start_idx, end_idx = 0, len(word_data) - 1
+        seg_words = word_data[start_idx : end_idx + 1] if word_data else []
+        seg_transcript = " ".join(
+            (w.get("punctuated_word") or w.get("word") or "").strip() for w in seg_words
+        )
+        if not seg_transcript.strip():
+            seg_transcript = transcript  # safety net — grade against full
+
+        script = rubric.script
+        checkpoints_def: list = []
+        if script:
+            try:
+                checkpoints_def = json.loads(script.checkpoints or "[]") or []
+            except Exception:
+                checkpoints_def = []
+
+        if not (script and checkpoints_def):
+            # No rubric matched (or empty checkpoints) — record a stub
+            # segment verdict so the UI shows the gap, but skip the LLM
+            # call. Score is "0/0" with bucket=pass since we can't
+            # honestly say it failed.
+            seg.score = "0/0"
+            seg.compliant = None
+            seg.compliance_status = "pending"
+            seg.bucket = "review"
+            seg.critical_breaches = 0
+            seg.high_breaches = 0
+            seg.medium_breaches = 0
+            seg.reason = (
+                f"No rubric matched for segment '{seg.stage}' "
+                f"(supplier={call.detected_supplier!r})."
+            )
+            seg.checkpoint_results = json.dumps([])
+            segment_summaries.append(
+                {
+                    "stage": seg.stage,
+                    "passed": 0,
+                    "total": 0,
+                    "bucket": "review",
+                    "critical_breaches": 0,
+                    "high_breaches": 0,
+                    "medium_breaches": 0,
+                    "compliant": None,
+                }
+            )
+            continue
+
+        # Grade against the rubric.
+        result = await analyze_all_checkpoints(
+            seg_transcript,
+            checkpoints_def,
+            script.mode,
+            supplier=script.supplier_name,
+            word_data=word_data,  # full array for global timestamp resolution
+            agent_speaker_label="A",
+            customer_speaker_label="B",
+            db=db,
+            call_id=call_id,
+        )
+
+        if result.get("agent_name") and result["agent_name"] != "Unknown":
+            call.agent_name = result["agent_name"]
+        if result.get("customer_name") and result["customer_name"] != "Unknown":
+            call.customer_name = result["customer_name"]
+
+        verified = result["results"]
+        summary = result["summary"]
+
+        # Persist per-segment verdict.
+        seg.script_id = str(script.id)
+        seg.score = summary.get("score") or "0/0"
+        seg.compliant = bool(summary.get("compliant"))
+        seg.bucket = summary.get("bucket", "review")
+        seg.critical_breaches = summary.get("critical_breaches", 0)
+        seg.high_breaches = summary.get("high_breaches", 0)
+        seg.medium_breaches = summary.get("medium_breaches", 0)
+        if seg.bucket == "pass":
+            seg.compliance_status = "compliant"
+            seg.reason = f"Score: {seg.score}. All checkpoints passed."
+        elif seg.bucket == "coaching":
+            seg.compliance_status = "compliant"
+            seg.reason = (
+                f"Score: {seg.score}. {seg.medium_breaches} medium issue(s) "
+                "logged for coaching; no Critical or High breaches."
+            )
+        elif seg.bucket == "review":
+            seg.compliance_status = "pending"
+            seg.reason = (
+                f"Score: {seg.score}. {seg.high_breaches} High-severity "
+                "breach(es) — reviewer must decide."
+            )
+        else:  # blocked
+            seg.compliance_status = "non_compliant"
+            seg.reason = (
+                f"Score: {seg.score}. {seg.critical_breaches} Critical "
+                "breach(es) — auto-blocked."
+            )
+        seg.checkpoint_results = json.dumps(verified)
+
+        # Insert per-rule CallCheckpoint rows with segment_id linkage.
+        for cp in verified:
+            db.add(
+                CallCheckpoint(
+                    call_id=call_id,
+                    segment_id=seg.id,
+                    rule_text=cp["name"],
+                    passed=cp["status"] == "pass",
+                    excerpt=cp.get("evidence"),
+                    confidence=cp.get("confidence", "high"),
+                    needs_review=cp.get("needs_review", False),
+                    line_number=cp.get("script_line_number"),
+                    ai_category=cp.get("suggested_category"),
+                    ai_fix_required=cp.get("suggested_fix_required"),
+                    ai_category_confidence=cp.get("category_confidence"),
+                    ai_rejection_reason=cp.get("ai_rejection_reason"),
+                    ai_narrative_notes=cp.get("ai_narrative_notes"),
+                )
+            )
+
+        segment_summaries.append(
+            {
+                "stage": seg.stage,
+                "passed": summary.get("passed", 0),
+                "total": summary.get("total", 0),
+                "bucket": seg.bucket,
+                "critical_breaches": seg.critical_breaches,
+                "high_breaches": seg.high_breaches,
+                "medium_breaches": seg.medium_breaches,
+                "compliant": seg.compliant,
+            }
+        )
+        all_results.extend(verified)
+
+    db.commit()
+    return {
+        "mode": "segments",
+        "segments": segment_summaries,
+        "results": all_results,
+    }
+
+
+# ── Legacy helper (kept for back-compat — not used by new flow) ──────────
+async def _legacy_analyze_checkpoints_unused(
+    call_id: str,
+    transcript_data: dict,
+    db: Session,
+) -> dict:
+    """LEGACY single-rubric analyzer — kept only for reference. The new
+    pipeline uses _step_analyze_checkpoints (per-segment) above. This
+    function is unreferenced after the 2026-05-12 rebuild and exists
+    only to make the diff reviewable.
     """
     call = db.query(Call).filter_by(id=call_id).first()
     if not call:
@@ -868,16 +1190,9 @@ async def _step_analyze_checkpoints(
 
     transcript = transcript_data["transcript"]
 
-    # Idempotency guard — wipe prior rows so a retry produces the same row
-    # set as a fresh run.
     db.query(CallCheckpoint).filter_by(call_id=call_id).delete()
     db.flush()
 
-    # ── Rubric Router ───────────────────────────────────────────────
-    # Pick which rule set to grade against based on call_type. The router
-    # encapsulates Aly's rule (lead-gen calls don't get graded against
-    # closer cps) + LOA routing + the phrase-pack fallback. Pure read-only;
-    # returns a Rubric we apply below.
     from app.agents.rubric_router import route as _route_rubric
     from app.models import AgentTrace as _AgentTrace
     import uuid as _uuid
@@ -1015,90 +1330,104 @@ async def _step_analyze_checkpoints(
     return {"mode": "no_script_match", "v1": v1}
 
 
-# ── Step 5: score ────────────────────────────────────────────────────────
+# ── Step 5: score (aggregator across per-segment verdicts) ───────────────
+_BUCKET_RANK = {"pass": 0, "coaching": 1, "review": 2, "blocked": 3}
+
+
 def _step_score(call_id: str, analysis: dict, db: Session) -> dict:
-    """Compute call.score / compliant / status / reason from analysis.
-    Sync — no I/O beyond the DB write. Returns the same fields it set.
+    """Aggregate per-segment verdicts to a call-level score + bucket.
+
+    Worst-bucket-wins across all segments: a single Critical breach in
+    any segment flips the whole call to ``blocked``. Score is the sum of
+    passed / sum of total across all segments. Reason summarises each
+    segment's verdict.
     """
     call = db.query(Call).filter_by(id=call_id).first()
     if not call:
         raise RuntimeError(f"score: call {call_id} not found")
 
-    if analysis["mode"] == "script":
-        verified = analysis["results"]
-        summary = analysis["summary"]
-        total = len(verified)
-        errored = summary["error"]
+    if analysis.get("mode") != "segments":
+        # Defensive: legacy or unknown mode. Reset and bail.
+        call.score = None
+        call.compliant = None
+        call.compliance_status = "pending"
+        call.reason = "Unknown analysis mode — manual review required."
+        call.status = "needs_manual_review"
+        db.commit()
+        return {"score": None, "compliant": None, "status": call.status, "reason": call.reason}
 
-        if errored > total / 2:
-            call.score = summary["score"]
-            call.compliant = False
-            call.status = "needs_manual_review"
-            call.reason = (
-                f"{errored} of {total} checkpoints failed to analyze. Manual review required."
-            )
-        else:
-            call.score = summary["score"]
-            call.compliant = summary["compliant"]
-            # Severity-weighted bucket (pass / coaching / review / blocked) —
-            # see checkpoint_analyzer.analyze_all_checkpoints for the rule.
-            bucket = summary.get("bucket", "pass" if call.compliant else "review")
-            crit = summary.get("critical_breaches", 0)
-            high = summary.get("high_breaches", 0)
-            med = summary.get("medium_breaches", 0)
-            # Write the bucket onto compliance_status so the UI + reviewer
-            # queue route correctly without a second lookup. Existing
-            # values ("compliant" | "non_compliant" | "pending") stay valid
-            # — the bucket is an additional, finer signal.
-            if bucket == "pass":
-                call.compliance_status = "compliant"
-                call.reason = f"Score: {call.score}. All checkpoints passed."
-            elif bucket == "coaching":
-                # Medium breaches only — pass with coaching note.
-                call.compliance_status = "compliant"
-                call.reason = (
-                    f"Score: {call.score}. {med} medium issue(s) logged for coaching; "
-                    "no Critical or High breaches."
-                )
-            elif bucket == "review":
-                call.compliance_status = "pending"
-                call.reason = (
-                    f"Score: {call.score}. {high} High-severity breach(es) — reviewer must decide."
-                )
-            else:  # blocked
-                call.compliance_status = "non_compliant"
-                call.reason = (
-                    f"Score: {call.score}. {crit} Critical breach(es) — auto-blocked."
-                )
-            if errored > 0:
-                call.reason += f" {errored} checkpoint(s) had errors."
-        call.excerpt = None
+    segments = analysis.get("segments", [])
 
-    else:  # v1 fallback
-        v1 = analysis["v1"]
-        if v1.checkpoints:
-            passed = sum(1 for cp in v1.checkpoints if cp.passed)
-            total = len(v1.checkpoints)
-            call.score = f"{passed}/{total}"
-            call.compliant = all(cp.passed for cp in v1.checkpoints)
-            call.reason = v1.reason
-            call.checkpoint_results = json.dumps([
-                {
-                    "section": i + 1,
-                    "name": cp.rule,
-                    "status": "pass" if cp.passed else "fail",
-                    "evidence": cp.excerpt,
-                    # Prefer the analyst's per-checkpoint reasoning when the
-                    # LLM populated it; fall back to the call-level reason so
-                    # the reviewer never sees an empty AI Verdict box.
-                    "notes": (cp.notes or "").strip() or v1.reason,
-                }
-                for i, cp in enumerate(v1.checkpoints)
-            ])
-        else:
-            call.compliant = v1.compliant
-            call.reason = v1.reason
+    if not segments:
+        # Pipeline should've halted at classify_content; defensive.
+        call.score = "0/0"
+        call.compliant = None
+        call.compliance_status = "pending"
+        call.bucket = "review"
+        call.reason = "No segments analysed."
+        call.status = "needs_manual_review"
+        db.commit()
+        return {"score": call.score, "compliant": None, "status": call.status, "reason": call.reason}
 
+    total_passed = sum(int(s.get("passed", 0)) for s in segments)
+    total_total = sum(int(s.get("total", 0)) for s in segments)
+    worst_bucket = "pass"
+    for s in segments:
+        b = s.get("bucket", "pass")
+        if _BUCKET_RANK.get(b, 0) > _BUCKET_RANK.get(worst_bucket, 0):
+            worst_bucket = b
+
+    crit = sum(int(s.get("critical_breaches", 0)) for s in segments)
+    high = sum(int(s.get("high_breaches", 0)) for s in segments)
+    med = sum(int(s.get("medium_breaches", 0)) for s in segments)
+
+    call.score = f"{total_passed}/{total_total}" if total_total > 0 else "0/0"
+    call.bucket = worst_bucket
+    call.compliant = worst_bucket in {"pass", "coaching"}
+
+    # Map bucket → compliance_status (UI sees only Compliant / Pending / Non-Compliant)
+    if worst_bucket == "pass":
+        call.compliance_status = "compliant"
+    elif worst_bucket == "coaching":
+        call.compliance_status = "compliant"
+    elif worst_bucket == "review":
+        call.compliance_status = "pending"
+    else:  # blocked
+        call.compliance_status = "non_compliant"
+
+    # Human-readable per-segment breakdown.
+    breakdown_bits: list[str] = []
+    for s in segments:
+        stg = s.get("stage", "?")
+        sc = f"{s.get('passed', 0)}/{s.get('total', 0)}"
+        b = s.get("bucket", "pass")
+        marker = (
+            "✓" if b == "pass"
+            else "⚠" if b in ("coaching", "review")
+            else "✗"
+        )
+        breakdown_bits.append(f"{stg} {sc} {marker}")
+    breakdown = " · ".join(breakdown_bits)
+
+    if worst_bucket == "pass":
+        call.reason = f"Score: {call.score}. All segments passed. ({breakdown})"
+    elif worst_bucket == "coaching":
+        call.reason = (
+            f"Score: {call.score}. {med} medium issue(s) logged for coaching; "
+            f"no Critical or High breaches. ({breakdown})"
+        )
+    elif worst_bucket == "review":
+        call.reason = (
+            f"Score: {call.score}. {high} High-severity breach(es) — reviewer must decide. "
+            f"({breakdown})"
+        )
+    else:  # blocked
+        call.reason = (
+            f"Score: {call.score}. {crit} Critical breach(es) — auto-blocked. "
+            f"({breakdown})"
+        )
+
+    call.excerpt = None
     if call.status != "needs_manual_review":
         call.status = "completed"
     db.commit()

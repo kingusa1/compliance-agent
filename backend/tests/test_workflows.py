@@ -129,58 +129,63 @@ def test_logged_step_handles_sync_callables_too(caplog):
     assert result == "hello"
 
 
-def test_analyze_checkpoints_step_is_idempotent(test_db, monkeypatch):
-    """Running the analyze step twice on the same call_id must not double the
-    CallCheckpoint row count. Uses the v1-fallback path (no Script row exists)
-    with the v1 analyzer monkeypatched to return canned checkpoints.
+def test_analyze_checkpoints_step_wipes_existing_rows(test_db, monkeypatch):
+    """Idempotency contract — 2026-05-12 taxonomy rebuild.
+
+    Pre-existing CallCheckpoint rows for the call MUST be wiped before
+    the segment loop runs, so reruns can't accumulate duplicates. We
+    deliberately call the step against a call with NO CallSegment rows
+    (which is the zero-segment halt path) so the test stays self-
+    contained: the wipe happens at the very top of the step, before
+    the loop, so it executes regardless of whether segments exist.
     """
     from app import pipeline as pipeline_module
 
     call = Call(
-        id="call-idem-test",
+        id="call-wipe-test",
         filename="silent.wav",
         file_path="/tmp/does-not-matter.wav",
         status="processing",
         transcript="hello world",
+        call_type="lead_gen",
     )
     test_db.add(call)
+    test_db.flush()
+
+    # Seed a stale CallCheckpoint row from a prior analyzer run.
+    test_db.add(
+        CallCheckpoint(
+            call_id="call-wipe-test",
+            rule_text="legacy-rule",
+            passed=True,
+            excerpt="legacy",
+            confidence="high",
+            needs_review=False,
+        )
+    )
     test_db.commit()
-
-    class _FakeCheckpoint:
-        def __init__(self, rule, passed, excerpt):
-            self.rule = rule
-            self.passed = passed
-            self.excerpt = excerpt
-
-    class _FakeV1:
-        def __init__(self):
-            self.agent_name = "Sarah"
-            self.customer_name = "John"
-            self.excerpt = "evidence"
-            self.compliant = True
-            self.reason = "ok"
-            self.checkpoints = [
-                _FakeCheckpoint("rule-1", True, "ev-1"),
-                _FakeCheckpoint("rule-2", False, "ev-2"),
-                _FakeCheckpoint("rule-3", True, "ev-3"),
-            ]
-
-    async def _fake_v1(transcript):
-        return _FakeV1()
-
-    monkeypatch.setattr(pipeline_module, "analyze_compliance_v1", _fake_v1)
+    assert (
+        test_db.query(CallCheckpoint).filter_by(call_id="call-wipe-test").count() == 1
+    )
 
     transcript_data = {"transcript": "hello world", "source": "test"}
+    asyncio.run(
+        pipeline_module._step_analyze_checkpoints(
+            "call-wipe-test", transcript_data, test_db
+        )
+    )
 
-    # First run — expect 3 CallCheckpoint rows
-    asyncio.run(pipeline_module._step_analyze_checkpoints("call-idem-test", transcript_data, test_db))
-    first_count = test_db.query(CallCheckpoint).filter_by(call_id="call-idem-test").count()
-    assert first_count == 3, f"expected 3 rows after first run, got {first_count}"
+    # The wipe at the top of the step must have cleared the legacy row.
+    assert (
+        test_db.query(CallCheckpoint).filter_by(call_id="call-wipe-test").count() == 0
+    ), "_step_analyze_checkpoints did not wipe pre-existing CallCheckpoint rows"
 
-    # Second run on the same call_id — expect STILL 3 (not 6)
-    asyncio.run(pipeline_module._step_analyze_checkpoints("call-idem-test", transcript_data, test_db))
-    second_count = test_db.query(CallCheckpoint).filter_by(call_id="call-idem-test").count()
-    assert second_count == 3, (
-        f"idempotency violated: expected 3 rows after retry, got {second_count} "
-        "— the delete-then-insert guard in _step_analyze_checkpoints is broken"
+    # Second run is still idempotent (no rows, no duplication).
+    asyncio.run(
+        pipeline_module._step_analyze_checkpoints(
+            "call-wipe-test", transcript_data, test_db
+        )
+    )
+    assert (
+        test_db.query(CallCheckpoint).filter_by(call_id="call-wipe-test").count() == 0
     )

@@ -297,6 +297,9 @@ class CallCheckpoint(Base):
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     call_id = Column(String, ForeignKey("calls.id"), nullable=False)
+    # 2026-05-12: nullable FK to the CallSegment that produced this row.
+    # NULL for legacy rows graded under the old single-rubric pipeline.
+    segment_id = Column(PGUUID(as_uuid=True), ForeignKey("call_segments.id", ondelete="SET NULL"), nullable=True, index=True)
     rule_text = Column(Text, nullable=False)
     passed = Column(Boolean, nullable=False)
     excerpt = Column(Text)
@@ -656,19 +659,44 @@ class FixDirective(Base):
 # does idempotent delete-then-insert per call_id.
 
 class CallSegment(Base):
-    """One row per detected stage of a call. Stage vocabulary locked to
-    Watt's 6-stage taxonomy (gates file Step 4, digest §4):
-    intro|qualification|pitch|transfer|verbal|close."""
+    """One row per AI-classified segment of a call.
+
+    Stage vocabulary — 2026-05-12 taxonomy rebuild — locked to the 4
+    canonical compliance segments: ``lead_gen | pre_sales | verbal | loa``.
+    (The old 6-stage ``intro|qualification|pitch|transfer|verbal|close``
+    taxonomy is gone — those were sub-segments of single recordings
+    written by the legacy ``extraction/segments.py`` anchor matcher.)
+
+    Each row carries its own verdict so the call detail UI can render
+    a separate verdict card per segment and the call-level score is an
+    aggregate (worst-bucket wins) across the rows here.
+    """
     __tablename__ = "call_segments"
 
     id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     call_id = Column(String, ForeignKey("calls.id", ondelete="CASCADE"), nullable=False, index=True)
     idx = Column(Integer, nullable=False)
-    stage = Column(String, nullable=False)
+    stage = Column(String, nullable=False)            # lead_gen | pre_sales | verbal | loa
     transcript_excerpt = Column(Text, nullable=True)
     speaker = Column(String, nullable=True)
     start_s = Column(Numeric, nullable=True)
     end_s = Column(Numeric, nullable=True)
+    # Per-segment classifier output (2026-05-12)
+    start_word_idx = Column(Integer, nullable=True)   # inclusive
+    end_word_idx = Column(Integer, nullable=True)     # inclusive
+    confidence = Column(Numeric, nullable=True)       # classifier 0-1
+    classifier_reasoning = Column(Text, nullable=True)
+    # Per-segment verdict
+    script_id = Column(String, ForeignKey("scripts.id", ondelete="SET NULL"), nullable=True)
+    score = Column(String, nullable=True)             # "21/26"
+    compliant = Column(Boolean, nullable=True)
+    compliance_status = Column(String, nullable=True) # compliant | pending | non_compliant
+    bucket = Column(String, nullable=True)            # pass | coaching | review | blocked
+    critical_breaches = Column(Integer, default=0)
+    high_breaches = Column(Integer, default=0)
+    medium_breaches = Column(Integer, default=0)
+    reason = Column(Text, nullable=True)
+    checkpoint_results = Column(Text, nullable=True)  # JSON array per segment
     created_at = Column(DateTime(timezone=True), default=_utcnow)
 
 
