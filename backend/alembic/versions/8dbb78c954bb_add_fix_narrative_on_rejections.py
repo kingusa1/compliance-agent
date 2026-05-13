@@ -19,7 +19,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("rejections", sa.Column("fix_narrative", sa.Text(), nullable=True))
+    # 2026-05-13: idempotent — prod schema may already have this column
+    # (alembic_version drift). IF NOT EXISTS keeps the chain unblocked.
+    op.execute("ALTER TABLE rejections ADD COLUMN IF NOT EXISTS fix_narrative TEXT")
 
 
 def downgrade() -> None:

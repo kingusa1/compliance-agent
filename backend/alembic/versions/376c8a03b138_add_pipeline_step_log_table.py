@@ -20,25 +20,27 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    json_type = JSONB if bind.dialect.name == "postgresql" else sa.Text
-    op.create_table(
-        "pipeline_step_log",
-        sa.Column("id", UUID(as_uuid=True) if bind.dialect.name == "postgresql" else sa.String(), primary_key=True),
-        sa.Column("call_id", sa.String(), sa.ForeignKey("calls.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("step_name", sa.String(), nullable=False),
-        sa.Column("status", sa.String(), nullable=False),
-        sa.Column("payload_in", json_type(), nullable=True),
-        sa.Column("payload_out", json_type(), nullable=True),
-        sa.Column("error_message", sa.Text(), nullable=True),
-        sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("duration_ms", sa.Integer(), nullable=True),
+    # 2026-05-13: idempotent — prod may already have this table.
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pipeline_step_log (
+            id            UUID PRIMARY KEY,
+            call_id       VARCHAR NOT NULL REFERENCES calls(id) ON DELETE CASCADE,
+            step_name     VARCHAR NOT NULL,
+            status        VARCHAR NOT NULL,
+            payload_in    JSONB,
+            payload_out   JSONB,
+            error_message TEXT,
+            started_at    TIMESTAMP WITH TIME ZONE NOT NULL,
+            ended_at      TIMESTAMP WITH TIME ZONE,
+            duration_ms   INTEGER
+        )
+        """
     )
-    op.create_index("ix_pipeline_step_log_call_id", "pipeline_step_log", ["call_id"])
-    op.create_index("ix_pipeline_step_log_step_name", "pipeline_step_log", ["step_name"])
-    op.create_index("ix_pipeline_step_log_status", "pipeline_step_log", ["status"])
-    op.create_index("ix_pipeline_step_log_started_at", "pipeline_step_log", ["started_at"])
+    op.execute("CREATE INDEX IF NOT EXISTS ix_pipeline_step_log_call_id ON pipeline_step_log (call_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_pipeline_step_log_step_name ON pipeline_step_log (step_name)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_pipeline_step_log_status ON pipeline_step_log (status)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_pipeline_step_log_started_at ON pipeline_step_log (started_at)")
 
 
 def downgrade() -> None:

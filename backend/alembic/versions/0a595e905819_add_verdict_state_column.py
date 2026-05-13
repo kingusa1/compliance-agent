@@ -22,26 +22,34 @@ def upgrade() -> None:
     bind = op.get_bind()
     is_pg = bind.dialect.name == "postgresql"
 
-    op.add_column(
-        "calls",
-        sa.Column("verdict_state", sa.String(), nullable=False, server_default="AI_PENDING"),
+    # 2026-05-13: prod schema drifted from alembic_version (these columns
+    # already exist in prod). Use raw IF NOT EXISTS so this migration is
+    # idempotent and the chain can run to head.
+    op.execute(
+        "ALTER TABLE calls ADD COLUMN IF NOT EXISTS verdict_state "
+        "VARCHAR NOT NULL DEFAULT 'AI_PENDING'"
     )
-    op.create_index("ix_calls_verdict_state", "calls", ["verdict_state"])
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_calls_verdict_state ON calls (verdict_state)"
+    )
 
-    op.add_column(
-        "rejections",
-        sa.Column("verdict_state", sa.String(), nullable=False, server_default="AI_PENDING"),
+    op.execute(
+        "ALTER TABLE rejections ADD COLUMN IF NOT EXISTS verdict_state "
+        "VARCHAR NOT NULL DEFAULT 'AI_PENDING'"
     )
-    op.add_column("rejections", sa.Column("confirmed_by", sa.String(), nullable=True))
-    op.add_column(
-        "rejections",
-        sa.Column("confirmed_at", sa.DateTime(timezone=True), nullable=True),
+    op.execute(
+        "ALTER TABLE rejections ADD COLUMN IF NOT EXISTS confirmed_by VARCHAR"
     )
-    op.create_index("ix_rejections_verdict_state", "rejections", ["verdict_state"])
+    op.execute(
+        "ALTER TABLE rejections ADD COLUMN IF NOT EXISTS confirmed_at "
+        "TIMESTAMP WITH TIME ZONE"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_rejections_verdict_state "
+        "ON rejections (verdict_state)"
+    )
 
     if is_pg:
-        # Backfill: any pre-existing row gets AI_PENDING explicitly. server_default
-        # already covers new rows; this is for rows that existed before this migration.
         op.execute("UPDATE calls SET verdict_state='AI_PENDING' WHERE verdict_state IS NULL")
         op.execute("UPDATE rejections SET verdict_state='AI_PENDING' WHERE verdict_state IS NULL")
 
