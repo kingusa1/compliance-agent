@@ -46,9 +46,12 @@ interface TranscriptPlayerProps {
   onConflict?: () => void;
 }
 
+// Plan §5b: AGENT / CUSTOMER labels are LOUD — uppercase, bold, strong
+// contrasting colours and tinted backgrounds so the reviewer can tell who
+// is speaking at a glance while scrubbing through the karaoke transcript.
 const SPEAKER_STYLES: Record<number, { label: string; color: string; bg: string }> = {
-  0: { label: "Agent", color: "var(--teal, #22c55e)", bg: "rgba(34,197,94,0.08)" },
-  1: { label: "Customer", color: "var(--water, #3b82f6)", bg: "rgba(59,130,246,0.08)" },
+  0: { label: "AGENT", color: "#22c55e", bg: "rgba(34,197,94,0.18)" },
+  1: { label: "CUSTOMER", color: "#f59e0b", bg: "rgba(245,158,11,0.18)" },
 };
 
 function getSpeakerStyle(speaker: number) {
@@ -269,15 +272,19 @@ export function TranscriptPlayer({
               background: turnContainsActive ? style.bg : "transparent",
             }}
           >
-            {/* Speaker label + timestamp */}
-            <div style={{ minWidth: 90, flexShrink: 0, paddingTop: 2 }}>
+            {/* Speaker label + timestamp — Plan §5b: LOUD AGENT/CUSTOMER */}
+            <div style={{ minWidth: 100, flexShrink: 0, paddingTop: 2 }}>
               <span
                 style={{
-                  fontSize: 10,
-                  fontWeight: 700,
+                  fontSize: 11,
+                  fontWeight: 800,
                   color: style.color,
                   textTransform: "uppercase",
-                  letterSpacing: "0.5px",
+                  letterSpacing: "0.08em",
+                  padding: "2px 8px",
+                  borderRadius: 4,
+                  background: style.bg,
+                  display: "inline-block",
                 }}
               >
                 {style.label}

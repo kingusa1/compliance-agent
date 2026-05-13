@@ -153,6 +153,16 @@ function computeCheckpointStart(
   return { startSec: null, endSec: null };
 }
 
+function _speakerKeyOf(w: WordToken): string {
+  // Plan §5b: prefer backend-resolved role (AGENT/CUSTOMER) over the raw
+  // diarisation speaker id so transcript turns are labelled "AGENT" /
+  // "CUSTOMER" loudly. Falls back to the raw speaker only when role is
+  // missing (older calls predating the role-tagging pass).
+  const r = (w.role ? String(w.role) : "").toUpperCase().trim();
+  if (r === "AGENT" || r === "CUSTOMER") return r;
+  return String(w.speaker ?? "AGENT").toUpperCase();
+}
+
 function buildLines(words: WordToken[], flaggedRanges: Array<[number, number]>): TranscriptLine[] {
   if (!words.length) return [];
   const lines: TranscriptLine[] = [];
@@ -160,7 +170,7 @@ function buildLines(words: WordToken[], flaggedRanges: Array<[number, number]>):
   let currSpeaker: string | null = null;
   for (let i = 0; i < words.length; i++) {
     const w = words[i];
-    const sp = String(w.speaker ?? "AGENT").toUpperCase();
+    const sp = _speakerKeyOf(w);
     if (currSpeaker == null) currSpeaker = sp;
     if (sp !== currSpeaker || curr.length >= 35) {
       if (curr.length > 0) {
@@ -181,12 +191,14 @@ function makeLine(ws: WordToken[], speaker: string, flaggedRanges: Array<[number
   const endSec = ws[ws.length - 1]?.end ?? startSec;
   const endIdx = startIdx + ws.length - 1;
   const flagged = flaggedRanges.some(([fs, fe]) => fs <= endIdx && fe >= startIdx);
-  // Map AssemblyAI speaker letter (A/B/C/D) or backend "AGENT"/"CUSTOMER"
-  // to a stable 1-based index, then render as "Speaker N". Audio diarisation
-  // can't reliably tell who's the agent vs customer (per user feedback) so
-  // we keep these neutral.
-  const speakerIdx = letterToIdx(speaker);
-  const who = `Speaker ${speakerIdx}`;
+  // Plan §5b: label transcript turns AGENT / CUSTOMER (loud) when the
+  // backend's role-tagging populated the role; fall back to the legacy
+  // "Speaker N" only when role is missing. ``speaker`` here is already the
+  // resolved key from _speakerKeyOf (AGENT/CUSTOMER or a raw id).
+  const upper = (speaker || "").toUpperCase().trim();
+  const isRoleLabel = upper === "AGENT" || upper === "CUSTOMER";
+  const speakerIdx = isRoleLabel ? (upper === "AGENT" ? 1 : 2) : letterToIdx(speaker);
+  const who = isRoleLabel ? upper : `Speaker ${speakerIdx}`;
   return {
     who,
     speakerIdx,
@@ -634,14 +646,27 @@ export default function CallDetailPage({
   // SPEAKER_STYLES uses 0 = Agent, 1 = Customer).
   const wordsForPlayer = useMemo<WordData[]>(
     () =>
-      words.map((w) => ({
-        word: w.word,
-        punctuated_word: w.word,
-        start: w.start,
-        end: w.end,
-        speaker: Math.max(0, letterToIdx(w.speaker) - 1),
-        confidence: w.confidence ?? 1.0,
-      })),
+      // Plan §5b: prefer backend-resolved role so the TranscriptPlayer's
+      // SPEAKER_STYLES (0 = AGENT, 1 = CUSTOMER) is keyed off the AI's
+      // identification instead of raw diarisation. Falls back to the
+      // letter-derived index when role is missing.
+      words.map((w) => {
+        const r = (w.role ? String(w.role) : "").toUpperCase().trim();
+        const speakerIdx0 =
+          r === "AGENT"
+            ? 0
+            : r === "CUSTOMER"
+              ? 1
+              : Math.max(0, letterToIdx(w.speaker) - 1);
+        return {
+          word: w.word,
+          punctuated_word: w.word,
+          start: w.start,
+          end: w.end,
+          speaker: speakerIdx0,
+          confidence: w.confidence ?? 1.0,
+        };
+      }),
     [words],
   );
   const flaggedRanges = useMemo<Array<[number, number]>>(
