@@ -18,10 +18,14 @@ tags: [index, brain]
 
 ## 🚨 Read FIRST when resuming a session
 
-1. [[05_State/Live_State]] — what's deployed right now
-2. [[05_State/Known_Issues]] — open gaps and limits
-3. [[04_Sessions/2026-05-10_Session]] — most recent change log
-4. [[07_Tomorrow/Next_Steps]] — what's queued next
+**As of 2026-05-12: MID-REBUILD. Read these in order before doing ANYTHING:**
+
+1. [[04_Sessions/2026-05-12_Session_taxonomy_rebuild]] — **CURRENT STATE.** Backend Phases 0-4 done on disk but uncommitted; Phase 5 frontend NOT started; user wants NO PUSHES without approval. Has full resume guide + commit commands.
+2. The plan file: `C:\Users\kingu\.claude\plans\magical-booping-crown.md` (user-approved).
+3. [[05_State/Live_State]] — what's actually deployed vs what's pending.
+4. [[02_Domain/Stage_Terminology]] — Aly's nomenclature locked to 4 stages.
+5. [[05_State/Known_Issues]] — open gaps and limits.
+6. [[04_Sessions/Decisions]] — running architectural decisions log.
 
 ---
 
@@ -57,6 +61,7 @@ tags: [index, brain]
 - [[04_Sessions/2026-05-11_Session_workflow_pill]] — color-coded `WorkflowTypePill` on /customers, /customers/[slug], /calls/[id]; AI-detected supplier drives `3-stage · LOA bundled` (emerald) vs `4-stage · separate LOA` (blue); Aly ask consolidated to 4 blockers
 - [[04_Sessions/2026-05-11_Session_ai_call_type]] — `detect_call_type` AI classifier replaces filename pre-pass; transcript AGENT/CUSTOMER role tagging; upload-modal click fix; /guide rewritten with 15-step pipeline + AI classifier rules; 15 historical calls backfilled (11 deals re-lifed)
 - [[04_Sessions/2026-05-11_Session_deep_audit]] — root-cause audit: every script had `checkpoints=[]` so every call was graded on 3 universal rules. Built LLM script-checkpoint extractor + admin ingest endpoint → **164 checkpoints written across 10 of 15 scripts** (E.ON Next NHH+HH now has 26 rules used by 73% of calls). Built sync `reanalyze-all` endpoint (Inngest path was a no-op in prod). After reanalyze: scores moved from N/3 cluster → N/26 with `f017bb03 → 22/26`
+- [[04_Sessions/2026-05-12_Session_taxonomy_rebuild]] — **⚠️ MID-REBUILD AT COMPACTION.** Locked call_type to `{lead_gen, pre_sales, verbal, loa}`; built content_classifier agent (1-4 segments per recording); per-segment pipeline + score aggregator; rejection auto-create disabled. Backend Phases 0-4 on disk uncommitted (Phase 0 pushed as `818e312`). Phase 5 frontend overhaul not started. Plan at `~/.claude/plans/magical-booping-crown.md`. **Resume guide inside the session file.**
 - [[04_Sessions/Decisions]] — running list of architectural decisions
 
 ### 05 State

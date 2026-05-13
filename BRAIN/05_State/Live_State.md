@@ -1,12 +1,25 @@
 ---
 created: 2026-05-10
-updated: 2026-05-11
-tags: [state, live, ground-truth]
+updated: 2026-05-12
+tags: [state, live, ground-truth, mid-rebuild]
 ---
 
-# Live State — verified 2026-05-11 (workflow-pill ship + Aly ask)
+# Live State — mid-rebuild 2026-05-12 (taxonomy + per-segment pipeline)
 
-> Updated 2026-05-11: shipped color-coded 3-vs-4 stage `WorkflowTypePill`
+> ⚠️ **MID-REBUILD AS OF 2026-05-12.** Backend Phases 0-4 of the
+> taxonomy-rebuild + content-classifier work are on disk locally but
+> **UNCOMMITTED** (except Phase 0 which is pushed as `818e312`).
+> Frontend still speaks the OLD vocabulary (call_type radio, 5-bucket
+> pills, HelpBanners). Phase 5 frontend overhaul not started.
+>
+> User explicitly said **no pushes without approval**. Phase 0 wipe
+> endpoint is live but **NOT YET RUN** — will run right before Phase 7
+> smoke test.
+>
+> Plan file (approved): `C:\Users\kingu\.claude\plans\magical-booping-crown.md`
+> Resume guide: [[../04_Sessions/2026-05-12_Session_taxonomy_rebuild]]
+>
+> Earlier 2026-05-11: shipped color-coded 3-vs-4 stage `WorkflowTypePill`
 > on `/customers`, `/customers/[slug]`, `/calls/[id]`. Pill is auto-derived
 > from the AI-detected supplier label — emerald `3-stage · LOA bundled`
 > for E.ON variants, blue `4-stage · separate LOA` for everyone else.
