@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.logger import log
@@ -96,45 +97,74 @@ def _resolve_phrase_pack(db: Session, phase: str) -> Script | None:
 def _resolve_loa_script(db: Session, supplier: str | None) -> Script | None:
     """Pick the LOA script for the call's supplier.
 
-    Resolution order (each one is a strict superset of the next, so a
-    non-E.ON supplier still gets graded against the LOA script the
-    classifier was trained on rather than falling all the way through
-    to the V1 universal rules):
+    The seeded supplier scripts in prod don't tag their lifecycle_phase
+    column ("E.ON TPI Verbal LOA Script" sits with lifecycle_phase=NULL,
+    supplier_name='EON'). So filtering only on ``lifecycle_phase IN
+    ('loa', 'standalone_loa')`` always returns zero rows in prod — that
+    was the LOA-falling-through-to-V1 bug Aly flagged.
 
-      1. Active LOA script whose supplier_name fuzzy-matches the call's
-         detected supplier — tries the raw first token AND a dot-stripped
-         lowercase alias so ``"E.ON"`` matches ``"EON"`` and vice versa.
-      2. Any active LOA script.
-      3. None (caller will fall through to V1).
+    Resolution order (each step strictly broader than the previous):
 
-    Step 2 is the new safety net (2026-05-14). Before this, a call whose
-    detected_supplier didn't ilike-match an LOA script's supplier_name
-    would silently fall through to the v1_fallback rubric — surfacing
-    as "📜 V1 fallback (3 universal rules)" in the UI even though the
-    transcript clearly contained the LOA reading. That's the LOA-grading
-    bug Aly flagged.
+      1. Active script with lifecycle_phase tagged loa/standalone_loa
+         AND supplier_name fuzzy-match. (Future-proof for re-seeded data.)
+      2. Active script with 'LOA' in the script_name AND supplier_name
+         fuzzy-match. (Current prod path.)
+      3. Active script with 'LOA' in the script_name, ignoring supplier.
+      4. Active script with lifecycle_phase tagged loa/standalone_loa,
+         ignoring supplier.
+      5. None — caller falls through to the V1 third-party-disclosure
+         analyzer.
+
+    The fuzzy supplier match tries BOTH the raw first token AND a
+    dot-stripped lowercase alias, so ``"E.ON Next"`` matches a seeded
+    supplier_name of ``"EON"`` and vice versa.
     """
-    base = (
-        db.query(Script)
-        .filter(Script.active == True)  # noqa: E712
-        .filter(Script.lifecycle_phase.in_(("loa", "standalone_loa")))
-    )
 
-    if supplier:
-        raw_token = supplier.strip().split()[0] if supplier.strip() else ""
-        alias = raw_token.replace(".", "").lower()
-        for candidate in (raw_token, alias):
-            if not candidate:
-                continue
-            row = base.filter(Script.supplier_name.ilike(f"%{candidate}%")).first()
-            if row:
-                return row
+    def _supplier_aliases(s: str | None) -> list[str]:
+        if not s:
+            return []
+        cleaned = s.strip()
+        if not cleaned:
+            return []
+        raw = cleaned.split()[0]
+        alias = raw.replace(".", "").lower()
+        # Preserve order; dedup.
+        out: list[str] = []
+        for token in (raw, alias):
+            if token and token not in out:
+                out.append(token)
+        return out
+
+    base_active = db.query(Script).filter(Script.active == True)  # noqa: E712
+    aliases = _supplier_aliases(supplier)
+
+    phase_pred = Script.lifecycle_phase.in_(("loa", "standalone_loa"))
+    name_pred = Script.script_name.ilike("%LOA%")
+
+    # 1 + 2 — supplier-specific.
+    for candidate in aliases:
+        sup_pred = Script.supplier_name.ilike(f"%{candidate}%")
+        row = base_active.filter(or_(phase_pred, name_pred)).filter(sup_pred).first()
+        if row:
+            return row
+
+    # 3 + 4 — supplier-agnostic.
+    row = base_active.filter(name_pred).first()
+    if row:
+        if supplier:
+            log.warning(
+                f"📋 LOA router: no supplier-specific LOA script for "
+                f"supplier={supplier!r} — falling back to {row.script_name!r}"
+            )
+        return row
+    row = base_active.filter(phase_pred).first()
+    if row and supplier:
         log.warning(
-            f"📋 LOA router: no supplier-specific LOA script for "
-            f"supplier={supplier!r} — falling back to first active LOA script"
+            f"📋 LOA router: no supplier-specific or name-matched LOA script "
+            f"for supplier={supplier!r} — falling back to phase-tagged "
+            f"{row.script_name!r}"
         )
-
-    return base.first()
+    return row
 
 
 def _resolve_for(
