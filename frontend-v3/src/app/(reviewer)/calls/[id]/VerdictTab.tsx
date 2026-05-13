@@ -418,6 +418,20 @@ export function VerdictTab(props: VerdictTabProps) {
     return n;
   }, [cpCards, perCpActions]);
 
+  // Plan §5b extension (2026-05-14): reviewer progress — number of
+  // checkpoints the human has signed off on (pass OR fail), regardless
+  // of AI status. Drives the secondary "X of Y reviewed" counter that
+  // wires the per-checkpoint 1-click Pass on the Checkpoints tab into
+  // the Verdict tab.
+  const reviewedCount = useMemo(() => {
+    let n = 0;
+    for (const cp of cpCards) {
+      const r = (cp.verdict?.reviewer_verdict || "").toLowerCase();
+      if (r === "pass" || r === "fail") n++;
+    }
+    return n;
+  }, [cpCards]);
+
   const totalNonPass = fails.length + partials.length;
 
   // W3.B — customer-facing email preview (re-builds on contract changes).
@@ -887,22 +901,50 @@ export function VerdictTab(props: VerdictTabProps) {
           >
             Required actions
           </div>
-          <div
-            data-testid="verdict-counter"
-            style={{
-              fontSize: 11,
-              fontWeight: 600,
-              padding: "2px 8px",
-              borderRadius: 999,
-              background: needActionCount > 0 ? "var(--amber-bg)" : "var(--emerald-bg)",
-              color:
-                needActionCount > 0 ? "var(--amber-400)" : "var(--emerald-400)",
-              border: `1px solid ${
-                needActionCount > 0 ? "var(--amber-border)" : "var(--emerald-border)"
-              }`,
-            }}
-          >
-            {needActionCount} of {total} need action
+          <div style={{ display: "inline-flex", gap: 8 }}>
+            {/* Reviewer-progress counter — increments on every 1-click Pass
+                / Override Fail on the Checkpoints tab. (Plan §5b 2026-05-14) */}
+            <div
+              data-testid="verdict-reviewed-counter"
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                padding: "2px 8px",
+                borderRadius: 999,
+                background:
+                  reviewedCount >= total
+                    ? "var(--emerald-bg)"
+                    : "var(--blue-bg)",
+                color:
+                  reviewedCount >= total
+                    ? "var(--emerald-400)"
+                    : "var(--blue)",
+                border: `1px solid ${
+                  reviewedCount >= total
+                    ? "var(--emerald-border)"
+                    : "var(--blue-border)"
+                }`,
+              }}
+            >
+              {reviewedCount} of {total} reviewed
+            </div>
+            <div
+              data-testid="verdict-counter"
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                padding: "2px 8px",
+                borderRadius: 999,
+                background: needActionCount > 0 ? "var(--amber-bg)" : "var(--emerald-bg)",
+                color:
+                  needActionCount > 0 ? "var(--amber-400)" : "var(--emerald-400)",
+                border: `1px solid ${
+                  needActionCount > 0 ? "var(--amber-border)" : "var(--emerald-border)"
+                }`,
+              }}
+            >
+              {needActionCount} action{needActionCount === 1 ? "" : "s"}
+            </div>
           </div>
         </div>
 
