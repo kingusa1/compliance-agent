@@ -343,6 +343,33 @@ export function CheckpointCard(props: CheckpointCardProps) {
 
 // ── Sub-components ────────────────────────────────────────────────
 
+function StrictnessChip({ strictness }: { strictness?: string }) {
+  if (!strictness) return null;
+  const style: { label: string; fg: string; bg: string } =
+    strictness === "verbatim"
+      ? { label: "Word for Word", fg: "#f97316", bg: "rgba(249,115,22,0.15)" }
+      : strictness === "customer_yes"
+        ? { label: "+ Customer ✓", fg: "#2dd4bf", bg: "rgba(45,212,191,0.15)" }
+        : { label: "Meaning", fg: "#8a857e", bg: "rgba(148,163,184,0.1)" };
+  return (
+    <span
+      style={{
+        fontSize: 9,
+        fontWeight: 700,
+        textTransform: "uppercase",
+        letterSpacing: "0.04em",
+        padding: "2px 7px",
+        borderRadius: 3,
+        background: style.bg,
+        color: style.fg,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {style.label}
+    </span>
+  );
+}
+
 function Header({
   cpId,
   name,
@@ -368,128 +395,147 @@ function Header({
   rubricKind?: string;
   rubricLabel?: string;
 }) {
+  // 2026-05-14 redesign: two-row header so the checkpoint name never gets
+  // squeezed into a one-word-per-line column when the metadata chips
+  // (rubric badge, strictness, timestamp, status pill) compete for the
+  // same flex row. Row 1 = title strip (id / line / dot / name / status).
+  // Row 2 = metadata strip (strictness / rubric / timestamp / play).
   return (
     <div
       style={{
         display: "flex",
-        alignItems: "center",
+        flexDirection: "column",
         gap: 8,
-        padding: "12px 16px",
+        padding: "12px 16px 10px",
         borderBottom: "1px solid var(--border-subtle)",
-        flexWrap: "wrap",
       }}
     >
-      <span
+      {/* ── Row 1: identifier strip + name + final status pill ── */}
+      <div
         style={{
-          fontFamily: "var(--font-mono)",
-          fontSize: 11,
-          color: "var(--text-faint)",
-        }}
-      >
-        {cpId}
-      </span>
-      {lineNumber !== null && (
-        <span
-          data-slot="cp-line-number"
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: 10,
-            color: "var(--text-faint)",
-            padding: "1px 4px",
-            borderRadius: 3,
-            border: "1px solid var(--border-subtle)",
-            background: "var(--bg-elev3)",
-          }}
-          title={`Script line ${lineNumber}`}
-        >
-          [L{lineNumber}]
-        </span>
-      )}
-      <span
-        style={{
-          width: 8,
-          height: 8,
-          borderRadius: "50%",
-          background: accent,
-          flexShrink: 0,
-        }}
-      />
-      <h4
-        style={{
-          fontSize: 14,
-          fontWeight: 600,
-          color: "var(--text-primary)",
-          margin: 0,
-          flex: 1,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
           minWidth: 0,
         }}
       >
-        {name}
-      </h4>
-      {strictness && (
+        <span
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 11,
+            color: "var(--text-faint)",
+            flexShrink: 0,
+          }}
+        >
+          {cpId}
+        </span>
+        {lineNumber !== null && (
+          <span
+            data-slot="cp-line-number"
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 10,
+              color: "var(--text-faint)",
+              padding: "1px 4px",
+              borderRadius: 3,
+              border: "1px solid var(--border-subtle)",
+              background: "var(--bg-elev3)",
+              flexShrink: 0,
+            }}
+            title={`Script line ${lineNumber}`}
+          >
+            [L{lineNumber}]
+          </span>
+        )}
+        <span
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            background: accent,
+            flexShrink: 0,
+          }}
+        />
+        <h4
+          style={{
+            fontSize: 14,
+            fontWeight: 600,
+            color: "var(--text-primary)",
+            margin: 0,
+            flex: 1,
+            minWidth: 0,
+            lineHeight: 1.35,
+            // Allow long checkpoint names to wrap on word boundaries
+            // (e.g. "Confirm full registered company name and address")
+            // without the surrounding flex row squeezing them into a
+            // vertical column of single words.
+            whiteSpace: "normal",
+            overflowWrap: "anywhere",
+          }}
+        >
+          {name}
+        </h4>
         <span
           style={{
             fontSize: 9,
             fontWeight: 700,
             textTransform: "uppercase",
             letterSpacing: "0.04em",
-            padding: "1px 6px",
-            borderRadius: 3,
-            background:
-              strictness === "verbatim"
-                ? "rgba(249,115,22,0.15)"
-                : strictness === "customer_yes"
-                  ? "rgba(45,212,191,0.15)"
-                  : "rgba(148,163,184,0.1)",
-            color:
-              strictness === "verbatim"
-                ? "#f97316"
-                : strictness === "customer_yes"
-                  ? "#2dd4bf"
-                  : "#8a857e",
+            padding: "3px 9px",
+            borderRadius: 4,
+            background: hasVerdict ? `${accent}26` : "var(--bg-elev3)",
+            color: hasVerdict ? accent : "var(--text-faint)",
+            border: hasVerdict ? `1px solid ${accent}55` : "1px solid var(--border-subtle)",
+            flexShrink: 0,
+            whiteSpace: "nowrap",
           }}
         >
-          {strictness === "verbatim"
-            ? "Word for Word"
-            : strictness === "customer_yes"
-              ? "+ Customer ✓"
-              : "Meaning"}
+          {label}
         </span>
-      )}
-      {rubricKind && rubricLabel ? (
-        <RubricBadge kind={rubricKind} label={rubricLabel} compact />
-      ) : null}
-      {hasVerdict && (
-        <span
-          style={{
-            fontSize: 11,
-            fontFamily: "var(--font-mono)",
-            color: isApproximate ? "#ef4444" : "var(--text-faint)",
-          }}
-        >
-          {isApproximate ? "~" : ""}
-          {formatTs(targetMs)}
-          {isApproximate ? " (approx)" : ""}
-        </span>
-      )}
-      <span style={{ fontSize: 10, color: "var(--text-faint)" }} className="cp-play-chip">
-        ▶ play
-      </span>
-      <span
+      </div>
+
+      {/* ── Row 2: metadata strip (strictness · rubric · ts · play) ── */}
+      <div
         style={{
-          fontSize: 9,
-          fontWeight: 700,
-          textTransform: "uppercase",
-          letterSpacing: "0.04em",
-          padding: "2px 7px",
-          borderRadius: 3,
-          background: hasVerdict ? `${accent}26` : "var(--bg-elev3)",
-          color: hasVerdict ? accent : "var(--text-faint)",
-          border: hasVerdict ? "none" : "1px solid var(--border-subtle)",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          flexWrap: "wrap",
+          // Indent under the dot so the row 1 hierarchy is preserved.
+          paddingLeft: 26,
         }}
       >
-        {label}
-      </span>
+        <StrictnessChip strictness={strictness} />
+        {rubricKind && rubricLabel ? (
+          <RubricBadge kind={rubricKind} label={rubricLabel} compact />
+        ) : null}
+        <span style={{ flex: 1 }} />
+        {hasVerdict && (
+          <span
+            style={{
+              fontSize: 11,
+              fontFamily: "var(--font-mono)",
+              color: isApproximate ? "#ef4444" : "var(--text-faint)",
+              fontVariantNumeric: "tabular-nums",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {isApproximate ? "~" : ""}
+            {formatTs(targetMs)}
+            {isApproximate ? " (approx)" : ""}
+          </span>
+        )}
+        <span
+          className="cp-play-chip"
+          style={{
+            fontSize: 10,
+            color: "var(--text-faint)",
+            whiteSpace: "nowrap",
+          }}
+        >
+          ▶ play
+        </span>
+      </div>
     </div>
   );
 }

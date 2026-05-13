@@ -1429,6 +1429,8 @@ export default function CallDetailPage({
                 currentTime={currentSec}
                 onWordClick={seekTo}
                 callId={id}
+                agentName={c?.agent_name ?? null}
+                customerName={c?.customer_name ?? null}
                 onConflict={() => {
                   // 409 from edit-word — refetch words + detail so the
                   // optimistic edit is replaced with the server-side truth.

@@ -56,6 +56,15 @@ interface TranscriptPlayerProps {
     start_s: number | null;
     end_s: number | null;
   }>;
+  /**
+   * Resolved agent + customer names from the analyzer (call.agent_name /
+   * call.customer_name). When present we render the real name as the
+   * primary label with a small "AGENT" / "CUSTOMER" role chip beneath —
+   * the reviewer immediately sees who is speaking by name. Falls back to
+   * the bare "AGENT" / "CUSTOMER" label when names aren't available.
+   */
+  agentName?: string | null;
+  customerName?: string | null;
 }
 
 const SEG_LABEL: Record<string, string> = {
@@ -82,13 +91,36 @@ function _fmtSecsT(secs: number | null | undefined): string {
 // Plan §5b: AGENT / CUSTOMER labels are LOUD — uppercase, bold, strong
 // contrasting colours and tinted backgrounds so the reviewer can tell who
 // is speaking at a glance while scrubbing through the karaoke transcript.
-const SPEAKER_STYLES: Record<number, { label: string; color: string; bg: string }> = {
-  0: { label: "AGENT", color: "#22c55e", bg: "rgba(34,197,94,0.18)" },
-  1: { label: "CUSTOMER", color: "#f59e0b", bg: "rgba(245,158,11,0.18)" },
+//
+// 2026-05-14: also surface the analyzer-resolved real names so each turn
+// reads "Dominic · AGENT" / "Baba · CUSTOMER" rather than the generic role
+// chip. The real name is the primary cue; the role chip stays for the
+// reviewer who is scrubbing fast.
+const SPEAKER_STYLES: Record<number, { role: string; color: string; bg: string }> = {
+  0: { role: "AGENT", color: "#22c55e", bg: "rgba(34,197,94,0.18)" },
+  1: { role: "CUSTOMER", color: "#f59e0b", bg: "rgba(245,158,11,0.18)" },
 };
 
-function getSpeakerStyle(speaker: number) {
-  return SPEAKER_STYLES[speaker] || { label: `Speaker ${speaker}`, color: "var(--dim, #8a857e)", bg: "rgba(138,133,126,0.08)" };
+function titleCaseName(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const cleaned = raw.trim();
+  if (!cleaned || cleaned.toLowerCase() === "unknown") return null;
+  return cleaned
+    .split(/\s+/)
+    .map((part) => (part.length > 0 ? part[0].toUpperCase() + part.slice(1).toLowerCase() : part))
+    .join(" ");
+}
+
+function getSpeakerStyle(speaker: number, agentName?: string | null, customerName?: string | null) {
+  const base =
+    SPEAKER_STYLES[speaker] || {
+      role: `Speaker ${speaker}`,
+      color: "var(--dim, #8a857e)",
+      bg: "rgba(138,133,126,0.08)",
+    };
+  const realName =
+    speaker === 0 ? titleCaseName(agentName) : speaker === 1 ? titleCaseName(customerName) : null;
+  return { ...base, realName };
 }
 
 function formatTimestamp(seconds: number): string {
@@ -127,6 +159,8 @@ export function TranscriptPlayer({
   getRevision,
   onConflict,
   segments,
+  agentName,
+  customerName,
 }: TranscriptPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const activeWordRef = useRef<HTMLSpanElement>(null);
@@ -289,7 +323,7 @@ export function TranscriptPlayer({
       }}
     >
       {turns.map((turn, turnIdx) => {
-        const style = getSpeakerStyle(turn.speaker);
+        const style = getSpeakerStyle(turn.speaker, agentName, customerName);
         const turnContainsActive =
           activeWordIndex >= turn.startIdx &&
           activeWordIndex < turn.startIdx + turn.words.length;
@@ -372,24 +406,72 @@ export function TranscriptPlayer({
               background: turnContainsActive ? style.bg : "transparent",
             }}
           >
-            {/* Speaker label + timestamp — Plan §5b: LOUD AGENT/CUSTOMER */}
-            <div style={{ minWidth: 100, flexShrink: 0, paddingTop: 2 }}>
-              <span
-                style={{
-                  fontSize: 11,
-                  fontWeight: 800,
-                  color: style.color,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.08em",
-                  padding: "2px 8px",
-                  borderRadius: 4,
-                  background: style.bg,
-                  display: "inline-block",
-                }}
-              >
-                {style.label}
-              </span>
-              <br />
+            {/* Speaker label + timestamp — primary line is the real name
+                resolved by the analyzer (e.g. "Dominic"); the AGENT/CUSTOMER
+                role chip sits underneath for fast scanning. */}
+            <div
+              style={{
+                width: 132,
+                flexShrink: 0,
+                paddingTop: 2,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "flex-start",
+                gap: 3,
+              }}
+            >
+              {style.realName ? (
+                <>
+                  <span
+                    title={`${style.realName} (${style.role})`}
+                    style={{
+                      fontSize: 12.5,
+                      fontWeight: 700,
+                      color: style.color,
+                      letterSpacing: "0.02em",
+                      lineHeight: 1.15,
+                      maxWidth: 128,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      display: "inline-block",
+                    }}
+                  >
+                    {style.realName}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 9,
+                      fontWeight: 800,
+                      color: style.color,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.1em",
+                      padding: "1px 6px",
+                      borderRadius: 3,
+                      background: style.bg,
+                      display: "inline-block",
+                    }}
+                  >
+                    {style.role}
+                  </span>
+                </>
+              ) : (
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 800,
+                    color: style.color,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                    padding: "2px 8px",
+                    borderRadius: 4,
+                    background: style.bg,
+                    display: "inline-block",
+                  }}
+                >
+                  {style.role}
+                </span>
+              )}
               <span
                 style={{
                   fontSize: 10,

@@ -94,14 +94,47 @@ def _resolve_phrase_pack(db: Session, phase: str) -> Script | None:
 
 
 def _resolve_loa_script(db: Session, supplier: str | None) -> Script | None:
-    """Pick the LOA script for the call's supplier. Only E.ON has one
-    in the seeded corpus (lifecycle_phase='loa' or 'standalone_loa').
+    """Pick the LOA script for the call's supplier.
+
+    Resolution order (each one is a strict superset of the next, so a
+    non-E.ON supplier still gets graded against the LOA script the
+    classifier was trained on rather than falling all the way through
+    to the V1 universal rules):
+
+      1. Active LOA script whose supplier_name fuzzy-matches the call's
+         detected supplier — tries the raw first token AND a dot-stripped
+         lowercase alias so ``"E.ON"`` matches ``"EON"`` and vice versa.
+      2. Any active LOA script.
+      3. None (caller will fall through to V1).
+
+    Step 2 is the new safety net (2026-05-14). Before this, a call whose
+    detected_supplier didn't ilike-match an LOA script's supplier_name
+    would silently fall through to the v1_fallback rubric — surfacing
+    as "📜 V1 fallback (3 universal rules)" in the UI even though the
+    transcript clearly contained the LOA reading. That's the LOA-grading
+    bug Aly flagged.
     """
-    q = db.query(Script).filter(Script.active == True)  # noqa: E712
-    q = q.filter(Script.lifecycle_phase.in_(("loa", "standalone_loa")))
+    base = (
+        db.query(Script)
+        .filter(Script.active == True)  # noqa: E712
+        .filter(Script.lifecycle_phase.in_(("loa", "standalone_loa")))
+    )
+
     if supplier:
-        q = q.filter(Script.supplier_name.ilike(f"%{supplier.split()[0]}%"))
-    return q.first()
+        raw_token = supplier.strip().split()[0] if supplier.strip() else ""
+        alias = raw_token.replace(".", "").lower()
+        for candidate in (raw_token, alias):
+            if not candidate:
+                continue
+            row = base.filter(Script.supplier_name.ilike(f"%{candidate}%")).first()
+            if row:
+                return row
+        log.warning(
+            f"📋 LOA router: no supplier-specific LOA script for "
+            f"supplier={supplier!r} — falling back to first active LOA script"
+        )
+
+    return base.first()
 
 
 def _resolve_for(
