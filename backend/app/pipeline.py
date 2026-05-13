@@ -897,7 +897,11 @@ async def _step_classify_content(
     # a sensible default than halt the call:
     #   (a) Manual override: reviewer (or a legacy upload path) set
     #       call_type to one of the 4 canonical values → use it.
-    #   (b) Short / sparse transcript: the classifier bails on
+    #   (b) Explicit supplier script (call.script_id set, e.g. via the
+    #       upload form's manual script override): treat as a "verbal"
+    #       segment so route_for_segment hits the supplier-specific
+    #       checkpoints attached to that script.
+    #   (c) Short / sparse transcript: the classifier bails on
     #       transcripts < 50 chars or with no word_data, which is the
     #       shape every deterministic unit test uses. Default to a
     #       single ``lead_gen`` segment so those tests + any genuinely
@@ -912,6 +916,12 @@ async def _step_classify_content(
         if stage in _VALID_STAGES:
             fallback_stage = stage
             fallback_reason = "manual call_type override; classifier returned []"
+        elif getattr(call, "script_id", None):
+            fallback_stage = "verbal"
+            fallback_reason = (
+                "explicit script_id override — single verbal segment so the "
+                "supplier-script rubric drives grading"
+            )
         elif (not transcript) or len(transcript.strip()) < 50 or len(word_data) < 20:
             fallback_stage = "lead_gen"
             fallback_reason = (
@@ -1242,6 +1252,7 @@ async def _step_analyze_checkpoints(
                 "stage": seg.stage,
                 "passed": summary.get("passed", 0),
                 "total": summary.get("total", 0),
+                "errors": int(summary.get("error", 0) or 0),
                 "bucket": seg.bucket,
                 "critical_breaches": seg.critical_breaches,
                 "high_breaches": seg.high_breaches,
@@ -1514,8 +1525,26 @@ def _step_score(call_id: str, analysis: dict, db: Session) -> dict:
         )
 
     call.excerpt = None
-    if call.status != "needs_manual_review":
+
+    # Graceful degradation: if more than half of all checkpoints errored
+    # (e.g. LLM timeouts), surface ``needs_manual_review`` so the
+    # reviewer triages instead of trusting an under-graded verdict.
+    # Mirrors the legacy contract enforced by test_graceful_degradation.
+    total_errors = sum(int(s.get("errors", 0) or 0) for s in segments)
+    total_processed = total_total + total_errors  # denominator pre-error-exclusion
+    if total_processed > 0 and total_errors * 2 > total_processed:
+        call.status = "needs_manual_review"
+        call.compliant = False
+        call.reason = (
+            f"Manual review required: {total_errors}/{total_processed} "
+            f"checkpoints errored (analyzer failures). ({breakdown})"
+        )
+    elif call.status != "needs_manual_review":
         call.status = "completed"
+    if total_errors > 0:
+        # Even at sub-50% error rates, never claim full compliance with
+        # missing data.
+        call.compliant = False
     db.commit()
     return {
         "score": call.score,
