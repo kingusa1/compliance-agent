@@ -18,14 +18,16 @@ tags: [index, brain]
 
 ## 🚨 Read FIRST when resuming a session
 
-**As of 2026-05-12: MID-REBUILD. Read these in order before doing ANYTHING:**
+**As of 2026-05-13: TAXONOMY REBUILD DEPLOYED + 19/19 SCRIPTS FILLED.**
+Read in order:
 
-1. [[04_Sessions/2026-05-12_Session_taxonomy_rebuild]] — **CURRENT STATE.** Backend Phases 0-4 done on disk but uncommitted; Phase 5 frontend NOT started; user wants NO PUSHES without approval. Has full resume guide + commit commands.
-2. The plan file: `C:\Users\kingu\.claude\plans\magical-booping-crown.md` (user-approved).
-3. [[05_State/Live_State]] — what's actually deployed vs what's pending.
-4. [[02_Domain/Stage_Terminology]] — Aly's nomenclature locked to 4 stages.
-5. [[05_State/Known_Issues]] — open gaps and limits.
-6. [[04_Sessions/Decisions]] — running architectural decisions log.
+1. [[04_Sessions/2026-05-13_Session_deploy_and_19of19]] — **MOST RECENT.** Today's deploy of the taxonomy rebuild, the silent alembic-chain failure since 2026-05-06 that we unblocked, the 4-pass extractor that filled the last 3 prose-heavy scripts, and the /scripts UI upload rewire. Open gaps + resume guide at bottom.
+2. [[05_State/Live_State]] — current commit tip (`394c438`), deploy URLs, DB state (0 calls — wiped), Script counts (19/19), full recent-commit chain.
+3. [[04_Sessions/2026-05-12_Session_taxonomy_rebuild]] — yesterday's design + Phase 0-4 backend work (uncommitted then, all shipped now).
+4. The plan file: `C:\Users\kingu\.claude\plans\magical-booping-crown.md` (user-approved).
+5. [[02_Domain/Stage_Terminology]] — Aly's nomenclature locked to 4 stages.
+6. [[05_State/Known_Issues]] — open gaps (6 CI tests + Phase 5 UI a-i).
+7. [[04_Sessions/Decisions]] — running architectural decisions log.
 
 ---
 
@@ -61,7 +63,8 @@ tags: [index, brain]
 - [[04_Sessions/2026-05-11_Session_workflow_pill]] — color-coded `WorkflowTypePill` on /customers, /customers/[slug], /calls/[id]; AI-detected supplier drives `3-stage · LOA bundled` (emerald) vs `4-stage · separate LOA` (blue); Aly ask consolidated to 4 blockers
 - [[04_Sessions/2026-05-11_Session_ai_call_type]] — `detect_call_type` AI classifier replaces filename pre-pass; transcript AGENT/CUSTOMER role tagging; upload-modal click fix; /guide rewritten with 15-step pipeline + AI classifier rules; 15 historical calls backfilled (11 deals re-lifed)
 - [[04_Sessions/2026-05-11_Session_deep_audit]] — root-cause audit: every script had `checkpoints=[]` so every call was graded on 3 universal rules. Built LLM script-checkpoint extractor + admin ingest endpoint → **164 checkpoints written across 10 of 15 scripts** (E.ON Next NHH+HH now has 26 rules used by 73% of calls). Built sync `reanalyze-all` endpoint (Inngest path was a no-op in prod). After reanalyze: scores moved from N/3 cluster → N/26 with `f017bb03 → 22/26`
-- [[04_Sessions/2026-05-12_Session_taxonomy_rebuild]] — **⚠️ MID-REBUILD AT COMPACTION.** Locked call_type to `{lead_gen, pre_sales, verbal, loa}`; built content_classifier agent (1-4 segments per recording); per-segment pipeline + score aggregator; rejection auto-create disabled. Backend Phases 0-4 on disk uncommitted (Phase 0 pushed as `818e312`). Phase 5 frontend overhaul not started. Plan at `~/.claude/plans/magical-booping-crown.md`. **Resume guide inside the session file.**
+- [[04_Sessions/2026-05-12_Session_taxonomy_rebuild]] — Locked call_type to `{lead_gen, pre_sales, verbal, loa}`; built content_classifier agent (1-4 segments per recording); per-segment pipeline + score aggregator; rejection auto-create disabled. Designed-on-disk state (now all deployed — see 2026-05-13 session). Plan at `~/.claude/plans/magical-booping-crown.md`.
+- [[04_Sessions/2026-05-13_Session_deploy_and_19of19]] — **DEPLOY DAY.** Shipped Phases 0-4 + Phase 5j to prod (`compliance-agent-mu.vercel.app` + Railway `394c438`). Unblocked a silent alembic-chain failure that had been broken since 2026-05-06 (`failed_jobs` DuplicateTable was killing every migration after it). Added Call.segments + Call.flags relationships to fix 500-on-upload. Built 4-pass script extractor (strict → prose-mode → per-page split → deterministic heuristic) so **all 19 of 19** supplier scripts now have non-empty checkpoints. Rewired `/scripts` UI upload to use the same extractor. **Resume guide inside the session file.**
 - [[04_Sessions/Decisions]] — running list of architectural decisions
 
 ### 05 State

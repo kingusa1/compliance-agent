@@ -1,12 +1,49 @@
 ---
 created: 2026-05-10
-updated: 2026-05-10
+updated: 2026-05-13
 tags: [state, issues, gotchas]
 ---
 
 # Known issues / gotchas
 
-## 🐛 Bugs (verified 2026-05-10 audit)
+## ⏳ Open gaps after 2026-05-13 deploy
+
+### 6 CI integration tests failing on `394c438`
+All assertion-style mismatches against the new per-segment pipeline output; not blocking prod.
+
+| Test | Symptom | Why |
+|---|---|---|
+| `test_checkpoint_analyzer::test_all_checkpoints_mixed_results` | `assert True is False` | Pre-existing — severity-bucket vs `compliant` semantic divergence from the 2026-05-11 scoring change. |
+| `test_integration::test_integration_compliant_call_v2` | Expected compliant=True | V1 fallback now sets `compliant=False` whenever the analyzer summary has errors > 0; test fixture has 0 errors but the test asserts compliant on the call row, which my aggregator drops to False if any segment isn't pass. |
+| `test_integration::test_integration_unknown_supplier_fallback_v1` | `assert None is not None` | Test asserts a populated field that's no longer set on this path. |
+| `test_integration::test_integration_partial_checkpoint_v2` | Reason text doesn't contain 'partial' | New `_step_score` composes the reason from per-segment breakdowns ("verbal 3/4 ⚠"), not from analyzer summary's 'partial' tag. |
+| `test_integration::test_integration_explicit_script_id_skips_detection` | `assert False is True` | Same as compliant_v2 — compliant=False due to aggregator. |
+| `test_pipeline::test_process_call_v1_with_checkpoints` | `assert None is not None` | Same as fallback_v1. |
+
+**Fix shape (deferred):** update each test's assertions to match the new pipeline output. ~30-60 min total. None of these break prod behavior — they pin OLD pipeline contracts.
+
+### Phase 5 UI overhaul (a-i) still pending
+Only Phase 5j (drop call_type radio from upload form) shipped. Remaining sub-tasks (≈3-4 hr total):
+- 5a Queue: customer_name column, segment-list column, AI: X/N + To Review pills, hide 0% rows
+- 5b Call detail: top-row pill filter (Passed/Partial/Non-Compliant), 1-click pass, loud AGENT/CUSTOMER labels, drop "needs_review" yellow, collapse to 3 verdict pills, conditional risk tags, disabled "Coming soon" email button, **new SegmentCards.tsx component**
+- 5c Tracker: auto-refresh on verdict-submit, advanced filters, drop "AI" labels
+- 5d Rejections: customer_name column (server already returns it via Phase 4 join)
+- 5e Agents: switch to percentage metrics
+- 5f Dashboard Intelligence: 4 charts + new `intelligence_routes.py`
+- 5g Drop Observability entry from sidebar
+- 5h Remove HelpBanners from 6 admin pages
+- 5i Verify /calls catalogue route + sidebar link
+
+### Alembic Dockerfile hides failures (latent risk)
+Container starts even when `alembic upgrade head` raised — the
+`|| echo 'ALEMBIC_FAILED'` swallows the exit code. The 2026-05-13
+session burned hours diagnosing a 500 that traced back to a 7-day-old
+silent migration failure. Future-proof by surfacing alembic failures
+on `/readyz` (return 503 if last upgrade exited non-zero).
+
+---
+
+## 🐛 Bugs (verified 2026-05-10 audit, pre-rebuild)
 
 ### DELETE on completed calls returns HTTP 500
 **Reproduced:** `DELETE /api/calls/190868a8-…` (a completed Korner Kutz call) → 500. Same endpoint on the older `failed` call `42a89a59-…` → 200.

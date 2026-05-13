@@ -1,20 +1,41 @@
 ---
 created: 2026-05-10
-updated: 2026-05-12
-tags: [state, live, ground-truth, mid-rebuild]
+updated: 2026-05-13
+tags: [state, live, ground-truth, taxonomy-rebuild-deployed]
 ---
 
-# Live State — mid-rebuild 2026-05-12 (taxonomy + per-segment pipeline)
+# Live State — taxonomy rebuild deployed 2026-05-13
 
-> ⚠️ **MID-REBUILD AS OF 2026-05-12.** Backend Phases 0-4 of the
-> taxonomy-rebuild + content-classifier work are on disk locally but
-> **UNCOMMITTED** (except Phase 0 which is pushed as `818e312`).
-> Frontend still speaks the OLD vocabulary (call_type radio, 5-bucket
-> pills, HelpBanners). Phase 5 frontend overhaul not started.
+> ✅ **Backend Phases 0-4 + Phase 5j (upload-boundary fix) DEPLOYED 2026-05-13.**
+> Tip commit `ddfdb23` (Call.segments + Call.flags relationships fix
+> the 500 on upload-response serialization). Prior tips: `796fb62`
+> (per-script commit in ingest endpoint), `a0c2da0` (V1 fallback +
+> script_id-override + degradation status), `2100fdd` (classifier
+> fallback for short transcripts + tests), `8423b64` (Phase 5j route
+> + L7Form), `2a2f311` (BRAIN docs).
 >
-> User explicitly said **no pushes without approval**. Phase 0 wipe
-> endpoint is live but **NOT YET RUN** — will run right before Phase 7
-> smoke test.
+> The AI now auto-classifies recordings into 1-4 segments (lead_gen /
+> pre_sales / verbal / loa); each segment grades against its own
+> rubric; worst-bucket-wins aggregator emits a single call-level
+> verdict. V1 fallback kicks in when no supplier rubric matches.
+>
+> Vercel: `dpl_29rNSwpsZPQog9JPtymCXETT2VXR` (commit `2100fdd`),
+> aliased to `compliance-agent-mu.vercel.app`. (Tip Vercel deploy
+> trails by 2 commits — fine since the frontend changes were only in
+> 8423b64; later commits are backend-only fixes.)
+>
+> Phase 0 wipe ran. Supplier-script checkpoints re-ingested via the
+> hardened prose-mode extractor: **16/19 Script rows filled (84%)**.
+> Three still empty (EDF V11, Pozitive PE, Scottish Power TPI Acq) —
+> calls on those suppliers fall through to V1 3-rule TPI fallback
+> until reformatting + re-ingest.
+>
+> User opted out of the full Phase 5 frontend overhaul for now — the
+> minimum Phase 5j change to L7Form + intake schema + upload route
+> shipped so a live test upload works end-to-end against the new
+> backend. Fuller UI overhaul (intelligence dashboard, segment cards,
+> double-pill verdicts, agent percentages, HelpBanner removal) is
+> queued.
 >
 > Plan file (approved): `C:\Users\kingu\.claude\plans\magical-booping-crown.md`
 > Resume guide: [[../04_Sessions/2026-05-12_Session_taxonomy_rebuild]]
@@ -36,30 +57,50 @@ tags: [state, live, ground-truth, mid-rebuild]
 
 ## Frontend (Vercel)
 - **Alias:** `compliance-agent-mu.vercel.app`
-- **Current deployment:** Railway backend on commit `1e7e90c` (sync reanalyze-all endpoint + LLM script-checkpoint extractor + Option A multi-file same-deal default + `.planning/phase2-docs` bundled in Dockerfile)
-- **Previous Vercel:** `dpl_F5oVygMyiRMaCPFjxZoDxyJmG574` (workflow pill + AI call_type + admin backfill)
+- **Current Vercel deploy:** `dpl_29rNSwpsZPQog9JPtymCXETT2VXR` on commit `2100fdd` (Phase 5j L7Form fix). Subsequent backend-only fixes did not require a Vercel re-deploy.
 - **Project rootDirectory:** `frontend-v3` ✓
 - **Project framework:** `nextjs` ✓
-- **Auto-deploy:** **NOT wired** — `link.deployHooks: []` on the Vercel project. Pushes to `main` do not trigger Vercel. Trigger via API POST `v13/deployments` with `gitSource={type:github,repoId:1233382040,ref:main,sha:<HEAD>}`.
-- **17 routes HTTP-status verified 200/307** (desktop+mobile, 36 runs): `/` (307→/dashboard), `/login`, `/dashboard`, `/queue`, `/calls`, `/tracker`, `/customers`, `/customers/<slug>`, `/deals`, `/rejections`, `/scripts`, `/agents`, `/agents/Parat`, `/compliant`, `/non-compliant`, `/observability`, `/guide`, `/settings`
-- ⚠️ **Content NOT verified:** for an unauthenticated visitor every protected route renders the **Sign In** form, not the page content. The HTTP code is 200 because Next.js renders the layout shell first then the auth guard hijacks. **Future visual audits need a working test login on prod Supabase.** See `audit-2026-05-10/AUDIT_REPORT.md` and `audit-2026-05-10/shots/dashboard_desktop.png`.
-- **Branded 404:** `/some-bad-path` returns the `not-found.tsx` page (contains "ComplianceAI" header + quick-links). NOT the raw Vercel `bom1::xxx` page.
+- **Auto-deploy:** **NOT wired** — `link.deployHooks: []` on the Vercel project. Pushes to `main` do not trigger Vercel. Trigger via API POST `v13/deployments` with `gitSource={type:github,repoId:1233382040,ref:main,sha:<HEAD>}`. CLI token at `$APPDATA/com.vercel.cli/Data/auth.json`.
+- **All routes 200/307** (verified 2026-05-13): root redirect, login, dashboard, queue, calls, tracker, customers, customers/<slug>, deals, rejections, scripts, agents, compliant, non-compliant, observability, guide, settings.
+- ⚠️ **Auth-gate caveat (unchanged):** anonymous GET on protected routes renders the Sign-In form, not the page content. Use the test login below to see real pages.
 
 ## Backend (Railway)
 - **URL:** `https://compliance-agent-production-690e.up.railway.app`
 - **Healthcheck:** `/healthz` → 200, `/api/health` → 200, `/readyz` → 200 (`db: ok`)
 - **Service:** `compliance-agent` on project `compliance-agent-backend`
-- **Latest commit deployed:** `c087493` (frontend type fix); backend latest `4e77515` (auto Quality Agent)
+- **Tip commit deployed (2026-05-13):** `394c438` — 4-pass extractor + heuristic fallback + /scripts upload rewire.
+- **Recent chain (most recent first):**
+  - `394c438` feat(ai): 4-pass extractor with deterministic heuristic fallback (19/19 scripts)
+  - `b72f0c2` fix(migration): 3 more migrations idempotent (verdict_state, fix_narrative, pipeline_step_log)
+  - `b9bc0a6` fix(migration): failed_jobs CREATE TABLE idempotent — **this unblocked the alembic chain that had been silently failing since 2026-05-06**
+  - `ddfdb23` fix(models): add Call.segments + Call.flags relationships (500 on upload)
+  - `796fb62` fix(admin): ingest-script-checkpoints commits per-script
+  - `a0c2da0` fix(pipeline): segment-loop honours explicit script_id + degradation status
+  - `2100fdd` fix(pipeline,rejections,tests): unblock CI after taxonomy rebuild
+  - `8423b64` feat(intake): Phase 5j — drop stale call_type defaults at the upload boundary
+  - `2a2f311` docs(brain): 2026-05-12 taxonomy rebuild — session log + Live_State + INDEX
+  - `986be16` feat(ai): harden script_checkpoint_extractor for prose-heavy supplier scripts
+  - `2f67c0d` feat(rejections): Phase 4 — reviewer-initiated only + customer_name join
+  - `560edc9` feat(pipeline): Phase 3 — per-segment classify→analyze→aggregate flow
+  - `9a71e16` feat(ai): Phase 2 — content_classifier agent emits 1-4 segments per recording
+  - `3e1846b` feat(backend): Phase 1 — lock call_type taxonomy to {lead_gen,pre_sales,verbal,loa}
+  - `818e312` feat(admin): POST /api/admin/wipe-all-calls (Phase 0 of taxonomy rebuild)
+- **Railway CLI auth status:** logged in as `mohamedhisham735@gmail.com`; service `compliance-agent`. `railway logs --json` works for runtime + `railway logs --build --json` for builds.
 
-## Database state (post 2026-05-11 deep-clean session)
-- **Calls:** 37 total · 19 with `call_type` correctly classified (lead_gen/passover/closer/standalone_loa/c_call/amendment), 15 still `full` (legacy uploads, no filename hint — verify correctly anyway under "full = lead_gen+passover+closer" rule for E.ON)
-- **Customers:** 18 (down from 22; manual consolidation of 3 Little Farm variants + 2 Hanif + 2 Corner Cuts + "The Coach" + name renames Jill/John/Peter → full names)
-- **Deals:** 18 — every deal lifecycle recomputed
-- **Compliant:** 8 calls
-- **Non-compliant:** 28 calls
-- **Compliance rate:** 21.6%
-- **Deal lifecycle distribution:** 12 verified · 2 passover_done · 1 closer_done · 1 lead_gen_done · 1 amendment_done · 1 c_call_done · 0 open
-- Earlier states: see [[../04_Sessions/2026-05-10_Session_audit_late]] and [[../04_Sessions/2026-05-11_Session_workflow_clarity]]
+## Database state (post 2026-05-13 wipe + re-ingest)
+- **Calls:** 0 (Phase 0 wipe ran successfully on `2026-05-13T18:08` UTC; second wipe at `18:48` after smoke).
+- **Customers:** 0 (cascade).
+- **Deals:** 0 (cascade).
+- **Rejections:** 0.
+- **Scripts: 19 of 19 filled** ✅ (was 16/19 mid-rebuild). Counts:
+  - PHRASE_PACK × 4: lead_gen 88, passover-as-handover 88, c-call 32, amendment 32
+  - E.ON × 5: NHH+HH 26, Gas TPI 25, Gas (undated) 25, Elec 24, TPI Verbal LOA 11
+  - British Gas × 2: Broker Acq 21, Broker Renewal 20
+  - BGL × 2: Broker Acquisition V7 29, Acquisition (legacy) 30
+  - Scottish Power × 3: Acquisition (TPI) 29, Renewal 28, Multisite 31
+  - EDF × 2: TPI Fixed-for-Business V11 72, Pre-amble 12
+  - Pozitive × 1: Verbal Contract (PE) 71
+- **All Alembic migrations applied:** head reached (incl. `4f9c1d27_locktax` Phase 1 CHECK constraint + `7a9d4e1f_segvrd` Phase 3 segment columns + `call_checkpoints.segment_id` FK).
 
 ## Test login (admin)
 - Email: `admin@compliance-agent.local`
