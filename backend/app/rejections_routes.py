@@ -134,11 +134,15 @@ def _compute_deadline(rejected_at: datetime) -> datetime:
     return rejected_at + timedelta(days=2)
 
 
-def _serialize(r: Rejection) -> dict[str, Any]:
+def _serialize(r: Rejection, customer_name: str | None = None) -> dict[str, Any]:
     return {
         "id": str(r.id),
         "call_id": r.call_id,
         "customer_slug": r.customer_slug,
+        # 2026-05-12: client feedback — surface customer_name on every
+        # rejection row. Joined upstream from Call → CustomerDeal →
+        # Customer; falls back to the customer_slug-derived display.
+        "customer_name": customer_name or r.customer_slug or None,
         "external_watt_site_id": r.external_watt_site_id,
         "supplier": r.supplier,
         "sales_agent": r.sales_agent,
@@ -163,6 +167,12 @@ def _serialize(r: Rejection) -> dict[str, Any]:
         "confirmed_at": (
             r.confirmed_at.isoformat()
             if getattr(r, "confirmed_at", None) else None
+        ),
+        # Source: 'reviewer' (manually-opened by the human reviewer in
+        # the queue) or 'ai' (auto-created by the pipeline — disabled
+        # post 2026-05-12 rebuild, but legacy rows may still carry it).
+        "source": getattr(r, "source", None) or (
+            "reviewer" if getattr(r, "confirmed_by", None) else "ai"
         ),
     }
 
@@ -248,6 +258,16 @@ def list_rejections(
         None,
         description="W4.6 — restrict the dead tab to one of DEAD_REASONS keys.",
     ),
+    source: str = Query(
+        "reviewer",
+        regex="^(reviewer|ai|all)$",
+        description=(
+            "2026-05-12 client feedback — by default only return rejections "
+            "opened manually by the reviewer (confirmed_by IS NOT NULL). "
+            "Pass source=all to include AI-auto rows for audit; source=ai "
+            "to only see legacy AI-auto rows."
+        ),
+    ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     user: dict = Depends(current_user),
@@ -279,6 +299,15 @@ def list_rejections(
             | (Rejection.sales_agent.ilike(like))
         )
 
+    # 2026-05-12 client feedback: by default only show rejections opened
+    # by a human reviewer (confirmed_by IS NOT NULL is our current proxy
+    # for "reviewer touched this"). Callers pass source='all' to see
+    # everything; source='ai' to see only legacy AI-auto rows.
+    if source == "reviewer":
+        q = q.filter(Rejection.confirmed_by.isnot(None))
+    elif source == "ai":
+        q = q.filter(Rejection.confirmed_by.is_(None))
+
     total = q.count()
     rows = (
         q.order_by(Rejection.rejected_at.desc())
@@ -286,6 +315,23 @@ def list_rejections(
         .limit(limit)
         .all()
     )
+
+    # Look up customer_name per row in one go so the rejection list can
+    # render the customer column without N+1.
+    from app.models import CustomerDeal as _Deal, Customer as _Customer, Call as _Call
+    customer_name_by_id: dict[str, str] = {}
+    call_ids = [r.call_id for r in rows if r.call_id]
+    if call_ids:
+        deal_rows = (
+            db.query(_Call.id, _Customer.legal_name)
+            .outerjoin(_Deal, _Deal.id == _Call.deal_id)
+            .outerjoin(_Customer, _Customer.id == _Deal.customer_id)
+            .filter(_Call.id.in_(call_ids))
+            .all()
+        )
+        for cid, name in deal_rows:
+            if name:
+                customer_name_by_id[cid] = name
 
     # Per-tab counts (always over the same base set, no other filters) so
     # the top-bar tabs can render a reliable badge regardless of which tab
@@ -298,7 +344,10 @@ def list_rejections(
         "archive": base.count(),
     }
     return {
-        "rejections": [_serialize(r) for r in rows],
+        "rejections": [
+            _serialize(r, customer_name=customer_name_by_id.get(r.call_id))
+            for r in rows
+        ],
         "total": total,
         "counts": counts,
         "tab": tab,
