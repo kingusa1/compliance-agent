@@ -56,6 +56,7 @@ import { TranscriptPlayer, type WordData } from "./TranscriptPlayer";
 import { PricingMismatchBanner } from "./PricingMismatchBanner";
 import { ProcessingStepper } from "./ProcessingStepper";
 import { VerdictTab } from "./VerdictTab";
+import { SegmentCards } from "./SegmentCards";
 import { VulnerabilityBanner } from "./VulnerabilityBanner";
 import { EditMetadataDialog } from "./EditMetadataDialog";
 import { ReanalyzeButton } from "./ReanalyzeButton";
@@ -583,6 +584,9 @@ export default function CallDetailPage({
   const retryCheckpoint = useRetryCheckpoint();
 
   const [tab, setTab] = useState<"checkpoints" | "verdict" | "chat">("checkpoints");
+  // Plan §5b: top-row pill filter restored (Pass / Partial / Non-Compliant)
+  // with counts. Click a chip → narrow the checkpoint list to that status.
+  const [cpFilter, setCpFilter] = useState<"all" | "passed" | "partial" | "fail">("all");
   const [chosen, setChosen] = useState<VerdictAction | null>(null);
   const [reason, setReason] = useState("");
   const [sendEmailToggle, setSendEmailToggle] = useState(false);
@@ -1453,12 +1457,83 @@ export default function CallDetailPage({
           <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }} className="ca-scroll">
             {tab === "checkpoints" && (
               <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 10 }}>
+                {/* Plan §5b: per-segment summary cards — one per CallSegment row
+                    written by the post-2026-05-12 pipeline. */}
+                <SegmentCards callId={id} />
+                {(() => {
+                  // Plan §5b: status filter pills with counts.
+                  const counts = cpCards.reduce(
+                    (acc, m) => {
+                      const s = (m.verdict?.status ?? "").toLowerCase();
+                      if (s === "pass") acc.passed++;
+                      else if (s === "partial") acc.partial++;
+                      else if (s === "fail") acc.fail++;
+                      return acc;
+                    },
+                    { passed: 0, partial: 0, fail: 0 },
+                  );
+                  const chips: { key: typeof cpFilter; label: string; n: number; tone: string }[] = [
+                    { key: "all", label: "All", n: cpCards.length, tone: "var(--text-primary)" },
+                    { key: "passed", label: "Passed", n: counts.passed, tone: "var(--emerald)" },
+                    { key: "partial", label: "Partial", n: counts.partial, tone: "var(--amber)" },
+                    { key: "fail", label: "Non-Compliant", n: counts.fail, tone: "var(--red)" },
+                  ];
+                  return (
+                    <div style={{ display: "flex", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                      {chips.map((c) => {
+                        const active = cpFilter === c.key;
+                        return (
+                          <button
+                            key={c.key}
+                            type="button"
+                            onClick={() => setCpFilter(c.key)}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 6,
+                              height: 28,
+                              padding: "0 10px",
+                              fontSize: 12,
+                              fontWeight: 500,
+                              background: active ? "var(--bg-elev3)" : "var(--bg-elev2)",
+                              color: active ? c.tone : "var(--text-muted)",
+                              border: `1px solid ${active ? c.tone : "var(--border-subtle)"}`,
+                              borderRadius: 999,
+                              cursor: "pointer",
+                            }}
+                          >
+                            <span>{c.label}</span>
+                            <span
+                              style={{
+                                fontFamily: "var(--font-mono)",
+                                fontSize: 11,
+                                fontVariantNumeric: "tabular-nums",
+                                color: active ? c.tone : "var(--text-faint)",
+                              }}
+                            >
+                              {c.n}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
                 {cpCards.length === 0 ? (
                   <div style={{ color: "var(--text-faint)", fontSize: 13, padding: 20, textAlign: "center" }}>
                     No checkpoints scored yet.
                   </div>
                 ) : (
-                  cpCards.map((m, i) => (
+                  cpCards
+                    .filter((m) => {
+                      if (cpFilter === "all") return true;
+                      const s = (m.verdict?.status ?? "").toLowerCase();
+                      if (cpFilter === "passed") return s === "pass";
+                      if (cpFilter === "partial") return s === "partial";
+                      if (cpFilter === "fail") return s === "fail";
+                      return true;
+                    })
+                    .map((m, i) => (
                     <CheckpointCard
                       key={`${m.key}-${i}`}
                       index={i}

@@ -1411,6 +1411,28 @@ def get_queue(
     # Preload claim locks in one query so _row is O(1) per call.
     claims = {cl.call_id: cl for cl in db.query(ClaimLock).all()}
 
+    # Preload per-segment summaries for the visible rows so the queue table
+    # can show "Lead Gen · Verbal · LOA" without N+1 queries (Plan §5a).
+    from app.models import CallSegment as _CallSegment
+    row_ids = [c.id for c in rows]
+    seg_rows = (
+        db.query(_CallSegment)
+        .filter(_CallSegment.call_id.in_(row_ids))
+        .order_by(_CallSegment.call_id, _CallSegment.idx)
+        .all()
+        if row_ids
+        else []
+    )
+    seg_by_call: dict[str, list[dict]] = {}
+    for s in seg_rows:
+        seg_by_call.setdefault(s.call_id, []).append(
+            {
+                "stage": s.stage,
+                "score": s.score,
+                "bucket": s.bucket,
+            }
+        )
+
     def _row(c: Call) -> dict:
         # flagged_count counts BOTH legacy `needs_review=True` (low-confidence
         # from Task 9 auto-compliance) AND explicit `verdict|status=flagged`
@@ -1440,10 +1462,14 @@ def get_queue(
             "created_at": c.created_at.isoformat() if c.created_at else None,
             "review_status": c.review_status,
             "compliance_status": c.compliance_status,
+            "bucket": getattr(c, "bucket", None),
             "flagged_count": flagged,
             "claimed_by": name_map.get(cl.reviewer_id) if cl else None,
             "reviewed_by": name_map.get(c.reviewed_by) if c.reviewed_by else None,
             "reviewed_at": c.reviewed_at.isoformat() if c.reviewed_at else None,
+            # Plan §5a: drive the "Lead Gen · Verbal · LOA" segments column
+            # off the new CallSegment rows the per-segment pipeline writes.
+            "segments": seg_by_call.get(c.id, []),
         }
 
     return {

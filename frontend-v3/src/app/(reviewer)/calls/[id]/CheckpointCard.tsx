@@ -1012,10 +1012,21 @@ function ReviewerSection({
         Human Review
       </div>
       <button
-        onClick={(e) => {
+        // Plan §5b: 1-click pass — bypass the confirmation modal and commit
+        // immediately (reviewers were ignoring the optional-notes textbox
+        // anyway). Reject still routes through the modal so the reviewer
+        // has to articulate why.
+        onClick={async (e) => {
           stop(e);
-          setPending("pass");
+          if (submitting) return;
+          setSubmitting(true);
+          try {
+            await onReviewVerdict(origIndex, "pass", "");
+          } finally {
+            setSubmitting(false);
+          }
         }}
+        disabled={submitting}
         style={{
           padding: "4px 12px",
           fontSize: 11,
@@ -1024,10 +1035,11 @@ function ReviewerSection({
           borderRadius: 4,
           background: "rgba(34,197,94,0.1)",
           color: "#22c55e",
-          cursor: "pointer",
+          cursor: submitting ? "default" : "pointer",
+          opacity: submitting ? 0.6 : 1,
         }}
       >
-        Confirm Pass
+        {submitting ? "Saving…" : "✓ Pass"}
       </button>
       <button
         onClick={(e) => {

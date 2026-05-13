@@ -1475,6 +1475,56 @@ def get_call_script_checkpoints(call_id: str, db: Session = Depends(get_db)):
     }
 
 
+@router.get("/api/calls/{call_id}/segments")
+def get_call_segments(call_id: str, db: Session = Depends(get_db)):
+    """Return the per-segment verdicts the new pipeline writes (Plan §5b).
+
+    One row per CallSegment, with the stage / score / bucket / breach counts
+    + a parsed `checkpoints` list. Used by the SegmentCards component on the
+    call-detail page to render a card per detected segment.
+    """
+    from app.models import CallSegment as _CallSegment
+
+    call = db.query(Call).filter_by(id=call_id).first()
+    if not call:
+        raise HTTPException(404, "Call not found")
+
+    rows = (
+        db.query(_CallSegment)
+        .filter(_CallSegment.call_id == call_id)
+        .order_by(_CallSegment.idx.asc())
+        .all()
+    )
+
+    out = []
+    for s in rows:
+        try:
+            cps = json.loads(s.checkpoint_results) if s.checkpoint_results else []
+        except (TypeError, ValueError):
+            cps = []
+        out.append(
+            {
+                "id": s.id,
+                "idx": s.idx,
+                "stage": s.stage,
+                "confidence": float(s.confidence) if s.confidence is not None else None,
+                "start_word_idx": s.start_word_idx,
+                "end_word_idx": s.end_word_idx,
+                "score": s.score,
+                "bucket": s.bucket,
+                "compliant": s.compliant,
+                "compliance_status": s.compliance_status,
+                "critical_breaches": s.critical_breaches or 0,
+                "high_breaches": s.high_breaches or 0,
+                "medium_breaches": s.medium_breaches or 0,
+                "reason": s.reason,
+                "script_id": s.script_id,
+                "checkpoints": cps,
+            }
+        )
+    return {"call_id": call_id, "segments": out}
+
+
 @router.get("/api/calls/{call_id}", response_model=CallResponse)
 def get_call(call_id: str, db: Session = Depends(get_db)):
     # selectinload, not joinedload: Call rows are huge (transcripts + word_data

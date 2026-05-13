@@ -195,6 +195,10 @@ export type DeadReasonsResponse = {
 export type Rejection = {
   id: string;
   call_id: string | null;
+  // Customer's human-readable label. The backend joins to Customer.legal_name
+  // when populating this; falls back to null. Prefer over `customer_slug`
+  // (URL-style identifier) for any user-facing display.
+  customer_name: string | null;
   customer_slug: string | null;
   external_watt_site_id: number | null;
   supplier: string | null;

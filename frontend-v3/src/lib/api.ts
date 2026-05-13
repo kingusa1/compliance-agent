@@ -122,6 +122,12 @@ export type QueueMetrics = {
   leaderboard: { reviewer_id: string; name: string; count: number }[];
 };
 
+export type QueueSegment = {
+  stage: string;
+  score: string | null;
+  bucket: string | null;
+};
+
 export type QueueCall = {
   id: string;
   filename: string;
@@ -133,10 +139,12 @@ export type QueueCall = {
   created_at: string | null;
   review_status: string;
   compliance_status: string;
+  bucket?: string | null;
   flagged_count: number;
   claimed_by: string | null;
   reviewed_by: string | null;
   reviewed_at: string | null;
+  segments?: QueueSegment[];
 };
 
 export type QueueResponse = {

@@ -17,7 +17,13 @@ import { Search, ChevronDown } from "lucide-react";
 import { getAgentsListQuery } from "@/lib/queries/aggregator";
 import { Pill } from "@/components/design/Pill";
 
-const COL = "1.5fr 90px 100px 110px 90px 100px 100px 110px";
+const COL = "1.5fr 90px 110px 130px 90px 100px 100px 110px";
+
+function pctOf(num: number, denom: number): string {
+  if (!denom || denom <= 0) return "—";
+  const p = Math.round((num / denom) * 100);
+  return `${p}%`;
+}
 
 function HeaderCell({ children }: { children: React.ReactNode }) {
   return (
@@ -167,8 +173,8 @@ export default function AgentsPage() {
         >
           <HeaderCell>Agent</HeaderCell>
           <HeaderCell>Total</HeaderCell>
-          <HeaderCell>Compliant</HeaderCell>
-          <HeaderCell>Non-compliant</HeaderCell>
+          <HeaderCell>Compliant %</HeaderCell>
+          <HeaderCell>Non-compliant %</HeaderCell>
           <HeaderCell>Flags</HeaderCell>
           <HeaderCell>Directives</HeaderCell>
           <HeaderCell>Last Call</HeaderCell>
@@ -239,18 +245,30 @@ export default function AgentsPage() {
                         fontFamily: "var(--font-mono)",
                         color: "var(--emerald)",
                         fontVariantNumeric: "tabular-nums",
+                        display: "flex",
+                        alignItems: "baseline",
+                        gap: 6,
                       }}
                     >
-                      {r.compliant}
+                      <span>{pctOf(r.compliant, r.total_calls)}</span>
+                      <span style={{ color: "var(--text-faint)", fontSize: 11 }}>
+                        ({r.compliant}/{r.total_calls})
+                      </span>
                     </div>
                     <div
                       style={{
                         fontFamily: "var(--font-mono)",
                         color: r.non_compliant > 10 ? "var(--red)" : "var(--text-muted)",
                         fontVariantNumeric: "tabular-nums",
+                        display: "flex",
+                        alignItems: "baseline",
+                        gap: 6,
                       }}
                     >
-                      {r.non_compliant}
+                      <span>{pctOf(r.non_compliant, r.total_calls)}</span>
+                      <span style={{ color: "var(--text-faint)", fontSize: 11 }}>
+                        ({r.non_compliant}/{r.total_calls})
+                      </span>
                     </div>
                     <div
                       style={{

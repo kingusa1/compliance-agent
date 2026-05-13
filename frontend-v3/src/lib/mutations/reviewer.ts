@@ -214,6 +214,11 @@ export function useSubmitVerdict() {
       qc.invalidateQueries({ queryKey: reviewerKeys.callDetail(callId) });
       qc.invalidateQueries({ queryKey: ["queue"] });
       qc.invalidateQueries({ queryKey: reviewerKeys.findings() });
+      // Plan §5c: tracker rows mirror call verdicts — invalidate them on
+      // every verdict submit so the /tracker page refreshes without a
+      // manual reload.
+      qc.invalidateQueries({ queryKey: ["admin", "tracker"] });
+      qc.invalidateQueries({ queryKey: ["admin-calls"] });
       // W2: invalidate the rejections list when an auto-rejection landed so
       // the /rejections page picks up the new row without a hard reload.
       if (data?.auto_rejection_id) {

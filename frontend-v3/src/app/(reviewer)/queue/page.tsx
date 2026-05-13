@@ -39,7 +39,6 @@ import { Pill } from "@/components/design/Pill";
 import { FilterChip } from "@/components/design/FilterChip";
 import { EmptyState } from "@/components/design/EmptyState";
 import { Waveform } from "@/components/design/Waveform";
-import { HelpBanner } from "@/components/design/HelpBanner";
 
 import type { QueueCall } from "@/lib/api";
 
@@ -65,6 +64,44 @@ function statusPill(status: string) {
   // Everything else (unclaimed, in_review legacy) renders as Pending.
   return <Pill tone="neutral" dot>Pending</Pill>;
 }
+
+// Plan §5a: the second pill on each queue row is the AI's verdict (X/N
+// from the per-segment aggregator) plus a Coaching/Review/Block marker.
+function aiVerdictPill(row: QueueCall) {
+  const score = (row as QueueCall & { score?: string | null }).score;
+  if (!score) {
+    return <Pill tone="neutral" mono>AI: …</Pill>;
+  }
+  const bucket = (row.bucket || row.compliance_status || "").toLowerCase();
+  let tone: "emerald" | "amber" | "red" | "neutral" = "neutral";
+  let marker = "";
+  if (bucket === "pass" || bucket === "compliant") {
+    tone = "emerald";
+    marker = "✓";
+  } else if (bucket === "coaching") {
+    tone = "amber";
+    marker = "⚠";
+  } else if (bucket === "review" || bucket === "pending") {
+    tone = "amber";
+    marker = "⚠";
+  } else if (bucket === "blocked" || bucket === "non_compliant") {
+    tone = "red";
+    marker = "✗";
+  }
+  return (
+    <Pill tone={tone} mono>
+      AI: {score} {marker}
+    </Pill>
+  );
+}
+
+// Map call_type / stage codes to a short human label for the segments column.
+const STAGE_LABEL: Record<string, string> = {
+  lead_gen: "Lead Gen",
+  pre_sales: "Pre-Sales",
+  verbal: "Verbal",
+  loa: "LOA",
+};
 
 function formatRelative(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -121,7 +158,8 @@ function ScoreBar({ pct }: { pct: number }) {
   );
 }
 
-const COL_TEMPLATE = "84px 1.4fr 1fr 1fr 110px 110px";
+// Plan §5a columns: When · Customer · Supplier · Segments · Score · AI · Review
+const COL_TEMPLATE = "76px 1.3fr 1fr 1fr 100px 110px 110px";
 
 function QueueRow({
   row,
@@ -133,6 +171,12 @@ function QueueRow({
   onClick: () => void;
 }) {
   const pct = scorePctOf((row as QueueCall & { score?: string }).score ?? null);
+  const segs = row.segments ?? [];
+  const segLabel =
+    segs.length > 0
+      ? segs.map((s) => STAGE_LABEL[s.stage] ?? s.stage).join(" · ")
+      : "—";
+  const reviewed = (row.review_status || "").toLowerCase() === "reviewed";
   return (
     <div
       onClick={onClick}
@@ -162,23 +206,39 @@ function QueueRow({
             whiteSpace: "nowrap",
           }}
         >
-          {row.filename}
+          {row.customer_name ?? "(unknown customer)"}
         </div>
         <div
           style={{
             color: "var(--text-faint)",
-            fontSize: 12,
+            fontSize: 11.5,
             fontFamily: "var(--font-mono)",
             marginTop: 2,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
           }}
+          title={row.filename}
         >
-          {row.id.slice(0, 8)}
+          {row.filename}
         </div>
       </div>
       <div style={{ color: "var(--text-primary)" }}>{row.supplier ?? "—"}</div>
-      <div style={{ color: "var(--text-muted)" }}>—</div>
+      <div
+        style={{
+          color: "var(--text-muted)",
+          fontSize: 12,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+        title={segLabel}
+      >
+        {segLabel}
+      </div>
       <ScoreBar pct={pct} />
-      <div>{statusPill(row.review_status)}</div>
+      <div>{aiVerdictPill(row)}</div>
+      <div>{reviewed ? statusPill(row.review_status) : <Pill tone="amber" dot>To Review</Pill>}</div>
     </div>
   );
 }
@@ -533,18 +593,42 @@ export default function QueuePage() {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 300);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Plan §5a: hide rows still mid-pipeline (score=null OR 0%) by default —
+  // they confuse reviewers ("0% means nothing"). Toggle reveals them.
+  const [showProcessing, setShowProcessing] = useState(false);
   const queue = useQueueQuery(filter);
 
   const filteredCalls: QueueCall[] = useMemo(() => {
-    const calls = queue.data?.calls ?? [];
+    let calls = queue.data?.calls ?? [];
+    if (!showProcessing) {
+      calls = calls.filter((c) => {
+        const sc = (c as QueueCall & { score?: string | null }).score;
+        if (!sc) return false;
+        const m = sc.match(/(\d+)\s*\/\s*(\d+)/);
+        if (m && Number(m[2]) === 0) return false;
+        if (m && Number(m[1]) === 0 && Number(m[2]) > 0) return false;
+        return true;
+      });
+    }
     if (!debouncedSearch.trim()) return calls;
     const q = debouncedSearch.toLowerCase();
     return calls.filter(
       (c) =>
         (c.filename ?? "").toLowerCase().includes(q) ||
-        (c.supplier ?? "").toLowerCase().includes(q),
+        (c.supplier ?? "").toLowerCase().includes(q) ||
+        (c.customer_name ?? "").toLowerCase().includes(q) ||
+        (c.agent_name ?? "").toLowerCase().includes(q),
     );
-  }, [queue.data?.calls, debouncedSearch]);
+  }, [queue.data?.calls, debouncedSearch, showProcessing]);
+
+  const processingCount = (queue.data?.calls ?? []).filter((c) => {
+    const sc = (c as QueueCall & { score?: string | null }).score;
+    if (!sc) return true;
+    const m = sc.match(/(\d+)\s*\/\s*(\d+)/);
+    if (m && Number(m[2]) === 0) return true;
+    if (m && Number(m[1]) === 0 && Number(m[2]) > 0) return true;
+    return false;
+  }).length;
 
   const effectiveSelected =
     selectedId && filteredCalls.some((c) => c.id === selectedId)
@@ -668,10 +752,6 @@ export default function QueuePage() {
         </button>
       </div>
 
-      <HelpBanner id="queue" title="How to work the Queue" href="/guide#review-queue">
-        Each card is a call the AI thinks needs reviewer attention. Open a call to see the AI verdict, listen to the audio, then accept or override. Your verdict is the audit-of-record — it overrides the AI on conflict. No claim/lock step — anyone can pick up any pending call.
-      </HelpBanner>
-
       {/* Error banner */}
       {queue.isError ? (
         <div
@@ -736,9 +816,10 @@ export default function QueuePage() {
               <HeaderCell>When</HeaderCell>
               <HeaderCell>Customer</HeaderCell>
               <HeaderCell>Supplier</HeaderCell>
-              <HeaderCell>Agent</HeaderCell>
+              <HeaderCell>Segments</HeaderCell>
               <HeaderCell>Score</HeaderCell>
-              <HeaderCell>Status</HeaderCell>
+              <HeaderCell>AI Verdict</HeaderCell>
+              <HeaderCell>Review</HeaderCell>
             </div>
           )}
           <div style={{ flex: 1, overflowY: "auto" }} className="ca-scroll">

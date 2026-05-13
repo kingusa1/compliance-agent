@@ -19,14 +19,13 @@ import {
   Inbox,
   Users,
   ListChecks,
+  ListMusic,
   BarChart3,
   Settings as SettingsIcon,
   Briefcase,
   ShieldCheck,
   ShieldAlert,
-  Activity,
   AlertTriangle,
-  Send,
   Table as TableIcon,
   LayoutDashboard,
   BookOpen,
@@ -62,13 +61,15 @@ const NAV_ITEMS: NavItem[] = [
   // ── Catalogue — operational data ──────────────────────────────
   { key: "customers",     label: "Customers",     icon: Users,        href: "/customers",      roles: ["admin", "lead"], section: "Catalogue" },
   { key: "deals",         label: "Deals",         icon: Briefcase,    href: "/deals",          roles: ["admin", "lead"] },
+  { key: "calls",         label: "All Calls",     icon: ListMusic,    href: "/calls",          roles: ["admin", "lead"] },
   { key: "agents",        label: "Agents",        icon: BarChart3,    href: "/agents",         roles: ["admin", "lead"] },
   { key: "scripts",       label: "Scripts",       icon: ListChecks,   href: "/scripts",        roles: ["admin", "lead"] },
 
   // ── Audit — verdict trails ────────────────────────────────────
   { key: "compliant",     label: "Compliant",     icon: ShieldCheck,  href: "/compliant",      roles: ["admin", "lead"], section: "Audit" },
   { key: "non-compliant", label: "Non-compliant", icon: ShieldAlert,  href: "/non-compliant",  roles: ["admin", "lead"] },
-  { key: "observability", label: "Observability", icon: Activity,     href: "/observability",  roles: ["admin", "lead"] },
+  // 2026-05-13: /observability route file still exists but is no longer
+  // surfaced in the sidebar — moved out of reviewer/admin daily flow.
 
   // ── System — configuration + reference ──────────────────────
   { key: "settings",      label: "Settings",      icon: SettingsIcon, href: "/settings",       roles: ["admin", "lead"], section: "System" },

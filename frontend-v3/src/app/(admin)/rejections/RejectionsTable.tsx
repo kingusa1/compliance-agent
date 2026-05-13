@@ -171,7 +171,11 @@ export function RejectionsTable({
         ) : (
           rejections.map((row) => {
             const selected = row.id === selectedId;
-            const customer = row.customer_slug || "—";
+            // Prefer the human customer_name; fall back to slug, then dash.
+            // The slug was originally rendered as the user-visible label,
+            // which surfaced URL-style strings ("acme-energy-ltd") instead of
+            // a clean trading name. Plan §5d: surface customer_name here.
+            const customer = row.customer_name || row.customer_slug || "—";
             return (
               <div
                 key={row.id}

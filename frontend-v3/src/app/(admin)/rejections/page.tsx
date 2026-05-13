@@ -20,7 +20,6 @@ import {
 } from "@/lib/queries/rejections";
 import { RejectionsTable } from "./RejectionsTable";
 import { RejectionDetailPanel } from "./RejectionDetailPanel";
-import { HelpBanner } from "@/components/design/HelpBanner";
 
 const TABS: RejectionTab[] = ["active", "fixed", "dead", "archive"];
 
@@ -70,9 +69,6 @@ export default function RejectionsPage() {
         </div>
       </header>
 
-      <HelpBanner id="rejections" title="What is a Rejection?" href="/guide#rejections">
-        A rejection is created automatically when the AI scores a call below the compliance threshold. Each one flows <strong>Active → Fixed</strong> when the agent fixes the issue, or <strong>Active → Dead</strong> when the deal is unrecoverable. Click any row to see the AI&rsquo;s reasoning + a structured fix plan.
-      </HelpBanner>
 
       {/* Tab strip */}
       <div className="flex flex-wrap items-center gap-1 border-b border-[var(--border-subtle)] px-6 py-2">

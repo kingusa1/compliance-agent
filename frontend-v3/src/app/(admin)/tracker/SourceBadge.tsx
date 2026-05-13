@@ -17,6 +17,11 @@ export function SourceBadge({
   source: TrackerFieldSource;
   previousValue?: string | null;
 }) {
+  // Plan §5c: drop "AI" labels in tracker cells — every value is AI-derived
+  // unless a reviewer has confirmed it, so the badge is redundant. We keep
+  // the "Human / XLSX / API" sources visible so reviewers still see what
+  // they've signed off on; AI + placeholder render nothing.
+  if (source === "ai" || source === "placeholder") return null;
   const s = STYLES[source];
   return (
     <span

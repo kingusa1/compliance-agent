@@ -246,6 +246,9 @@ from app.tracker_edit_routes import tracker_edit_router
 app.include_router(tracker_edit_router)
 # v3-tracker: admin XLSX-import endpoint (POST /api/admin/import-tracker-xlsx).
 app.include_router(import_xlsx_router)
+# Plan §5f: dashboard intelligence panel (read-only aggregations).
+from app.intelligence_routes import intelligence_router
+app.include_router(intelligence_router)
 
 # L6: rag_ingest fires on `call/finalized` and `script/changed`. Adding the
 # two new functions next to the L1 watchdog so Inngest discovers them.

@@ -32,8 +32,8 @@ import {
 
 import { apiFetch } from "@/lib/api";
 import { UploadModal } from "@/app/(admin)/calls/UploadModal";
-import { HelpBanner } from "@/components/design/HelpBanner";
 import { fetchQueue } from "@/lib/queries/reviewer";
+import { IntelligencePanel } from "./IntelligencePanel";
 
 interface StatsResponse {
   total_calls: number;
@@ -214,14 +214,6 @@ export default function DashboardPage() {
         </button>
       </header>
 
-      <HelpBanner id="dashboard" title="How it works" href="/guide">
-        Upload a call (green button, top-right). The pipeline auto-runs:
-        Deepgram transcribes &amp; labels speakers → Opus 4.7 detects supplier,
-        matches script, scores every checkpoint → flagged calls land in the{" "}
-        <strong>Review Queue</strong>, clean ones in <strong>Compliant</strong>.
-        No manual tagging — just upload and review.
-      </HelpBanner>
-
       <div className="space-y-6 px-6 py-6">
         {/* KPI strip */}
         <section
@@ -355,10 +347,13 @@ export default function DashboardPage() {
             })}
           </div>
           <div className="mt-3 text-[12px] text-[var(--text-muted)]">
-            More pages (Customers, Deals, Scripts, Rejections, Observability,
-            Compliant, Non-compliant) are in the left sidebar.
+            More pages (Customers, Deals, Scripts, Rejections, Compliant,
+            Non-compliant) are in the left sidebar.
           </div>
         </section>
+
+        {/* Intelligence panel — only render once we have data to chart. */}
+        {!isFreshInstall ? <IntelligencePanel /> : null}
 
         {/* Recent activity */}
         {!isFreshInstall ? (

@@ -173,12 +173,26 @@ export function TranscriptTimeline({
             >
               {formatT(line.start)}
             </button>
+            {/* Plan §5b: make AGENT / CUSTOMER role loud — bold, larger,
+                strong color so a reviewer scanning the transcript can tell
+                who is speaking at a glance. */}
             <div
-              className={`font-medium ${
+              className={`font-bold uppercase tracking-wide ${
                 line.speaker.toUpperCase() === "AGENT"
                   ? "text-[var(--blue-coaching)]"
                   : "text-[var(--amber-review)]"
               }`}
+              style={{
+                fontSize: 11,
+                letterSpacing: "0.08em",
+                padding: "0 6px",
+                borderRadius: 3,
+                background:
+                  line.speaker.toUpperCase() === "AGENT"
+                    ? "color-mix(in oklab, var(--blue-coaching) 14%, transparent)"
+                    : "color-mix(in oklab, var(--amber-review) 14%, transparent)",
+                display: "inline-block",
+              }}
             >
               {line.speaker.toUpperCase()}
             </div>

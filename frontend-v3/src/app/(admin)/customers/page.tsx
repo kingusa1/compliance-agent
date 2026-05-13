@@ -18,7 +18,6 @@ import { useUrlState } from "@/lib/hooks/useUrlState";
 import { Pill, type PillTone } from "@/components/design/Pill";
 import { WorkflowTypePill } from "@/components/design/WorkflowTypePill";
 import { EmptyState } from "@/components/design/EmptyState";
-import { HelpBanner } from "@/components/design/HelpBanner";
 import { CursorPagination } from "@/components/shared/CursorPagination";
 import { AddCustomerDialog } from "./AddCustomerDialog";
 
@@ -207,9 +206,6 @@ export default function CustomersListPage() {
         />
       </div>
 
-      <HelpBanner id="customers" title="Customer rollup" href="/guide#lifecycle">
-        Each row is a customer (legal name) with a count of deals + calls. Click a row to see every deal grouped by lifecycle stage and the supplier-specific workflow: <strong>E.ON = 3 stages</strong> (Lead Gen → Passover → Closer, LOA bundled) · <strong>everyone else = 4 stages</strong> (+ Standalone LOA). Suppliers and agent names are auto-detected from the call audio. See the full <a href="/guide#lifecycle" style={{color: 'var(--emerald)'}}>lifecycle guide</a>.
-      </HelpBanner>
 
       {/* Table */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>

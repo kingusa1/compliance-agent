@@ -169,6 +169,10 @@ type AggDef = {
   border: string;
 };
 
+// Plan §5b: the reviewer surfaces ONLY three buckets at the top —
+// Pass / Non-Compliant / Needs Review. COACHING + BLOCK still exist
+// server-side (mapped from the severity-weighted bucket); we just stop
+// rendering them as buttons so the reviewer has a smaller decision space.
 const AGG_OPTIONS: AggDef[] = [
   {
     key: "PASS",
@@ -182,7 +186,7 @@ const AGG_OPTIONS: AggDef[] = [
   },
   {
     key: "REVIEW",
-    label: "Review",
+    label: "Needs Review",
     Icon: AlertTriangle,
     fillBg: "var(--amber)",
     fillFg: "#1a1100",
@@ -191,34 +195,14 @@ const AGG_OPTIONS: AggDef[] = [
     border: "var(--amber-border)",
   },
   {
-    key: "COACHING",
-    label: "Coaching",
-    Icon: GraduationCap,
-    fillBg: "var(--blue)",
-    fillFg: "#04162a",
-    bg: "var(--blue-bg)",
-    fg: "var(--blue)",
-    border: "var(--blue-border)",
-  },
-  {
     key: "FAIL",
-    label: "Fail",
+    label: "Non-Compliant",
     Icon: XCircle,
     fillBg: "var(--red)",
     fillFg: "#fff",
     bg: "var(--red-bg)",
     fg: "var(--red)",
     border: "var(--red-border)",
-  },
-  {
-    key: "BLOCK",
-    label: "Block",
-    Icon: Ban,
-    fillBg: "var(--violet)",
-    fillFg: "#100a1f",
-    bg: "var(--violet-bg)",
-    fg: "var(--violet)",
-    border: "var(--violet-border)",
   },
 ];
 
@@ -687,12 +671,17 @@ export function VerdictTab(props: VerdictTabProps) {
     );
   }
 
+  // Plan §5b: only surface risk tags when the reviewer's aggregate verdict
+  // is Needs Review or Non-Compliant. Pass-bound calls don't need them.
+  const showRiskTags = aggregate === "REVIEW" || aggregate === "FAIL";
+
   return (
     <div
       data-testid="verdict-tab"
       style={{ padding: 20, display: "flex", flexDirection: "column", gap: 18 }}
     >
-      {/* W1.5 — risk-tag chip strip */}
+      {/* W1.5 — risk-tag chip strip (conditional per Plan §5b) */}
+      {showRiskTags ? (
       <div data-testid="verdict-risk-tags" data-slot="risk-tags-strip">
         <div
           style={{
@@ -741,6 +730,7 @@ export function VerdictTab(props: VerdictTabProps) {
           })}
         </div>
       </div>
+      ) : null}
 
       {/* Aggregate verdict ───────────────────────────────────────── */}
       <div>
@@ -797,7 +787,7 @@ export function VerdictTab(props: VerdictTabProps) {
         <div
           role="radiogroup"
           aria-label="Aggregate verdict"
-          style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}
+          style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}
         >
           {AGG_OPTIONS.map((v) => {
             const isChosen = aggregate === v.key;
@@ -1000,9 +990,11 @@ export function VerdictTab(props: VerdictTabProps) {
         />
       </div>
 
-      {/* Email preview ────────────────────────────────────────────── */}
+      {/* Email preview — Plan §5b: "Coming soon" stub, label is visually
+          disabled and toggling is blocked. Server endpoint stays parked. */}
       <div>
         <label
+          title="Coming soon — agent feedback emails are not wired up yet"
           style={{
             display: "flex",
             alignItems: "center",
@@ -1011,41 +1003,46 @@ export function VerdictTab(props: VerdictTabProps) {
             background: "var(--bg-elev2)",
             border: "1px solid var(--border-subtle)",
             borderRadius: 6,
-            cursor: "pointer",
+            cursor: "not-allowed",
+            opacity: 0.55,
             marginBottom: 8,
           }}
         >
           <div
-            onClick={(e) => {
-              e.preventDefault();
-              setSendEmail((v) => !v);
-            }}
             style={{
               width: 28,
               height: 16,
               borderRadius: 8,
-              background: sendEmail ? "var(--emerald)" : "var(--border-strong)",
+              background: "var(--border-strong)",
               position: "relative",
               flexShrink: 0,
-              transition: "background 100ms",
             }}
           >
             <div
               style={{
                 position: "absolute",
                 top: 2,
-                left: sendEmail ? 14 : 2,
+                left: 2,
                 width: 12,
                 height: 12,
                 borderRadius: 6,
                 background: "#fff",
-                transition: "left 120ms ease",
               }}
             />
           </div>
           <Mail size={14} color="var(--text-muted)" />
           <div style={{ flex: 1, fontSize: 13, color: "var(--text-primary)" }}>
             Send feedback email to agent
+            <span
+              style={{
+                marginLeft: 8,
+                fontSize: 11,
+                color: "var(--text-faint)",
+                fontStyle: "italic",
+              }}
+            >
+              · Coming soon
+            </span>
           </div>
           <button
             type="button"
