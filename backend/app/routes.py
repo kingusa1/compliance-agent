@@ -1967,10 +1967,21 @@ async def admin_ingest_script_checkpoints(
         )
         if apply and cps:
             s.checkpoints = json.dumps(cps)
+            # Commit per-script so Railway's 5-min proxy timeout doesn't
+            # lose all progress on the long-running prose-heavy scripts.
+            # Each LLM call can take 30-90s; bundling 5+ extractions into
+            # a single transaction was timing out at the gateway before
+            # any rows landed.
+            try:
+                db.commit()
+            except Exception as commit_err:
+                log.warning(
+                    f"ingest commit failed for script "
+                    f"{s.id}: {commit_err}"
+                )
+                db.rollback()
 
-    if apply:
-        db.commit()
-    else:
+    if not apply:
         db.rollback()
 
     return {
