@@ -326,7 +326,7 @@ const STAGE_DETAILS: {
     key: "verbal",
     label: "Verbal",
     blurb:
-      "Legally-binding verbal contract reading. Closer agent reads the supplier script, customer agrees, deal is captured. For E.ON, the LOA section is bundled INTO this segment.",
+      "Legally-binding verbal contract reading. Closing agent reads the supplier script, customer agrees, deal is captured. For E.ON, the LOA section is bundled INTO this segment.",
     filenameHints: ["verbal.mp3", "closer.mp3", "full call.mp3"],
   },
   {
@@ -602,16 +602,16 @@ export default function GuidePage() {
           {/* Headline rule */}
           <div className="mb-5 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 text-[13px] leading-relaxed text-emerald-100/90">
             <strong className="text-emerald-100">E.ON Next requires 3 stages</strong>{" "}
-            (Lead Gen → Passover → Closer; LOA is bundled into the Closer).{" "}
+            (Lead Gen → Pre-Sales → Verbal; LOA wording is bundled into the Verbal segment).{" "}
             <strong className="text-emerald-100">Every other supplier requires 4 stages</strong>{" "}
-            (+ Standalone LOA as a separately-recorded call).{" "}
-            <strong className="text-emerald-100">Amendment</strong> and{" "}
-            <strong className="text-emerald-100">C-Call</strong> are corrective stages
-            available to any supplier; they never block verification.
+            (+ a separately-recorded LOA segment after the Verbal contract).{" "}
+            The new 2026-05-12 content classifier emits these segments
+            <strong className="text-emerald-100"> automatically</strong> from the audio — the
+            reviewer never picks a call_type at upload.
           </div>
 
-          {/* The 6 lifecycle stages */}
-          <h3 className="mb-2 text-[14px] font-semibold text-[var(--text-primary)]">The 6 lifecycle stages</h3>
+          {/* The 4 canonical stages */}
+          <h3 className="mb-2 text-[14px] font-semibold text-[var(--text-primary)]">The 4 canonical stages</h3>
           <p className="mb-3 text-[12.5px] text-[var(--text-muted)]">
             Every recording you upload is classified as one of these stages.
             Classification happens (a) from the filename if the basename matches a known
@@ -693,24 +693,24 @@ export default function GuidePage() {
             ))}
           </ul>
           <p className="mt-3 text-[12.5px] leading-relaxed text-[var(--text-muted)]">
-            A <code className="font-mono text-[11.5px]">full call.mp3</code> recording is
-            treated specially — because such a file usually captures the entire
-            E.ON-style bundled flow in one go, it counts as covering{" "}
-            <strong>Lead Gen + Passover + Closer</strong> simultaneously, which is enough
-            to verify any E.ON deal on its own.
+            A single recording can contain MULTIPLE segments — an E.ON-style
+            closer typically packs <strong>Pre-Sales + Verbal + LOA</strong> into one
+            audio file. The 2026-05-12 content classifier slices the transcript by
+            word-index boundaries and grades each segment against its own rubric;
+            the call-level verdict aggregates worst-bucket-wins across segments.
           </p>
 
-          {/* How the AI classifies call_type from the transcript */}
+          {/* How the AI classifies the segments inside a recording */}
           <h3 className="mt-6 mb-2 text-[14px] font-semibold text-[var(--text-primary)]">
-            How the AI decides which stage a recording is
+            How the AI decides which segments a recording contains
           </h3>
           <p className="mb-3 text-[12.5px] leading-relaxed text-[var(--text-muted)]">
-            Stage classification used to rely on the filename (<code className="font-mono text-[11.5px]">lead.mp3</code>,{" "}
-            <code className="font-mono text-[11.5px]">passover.mp3</code>, etc.) which
-            broke whenever suppliers shipped recordings with generic names. As of
-            2026-05-11 the system reads the transcript and asks{" "}
-            <strong>Claude Opus 4.7</strong> to pick one of the six stages.
-            Filenames are ignored. The rule the model is given:
+            Before the 2026-05-12 rebuild, stage was guessed from the filename and
+            the whole recording got ONE rubric — so an E.ON closer that legitimately
+            mixed pre-sales + verbal + LOA wording was graded against a single
+            checklist. Now <strong>Claude Opus 4.7</strong> reads the transcript and
+            emits 1-4 segments with word-index boundaries; each segment routes to
+            its own rubric. Filenames are ignored. The rule the model is given:
           </p>
           <div className="overflow-hidden rounded-xl border border-[var(--border-subtle)]">
             <table className="w-full text-[12.5px]">
@@ -735,12 +735,13 @@ export default function GuidePage() {
             </table>
           </div>
           <p className="mt-3 text-[12.5px] leading-relaxed text-[var(--text-muted)]">
-            If the classifier can&apos;t make a clean call (transcript too short, single
-            voice indistinguishable), the recording stays as{" "}
-            <code className="font-mono text-[11.5px]">full</code> and the lifecycle
-            resolver treats it as Lead Gen + Passover + Closer for the E.ON-style flow.
-            Reviewers can always override the stage on the call detail page; once a
-            reviewer has signed off, the classifier won&apos;t overwrite their choice.
+            If the classifier can&apos;t identify any segment with confidence &gt;= 0.5
+            (transcript too short, single voice indistinguishable, garbled audio), the
+            call lands as <code className="font-mono text-[11.5px]">needs_classification</code>
+            for manual triage. Reviewers can re-assign segments on the call detail
+            page; the SegmentCards stack on the Checkpoints tab + the inline
+            chips on the call header show the AI&apos;s detected segments together with
+            classifier confidence so the reviewer can audit at a glance.
           </p>
         </Section>
 
