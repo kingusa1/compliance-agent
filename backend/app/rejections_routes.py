@@ -259,13 +259,15 @@ def list_rejections(
         description="W4.6 — restrict the dead tab to one of DEAD_REASONS keys.",
     ),
     source: str = Query(
-        "reviewer",
+        "all",
         regex="^(reviewer|ai|all)$",
         description=(
-            "2026-05-12 client feedback — by default only return rejections "
-            "opened manually by the reviewer (confirmed_by IS NOT NULL). "
-            "Pass source=all to include AI-auto rows for audit; source=ai "
-            "to only see legacy AI-auto rows."
+            "2026-05-12 client feedback — Phase 4 contract is enforced at "
+            "create-time (pipeline._step_finalize no longer auto-creates "
+            "Rejection rows). This filter now defaults to 'all' so the "
+            "rejections list shows everything in the DB; pass "
+            "source=reviewer to surface only rows confirmed by a human "
+            "(confirmed_by IS NOT NULL), or source=ai for legacy AI-auto."
         ),
     ),
     offset: int = Query(0, ge=0),
@@ -299,10 +301,11 @@ def list_rejections(
             | (Rejection.sales_agent.ilike(like))
         )
 
-    # 2026-05-12 client feedback: by default only show rejections opened
-    # by a human reviewer (confirmed_by IS NOT NULL is our current proxy
-    # for "reviewer touched this"). Callers pass source='all' to see
-    # everything; source='ai' to see only legacy AI-auto rows.
+    # 2026-05-12 client feedback: Phase 4 stopped auto-creating Rejection
+    # rows in pipeline._step_finalize. So the in-DB population is now
+    # reviewer-initiated by construction. The filter below is opt-in:
+    # reviewer-only callers pass ?source=reviewer (confirmed_by IS NOT
+    # NULL); ?source=ai narrows to legacy AI-auto rows still in the DB.
     if source == "reviewer":
         q = q.filter(Rejection.confirmed_by.isnot(None))
     elif source == "ai":

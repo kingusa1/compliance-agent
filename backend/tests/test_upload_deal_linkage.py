@@ -55,7 +55,7 @@ def _upload(**form_fields):
 
 def test_upload_auto_creates_deal_from_customer_name():
     name = f"AutoDealCo-{uuid.uuid4().hex[:6]}"
-    r = _upload(customer_name=name, call_type="closer")
+    r = _upload(customer_name=name, call_type="verbal")
     assert r.status_code in (200, 201), r.text
     body = r.json()
 
@@ -70,7 +70,7 @@ def test_upload_auto_creates_deal_from_customer_name():
         call = db.query(Call).filter(Call.id == call_id).first()
         assert call is not None
         assert call.deal_id == deal.id
-        assert call.call_type == "closer"
+        assert call.call_type == "verbal"
     finally:
         db.close()
 
@@ -100,7 +100,7 @@ def test_upload_uses_explicit_deal_id_when_given():
     finally:
         db.close()
 
-    r = _upload(deal_id=did, call_type="amendment")
+    r = _upload(deal_id=did, call_type="loa")
     assert r.status_code in (200, 201), r.text
     body = r.json()
     call_id = body.get("id") or body.get("call_id")
@@ -109,7 +109,7 @@ def test_upload_uses_explicit_deal_id_when_given():
         call = db.query(Call).filter(Call.id == call_id).first()
         assert call is not None
         assert str(call.deal_id) == did
-        assert call.call_type == "amendment"
+        assert call.call_type == "loa"
     finally:
         db.close()
 
