@@ -20,11 +20,14 @@ import { Pill, type PillTone } from "@/components/design/Pill";
 import { WorkflowTypePill } from "@/components/design/WorkflowTypePill";
 import { UploadModal } from "@/app/(admin)/calls/UploadModal";
 import {
-  CORRECTIVE_PHASES,
   PHASE_LABEL,
+  SEGMENT_PARENT,
+  TOPLEVEL_LABEL,
   isEonSupplier,
   workflowStepsFor as _workflowStepsForShared,
   workflowSummary,
+  type SegmentStage,
+  type TopLevelStage,
 } from "@/lib/workflow";
 
 /** W1.1 (v3-watt-coverage): build the Watt portal deep-link URL. */
@@ -119,10 +122,15 @@ function WorkflowBar({
   current: number;
   supplier?: string | null;
 }) {
-  const correctiveSet = new Set<string>([...CORRECTIVE_PHASES]);
-  const requiredCount = steps.filter((s) => !correctiveSet.has(s)).length;
   const eon = isEonSupplier(supplier);
   const summary = supplier ? workflowSummary(supplier) : undefined;
+  // Group the inner segments under the 2 top-level deal stages
+  // (Opener / Closer) — 2026-05-14 model.
+  const groups: Record<TopLevelStage, string[]> = { opener: [], closer: [] };
+  for (const s of steps) {
+    const parent = SEGMENT_PARENT[s as SegmentStage];
+    if (parent) groups[parent].push(s);
+  }
 
   return (
     <div style={{ marginTop: 10 }}>
@@ -140,23 +148,23 @@ function WorkflowBar({
         <WorkflowTypePill supplier={supplier ?? null} />
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: 10, color: "var(--text-faint)" }}>
-          {requiredCount} required · {steps.length - requiredCount} corrective
-          {" · "}hover for details
+          2 stages · Opener + Closer
+          {" · "}{eon ? "LOA bundled in Closer" : "LOA is a DocuSign document, not a recording"}
         </span>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
         {steps.map((s, i) => {
           const done = i < current;
           const active = i === current;
-          const corrective = correctiveSet.has(s);
+          const corrective = false;
           const isVerbalEon = eon && s === "verbal";
-          const isStandaloneLoa = !eon && s === "loa";
-          // Sublabel surfaces the supplier-specific twist (LOA bundled or
-          // separate LOA call) so reviewers see the rule at a glance.
+          const isLoaEon = eon && s === "loa";
+          // Sublabel surfaces the supplier-specific twist (LOA bundled into
+          // Verbal for E.ON; nothing for non-E.ON since LOA is paper).
           const subLabel = isVerbalEon
             ? "+ LOA bundled"
-            : isStandaloneLoa
-              ? "separate LOA call"
+            : isLoaEon
+              ? "inside Closer call"
               : null;
           return (
             <div key={s} style={{ display: "flex", alignItems: "center", flex: 1 }}>
@@ -190,13 +198,11 @@ function WorkflowBar({
                   minWidth: 0,
                 }}
                 title={
-                  corrective
-                    ? "Corrective step — optional for any supplier"
-                    : isVerbalEon
-                      ? "E.ON reads the LOA wording inside the Verbal contract call — no separate LOA needed."
-                      : isStandaloneLoa
-                        ? "Non-E.ON suppliers require a separate LOA call after the Verbal contract."
-                        : PHASE_LABEL[s as keyof typeof PHASE_LABEL]
+                  isVerbalEon
+                    ? "E.ON reads the LOA wording inside the Verbal contract — no separate LOA recording needed."
+                    : isLoaEon
+                      ? "E.ON LOA segment — captured inside the Closer recording (NOT a separate document)."
+                      : PHASE_LABEL[s as keyof typeof PHASE_LABEL]
                 }
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>

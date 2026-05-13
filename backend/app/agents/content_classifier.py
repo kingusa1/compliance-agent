@@ -63,7 +63,7 @@ The four canonical segment types and their distinguishing signals:
 
 3. **verbal** — The LEGALLY BINDING verbal-contract reading. Closer reads supplier-mandated verbatim script: contract length, unit rate p/kWh, standing charge, VAT/CCL, cooling-off, Ombudsman. Explicit customer "yes/I agree" responses. Signals: explicit rate + standing charge, "this is a legally binding contract", "do you agree to be bound by these terms", "is that correct" with customer "yes".
 
-4. **loa** — Letter of Authority wording. Customer authorises Watt to act on their behalf with the supplier. Signals: "do you authorise Watt to act on your behalf", "letter of authority", "this gives us 12 months", "to obtain information about your account from [supplier]", "to negotiate with [supplier]".
+4. **loa** — E.ON ONLY. Letter of Authority wording bundled inside the closer recording for E.ON Next. Customer authorises Watt to act on their behalf. Signals: "do you authorise Watt to act on your behalf", "letter of authority", "this gives us 12 months", "to obtain information about your account from [supplier]", "to negotiate with [supplier]". For every other supplier the LOA is a DocuSign paper document — NEVER emit a loa segment unless the supplier is E.ON (or E.ON Next / EON).
 
 The transcript is shown below with WORD INDICES on the left of each block of 10 words. Use those indices to mark segment boundaries.
 
@@ -77,11 +77,18 @@ Return a JSON array. Each element is one detected segment object with EXACTLY th
   "reasoning"      — 1-2 sentences explaining which signals drove your decision
 
 RULES
-- A single recording can contain 1, 2, 3, or 4 segments. Common shapes:
+- The Watt workflow has only TWO top-level call stages:
+    Opener = the lead_gen recording (one segment: lead_gen)
+    Closer = the closer recording. For non-E.ON suppliers the closer
+             contains pre_sales + verbal (2 segments, NO loa — LOA is a
+             DocuSign document for non-E.ON). For E.ON Next the closer
+             contains pre_sales + verbal + loa (3 segments, LOA bundled).
+- Common detected shapes:
   * Just lead_gen (the opener recording).
   * pre_sales + verbal (a non-E.ON closer recording).
   * pre_sales + verbal + loa (an E.ON closer recording).
   * Just one of any (reviewer uploaded that segment in isolation).
+- DO NOT emit a loa segment unless the supplier is E.ON.
 - Segments must be NON-OVERLAPPING and listed in transcript order.
 - end_word_idx of segment N must be < start_word_idx of segment N+1.
 - If you cannot identify ANY compliance-relevant segment (e.g. transcript is too short, foreign language, test tone, music), return [].

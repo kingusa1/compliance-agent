@@ -911,11 +911,26 @@ async def _step_classify_content(
     _VALID_STAGES = {"lead_gen", "pre_sales", "verbal", "loa"}
     fallback_stage: str | None = None
     fallback_reason: str = ""
+    # Per Aly's 2026-05-14 clarification: for any non-E.ON supplier, the LOA
+    # is a DocuSign-signed paper document — there is no audio LOA stage.
+    # Strip LOA fallbacks for those suppliers so we never grade a non-E.ON
+    # call against the LOA rubric.
+    _supplier_str = (call.detected_supplier or "").lower()
+    _is_eon = "eon" in _supplier_str or "e.on" in _supplier_str
     if not segments:
         stage = (call.call_type or "").strip().lower()
         if stage in _VALID_STAGES:
-            fallback_stage = stage
-            fallback_reason = "manual call_type override; classifier returned []"
+            if stage == "loa" and not _is_eon:
+                # Non-E.ON LOA manual override → downgrade to verbal so the
+                # supplier-script verbal-contract rubric drives grading.
+                fallback_stage = "verbal"
+                fallback_reason = (
+                    "manual loa override on non-E.ON supplier — LOA is a "
+                    "document, not a recording; collapsing to verbal"
+                )
+            else:
+                fallback_stage = stage
+                fallback_reason = "manual call_type override; classifier returned []"
         elif getattr(call, "script_id", None):
             fallback_stage = "verbal"
             fallback_reason = (

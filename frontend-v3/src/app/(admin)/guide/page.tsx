@@ -260,45 +260,45 @@ const COMPLIANCE_TAXONOMY: { title: string; description: string; rows: string[] 
 const LIFECYCLE_TABLE: { supplier: string; phases: string[]; required: number; corrective: string[]; note: string }[] = [
   {
     supplier: "E.ON Next",
-    phases: ["lead_gen", "pre_sales", "verbal"],
-    required: 3,
-    corrective: ["c_call", "amendment"],
-    note: "LOA wording is bundled INTO the Verbal segment — no separate LOA recording needed.",
+    phases: ["lead_gen", "pre_sales", "verbal", "loa"],
+    required: 2,
+    corrective: [],
+    note: "Opener = Lead Gen recording. Closer = Pre-Sales + Verbal + LOA (LOA wording is bundled INSIDE the Closer recording — no separate LOA file).",
   },
   {
     supplier: "British Gas",
-    phases: ["lead_gen", "pre_sales", "verbal", "loa"],
-    required: 4,
-    corrective: ["c_call", "amendment"],
-    note: "Standalone LOA segment after the Verbal contract.",
+    phases: ["lead_gen", "pre_sales", "verbal"],
+    required: 2,
+    corrective: [],
+    note: "Opener = Lead Gen recording. Closer = Pre-Sales + Verbal. LOA is a DocuSign paper document — never a recording.",
   },
   {
     supplier: "British Gas Lite (BGL)",
-    phases: ["lead_gen", "pre_sales", "verbal", "loa"],
-    required: 4,
-    corrective: ["c_call", "amendment"],
-    note: "Standalone LOA segment after the Verbal contract.",
+    phases: ["lead_gen", "pre_sales", "verbal"],
+    required: 2,
+    corrective: [],
+    note: "Opener = Lead Gen recording. Closer = Pre-Sales + Verbal. LOA is a DocuSign paper document.",
   },
   {
     supplier: "EDF Energy",
-    phases: ["lead_gen", "pre_sales", "verbal", "loa"],
-    required: 4,
-    corrective: ["c_call", "amendment"],
-    note: "DDWA verbal + LOA are separate segments.",
+    phases: ["lead_gen", "pre_sales", "verbal"],
+    required: 2,
+    corrective: [],
+    note: "Opener = Lead Gen recording. Closer = Pre-Sales + Verbal. LOA is a DocuSign paper document.",
   },
   {
     supplier: "Scottish Power",
-    phases: ["lead_gen", "pre_sales", "verbal", "loa"],
-    required: 4,
-    corrective: ["c_call", "amendment"],
-    note: "For-Business tariff requires a standalone authority confirmation segment.",
+    phases: ["lead_gen", "pre_sales", "verbal"],
+    required: 2,
+    corrective: [],
+    note: "Opener = Lead Gen recording. Closer = Pre-Sales + Verbal. LOA is a DocuSign paper document.",
   },
   {
     supplier: "Pozitive",
-    phases: ["lead_gen", "pre_sales", "verbal", "loa"],
-    required: 4,
-    corrective: ["c_call", "amendment"],
-    note: "Micro-business threshold + GDPR T&Cs each require explicit consent on a standalone LOA.",
+    phases: ["lead_gen", "pre_sales", "verbal"],
+    required: 2,
+    corrective: [],
+    note: "Opener = Lead Gen recording. Closer = Pre-Sales + Verbal. LOA is a DocuSign paper document.",
   },
 ];
 
@@ -331,28 +331,32 @@ const STAGE_DETAILS: {
   },
   {
     key: "loa",
-    label: "LOA",
+    label: "LOA (E.ON only)",
     blurb:
-      "Letter-of-Authority. Standalone for every supplier EXCEPT E.ON; for E.ON it's bundled into the Verbal segment. 12-month validity.",
-    filenameHints: ["loa.mp3", "letter of authority"],
+      "Letter-of-Authority. For E.ON Next the LOA wording is bundled into the Closer recording, so the system grades it as an inner segment. For every OTHER supplier the LOA is a DocuSign paper document — it's NOT a recording and the AI never emits an LOA segment for them.",
+    filenameHints: ["(E.ON closer .mp3 — LOA is inside)"],
   },
 ];
 
 const LIFECYCLE_STATES: { state: string; meaning: string }[] = [
   { state: "open", meaning: "No qualifying call yet." },
-  { state: "lead_gen_done", meaning: "Lead Gen done; nothing else yet." },
-  { state: "pre_sales_done", meaning: "Pre-Sales landed; Verbal still pending." },
+  { state: "lead_gen_done", meaning: "Opener (Lead Gen) signed off — Closer still pending." },
+  {
+    state: "pre_sales_done",
+    meaning:
+      "Pre-Sales segment inside the Closer signed off — Verbal still pending in the same Closer recording.",
+  },
   {
     state: "verbal_done",
     meaning:
-      "Verbal in; LOA still pending for non-E.ON suppliers (E.ON skips this — Verbal includes the LOA wording).",
+      "Verbal contract signed off. For non-E.ON this is enough to verify the recording side; LOA arrives as a DocuSign document.",
   },
   {
     state: "loa_done",
     meaning:
-      "LOA captured (non-E.ON only). Deal is one step from verified.",
+      "LOA segment captured (E.ON only — it's INSIDE the Closer recording).",
   },
-  { state: "verified", meaning: "Every required stage finalised. Deal is contractually complete." },
+  { state: "verified", meaning: "Every required segment + the DocuSign LOA (non-E.ON only) finalised. Deal is contractually complete." },
   { state: "rejected", meaning: "Terminal. Manual reviewer override." },
 ];
 
@@ -598,20 +602,29 @@ export default function GuidePage() {
         </Section>
 
         {/* 6 · Lifecycle */}
-        <Section id="lifecycle" icon={ListChecks} title="Deal lifecycle (E.ON 3-stage vs others 4-stage)">
+        <Section id="lifecycle" icon={ListChecks} title="Deal lifecycle — 2-stage Opener / Closer (2026-05-14)">
           {/* Headline rule */}
           <div className="mb-5 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 text-[13px] leading-relaxed text-emerald-100/90">
-            <strong className="text-emerald-100">E.ON Next requires 3 stages</strong>{" "}
-            (Lead Gen → Pre-Sales → Verbal; LOA wording is bundled into the Verbal segment).{" "}
-            <strong className="text-emerald-100">Every other supplier requires 4 stages</strong>{" "}
-            (+ a separately-recorded LOA segment after the Verbal contract).{" "}
-            The new 2026-05-12 content classifier emits these segments
-            <strong className="text-emerald-100"> automatically</strong> from the audio — the
-            reviewer never picks a call_type at upload.
+            Every supplier follows the same{" "}
+            <strong className="text-emerald-100">2 top-level deal stages</strong>:{" "}
+            <strong className="text-emerald-100">Opener</strong> (the Lead Gen recording) and{" "}
+            <strong className="text-emerald-100">Closer</strong> (the contract-binding recording).
+            The supplier-specific twist is what segments live INSIDE the Closer:
+            <ul className="mt-2 ml-5 list-disc space-y-1">
+              <li>
+                <strong>E.ON Next</strong> — Closer contains Pre-Sales + Verbal +{" "}
+                <strong>LOA</strong> (LOA wording is bundled INTO the Closer recording).
+              </li>
+              <li>
+                <strong>Every other supplier</strong> — Closer contains Pre-Sales + Verbal only.
+                <strong> LOA is a DocuSign paper document, not a recording</strong> —
+                the system never grades an LOA segment for non-E.ON.
+              </li>
+            </ul>
           </div>
 
-          {/* The 4 canonical stages */}
-          <h3 className="mb-2 text-[14px] font-semibold text-[var(--text-primary)]">The 4 canonical stages</h3>
+          {/* The 4 canonical inner segments */}
+          <h3 className="mb-2 text-[14px] font-semibold text-[var(--text-primary)]">The 4 inner segments the AI emits</h3>
           <p className="mb-3 text-[12.5px] text-[var(--text-muted)]">
             Every recording you upload is classified as one of these stages.
             Classification happens (a) from the filename if the basename matches a known

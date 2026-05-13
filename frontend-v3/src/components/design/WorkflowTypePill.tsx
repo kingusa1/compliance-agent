@@ -1,12 +1,14 @@
 "use client";
 
 /**
- * WorkflowTypePill — color-coded `3-stage · E.ON` or `4-stage · British Gas`
- * badge driven by the AI-detected supplier label.
+ * WorkflowTypePill — color-coded badge for the supplier-specific deal
+ * workflow. The 2026-05-14 redesign collapses to TWO top-level stages
+ * for everyone (Opener / Closer); the supplier-specific twist is what
+ * the Closer contains:
  *
- * Emerald = 3-stage (E.ON variants, LOA bundled into Closer).
- * Blue    = 4-stage (everyone else, separate Standalone LOA call).
- * Neutral = supplier not yet detected.
+ *   Emerald  · E.ON variants — LOA wording bundled INSIDE the Closer recording.
+ *   Blue     · Everyone else — LOA is a DocuSign document (NO recording).
+ *   Neutral  · Supplier not yet detected.
  *
  * Mirrors backend `deal_lifecycle.SUPPLIER_PHASE_MATRIX`. See
  * `lib/workflow.ts` for the source-of-truth resolver.
@@ -50,7 +52,7 @@ export function WorkflowTypePill({
   return (
     <Pill tone={tone} dot>
       <span title={summary}>
-        {count}-stage
+        Opener · Closer
         {!compact && (
           <>
             <span style={{ opacity: 0.55, margin: "0 4px" }}>·</span>
@@ -62,7 +64,7 @@ export function WorkflowTypePill({
                 fontSize: 10,
               }}
             >
-              {eon ? "LOA bundled" : "separate LOA"}
+              {eon ? "LOA bundled in Closer" : "LOA via DocuSign"}
             </span>
           </>
         )}
