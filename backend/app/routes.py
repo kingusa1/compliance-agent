@@ -1478,46 +1478,58 @@ def get_call_script_checkpoints(call_id: str, db: Session = Depends(get_db)):
 def _resolve_segment_rubric(seg, script_obj) -> dict:
     """Compute rubric_kind + rubric_label for a CallSegment row.
 
-    The reviewer wants to know, per segment, "what is this graded against?":
+    The reviewer sees one of FIVE rubric provenance badges per segment:
       - phrase_pack_lead_gen   (88-rule lead-gen phrase pack)
       - phrase_pack_pre_sales  (88-rule pre-sales phrase pack)
       - supplier_script_verbal (the supplier's verbal-contract script)
       - supplier_script_loa    (the supplier's LOA script — E.ON only)
-      - v1_fallback            (V1 third-party-disclosure 3-rule fallback)
+      - v1_fallback            (V1 three-rule TPI fallback)
 
-    rubric_label is the short human string surfaced on the segment card +
-    each checkpoint chip.
+    Stage is the source of truth for the LABEL — `lead_gen` / `pre_sales`
+    ALWAYS surface as the 88-rule pack, even when the pipeline happens to
+    have routed them to a supplier script as a fallback (some
+    deployments don't ship dedicated phrase-pack scripts yet). `verbal`
+    and `loa` surface as the matched supplier script when there is one,
+    else V1 fallback.
     """
     stage = (seg.stage or "").lower()
-    has_script = seg.script_id is not None
-    if stage in ("lead_gen", "pre_sales") and not has_script:
+    has_script = seg.script_id is not None and script_obj is not None
+
+    if stage == "lead_gen":
         return {
-            "rubric_kind": f"phrase_pack_{stage}",
-            "rubric_label": (
-                "88-rule Lead Gen phrase pack"
-                if stage == "lead_gen"
-                else "88-rule Pre-Sales phrase pack"
-            ),
+            "rubric_kind": "phrase_pack_lead_gen",
+            "rubric_label": "88-rule Lead Gen phrase pack",
         }
-    if stage in ("verbal", "loa") and has_script and script_obj is not None:
-        kind = "supplier_script_verbal" if stage == "verbal" else "supplier_script_loa"
-        supplier = script_obj.supplier_name or "Supplier"
-        scrname = script_obj.script_name or "script"
-        scope = "Verbal contract script" if stage == "verbal" else "LOA script"
+    if stage == "pre_sales":
         return {
-            "rubric_kind": kind,
-            "rubric_label": f"{scope} · {supplier} — {scrname}",
+            "rubric_kind": "phrase_pack_pre_sales",
+            "rubric_label": "88-rule Pre-Sales phrase pack",
         }
-    # Anything else (rare): non-E.ON verbal that didn't match a script, or a
-    # lead_gen/pre_sales where the pipeline routed to a supplier script.
-    if has_script and script_obj is not None:
+    if stage == "verbal":
+        if has_script:
+            supplier = script_obj.supplier_name or "Supplier"
+            scrname = script_obj.script_name or "script"
+            return {
+                "rubric_kind": "supplier_script_verbal",
+                "rubric_label": f"Verbal contract script · {supplier} — {scrname}",
+            }
         return {
-            "rubric_kind": "supplier_script_verbal",
-            "rubric_label": (
-                f"Supplier script · {script_obj.supplier_name or '?'} — "
-                f"{script_obj.script_name or '?'}"
-            ),
+            "rubric_kind": "v1_fallback",
+            "rubric_label": "V1 third-party-disclosure fallback (3 universal rules)",
         }
+    if stage == "loa":
+        if has_script:
+            supplier = script_obj.supplier_name or "Supplier"
+            scrname = script_obj.script_name or "script"
+            return {
+                "rubric_kind": "supplier_script_loa",
+                "rubric_label": f"LOA script · {supplier} — {scrname}",
+            }
+        return {
+            "rubric_kind": "v1_fallback",
+            "rubric_label": "V1 third-party-disclosure fallback (3 universal rules)",
+        }
+    # Unknown stage — defensive fallback.
     return {
         "rubric_kind": "v1_fallback",
         "rubric_label": "V1 third-party-disclosure fallback (3 universal rules)",
