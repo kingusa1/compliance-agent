@@ -43,6 +43,7 @@ import { findWordRangeMs } from "@/lib/word-match";
 import type { ScriptCheckpoint, WordToken } from "@/lib/queries/reviewer";
 
 import { CheckpointGuidelines } from "./CheckpointGuidelines";
+import { RubricBadge } from "./RubricBadge";
 
 // ── Type ──────────────────────────────────────────────────────────
 
@@ -139,6 +140,12 @@ export interface CheckpointCardProps {
   origIndex?: number;
   onReviewVerdict?: (origIndex: number, verdict: "pass" | "fail", notes: string) => Promise<void>;
   onRetry?: (origIndex: number) => Promise<void>;
+  // Rubric provenance — surfaced as a small badge in the header strip so
+  // the reviewer sees "what is this graded against?" per checkpoint.
+  // Set by the SegmentCards parent (which fetches /api/calls/{id}/segments
+  // and inherits the segment's rubric source).
+  rubricKind?: string;
+  rubricLabel?: string;
 }
 
 export function CheckpointCard(props: CheckpointCardProps) {
@@ -156,6 +163,8 @@ export function CheckpointCard(props: CheckpointCardProps) {
     origIndex,
     onReviewVerdict,
     onRetry,
+    rubricKind,
+    rubricLabel,
   } = props;
 
   const cpId = `CP${String(index + 1).padStart(2, "0")}`;
@@ -244,6 +253,8 @@ export function CheckpointCard(props: CheckpointCardProps) {
         targetMs={targetMs}
         isApproximate={isApproximate}
         hasVerdict={!!verdict}
+        rubricKind={rubricKind}
+        rubricLabel={rubricLabel}
       />
 
       {/* Section 1 — Script */}
@@ -342,6 +353,8 @@ function Header({
   targetMs,
   isApproximate,
   hasVerdict,
+  rubricKind,
+  rubricLabel,
 }: {
   cpId: string;
   name: string;
@@ -352,6 +365,8 @@ function Header({
   targetMs: number;
   isApproximate: boolean;
   hasVerdict: boolean;
+  rubricKind?: string;
+  rubricLabel?: string;
 }) {
   return (
     <div
@@ -441,6 +456,9 @@ function Header({
               : "Meaning"}
         </span>
       )}
+      {rubricKind && rubricLabel ? (
+        <RubricBadge kind={rubricKind} label={rubricLabel} compact />
+      ) : null}
       {hasVerdict && (
         <span
           style={{

@@ -1505,12 +1505,10 @@ export default function CallDetailPage({
 
           <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }} className="ca-scroll">
             {tab === "checkpoints" && (
-              <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 10 }}>
-                {/* Plan §5b: per-segment summary cards — one per CallSegment row
-                    written by the post-2026-05-12 pipeline. */}
-                <SegmentCards callId={id} />
+              <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
                 {(() => {
-                  // Plan §5b: status filter pills with counts.
+                  // Plan §5b: status filter pills with counts. The pills now
+                  // SCOPE the nested CheckpointCards inside each SegmentCard.
                   const counts = cpCards.reduce(
                     (acc, m) => {
                       const s = (m.verdict?.status ?? "").toLowerCase();
@@ -1568,51 +1566,41 @@ export default function CallDetailPage({
                     </div>
                   );
                 })()}
+
+                {/* Per-segment expandable cards with nested CheckpointCards.
+                    Replaces the old flat checkpoint list — every checkpoint
+                    now lives INSIDE its parent segment. (2026-05-14) */}
                 {cpCards.length === 0 ? (
                   <div style={{ color: "var(--text-faint)", fontSize: 13, padding: 20, textAlign: "center" }}>
                     No checkpoints scored yet.
                   </div>
                 ) : (
-                  cpCards
-                    .filter((m) => {
-                      if (cpFilter === "all") return true;
-                      const s = (m.verdict?.status ?? "").toLowerCase();
-                      if (cpFilter === "passed") return s === "pass";
-                      if (cpFilter === "partial") return s === "partial";
-                      if (cpFilter === "fail") return s === "fail";
-                      return true;
-                    })
-                    .map((m, i) => (
-                    <CheckpointCard
-                      key={`${m.key}-${i}`}
-                      index={i}
-                      script={m.script}
-                      verdict={m.verdict}
-                      startSec={m.startSec}
-                      isActive={activeCheckpointKey === m.key}
-                      onPlay={seekAndPlay}
-                      // 4-section layout + Section 4 reviewer flow ↓
-                      callId={id}
-                      callDurationSec={duration}
-                      totalSections={cpCards.length}
-                      words={words}
-                      origIndex={i}
-                      onReviewVerdict={async (origIndex, verdict, notes) => {
+                  <SegmentCards
+                    callId={id}
+                    cpCards={cpCards}
+                    cpFilter={cpFilter}
+                    innerProps={{
+                      callDurationSec: duration,
+                      words,
+                      seekAndPlay,
+                      activeCheckpointKey,
+                      totalSections: cpCards.length,
+                      onReviewVerdict: async (origIndex, verdict, notes) => {
                         await reviewCheckpoint.mutateAsync({
                           callId: id,
                           index: origIndex,
                           verdict,
                           notes,
                         });
-                      }}
-                      onRetry={async (origIndex) => {
+                      },
+                      onRetry: async (origIndex) => {
                         await retryCheckpoint.mutateAsync({
                           callId: id,
                           index: origIndex,
                         });
-                      }}
-                    />
-                  ))
+                      },
+                    }}
+                  />
                 )}
               </div>
             )}

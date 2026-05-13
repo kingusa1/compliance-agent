@@ -1475,13 +1475,64 @@ def get_call_script_checkpoints(call_id: str, db: Session = Depends(get_db)):
     }
 
 
+def _resolve_segment_rubric(seg, script_obj) -> dict:
+    """Compute rubric_kind + rubric_label for a CallSegment row.
+
+    The reviewer wants to know, per segment, "what is this graded against?":
+      - phrase_pack_lead_gen   (88-rule lead-gen phrase pack)
+      - phrase_pack_pre_sales  (88-rule pre-sales phrase pack)
+      - supplier_script_verbal (the supplier's verbal-contract script)
+      - supplier_script_loa    (the supplier's LOA script — E.ON only)
+      - v1_fallback            (V1 third-party-disclosure 3-rule fallback)
+
+    rubric_label is the short human string surfaced on the segment card +
+    each checkpoint chip.
+    """
+    stage = (seg.stage or "").lower()
+    has_script = seg.script_id is not None
+    if stage in ("lead_gen", "pre_sales") and not has_script:
+        return {
+            "rubric_kind": f"phrase_pack_{stage}",
+            "rubric_label": (
+                "88-rule Lead Gen phrase pack"
+                if stage == "lead_gen"
+                else "88-rule Pre-Sales phrase pack"
+            ),
+        }
+    if stage in ("verbal", "loa") and has_script and script_obj is not None:
+        kind = "supplier_script_verbal" if stage == "verbal" else "supplier_script_loa"
+        supplier = script_obj.supplier_name or "Supplier"
+        scrname = script_obj.script_name or "script"
+        scope = "Verbal contract script" if stage == "verbal" else "LOA script"
+        return {
+            "rubric_kind": kind,
+            "rubric_label": f"{scope} · {supplier} — {scrname}",
+        }
+    # Anything else (rare): non-E.ON verbal that didn't match a script, or a
+    # lead_gen/pre_sales where the pipeline routed to a supplier script.
+    if has_script and script_obj is not None:
+        return {
+            "rubric_kind": "supplier_script_verbal",
+            "rubric_label": (
+                f"Supplier script · {script_obj.supplier_name or '?'} — "
+                f"{script_obj.script_name or '?'}"
+            ),
+        }
+    return {
+        "rubric_kind": "v1_fallback",
+        "rubric_label": "V1 third-party-disclosure fallback (3 universal rules)",
+    }
+
+
 @router.get("/api/calls/{call_id}/segments")
 def get_call_segments(call_id: str, db: Session = Depends(get_db)):
-    """Return the per-segment verdicts the new pipeline writes (Plan §5b).
+    """Return the per-segment verdicts the new pipeline writes.
 
-    One row per CallSegment, with the stage / score / bucket / breach counts
-    + a parsed `checkpoints` list. Used by the SegmentCards component on the
-    call-detail page to render a card per detected segment.
+    One row per CallSegment, with the stage / score / bucket / breach counts,
+    a parsed `checkpoints` list, AND rubric provenance: which rubric was used
+    to grade the segment (rubric_kind + rubric_label). Each individual
+    checkpoint inherits its segment's rubric source so the UI can render a
+    'where did this verdict come from?' badge per checkpoint.
     """
     from app.models import CallSegment as _CallSegment
 
@@ -1496,12 +1547,35 @@ def get_call_segments(call_id: str, db: Session = Depends(get_db)):
         .all()
     )
 
+    # Preload script names so we can stamp each segment's rubric_label
+    # without N queries.
+    script_ids = [s.script_id for s in rows if s.script_id]
+    scripts_by_id: dict[str, Script] = {}
+    if script_ids:
+        for sc in db.query(Script).filter(Script.id.in_(script_ids)).all():
+            scripts_by_id[str(sc.id)] = sc
+
     out = []
     for s in rows:
         try:
             cps = json.loads(s.checkpoint_results) if s.checkpoint_results else []
         except (TypeError, ValueError):
             cps = []
+        rubric = _resolve_segment_rubric(s, scripts_by_id.get(str(s.script_id) if s.script_id else ""))
+        # Stamp each inner checkpoint with the segment's source so the UI can
+        # render a per-checkpoint badge.
+        annotated_cps = []
+        for cp in cps:
+            if isinstance(cp, dict):
+                annotated_cps.append(
+                    {
+                        **cp,
+                        "rubric_kind": rubric["rubric_kind"],
+                        "rubric_label": rubric["rubric_label"],
+                    }
+                )
+            else:
+                annotated_cps.append(cp)
         out.append(
             {
                 "id": s.id,
@@ -1523,7 +1597,9 @@ def get_call_segments(call_id: str, db: Session = Depends(get_db)):
                 "medium_breaches": s.medium_breaches or 0,
                 "reason": s.reason,
                 "script_id": s.script_id,
-                "checkpoints": cps,
+                "rubric_kind": rubric["rubric_kind"],
+                "rubric_label": rubric["rubric_label"],
+                "checkpoints": annotated_cps,
             }
         )
     return {"call_id": call_id, "segments": out}
