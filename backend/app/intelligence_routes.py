@@ -18,11 +18,14 @@ from datetime import datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Call
+
+
+_COMPLIANT_INT = case((Call.compliant.is_(True), 1), else_=0)
 
 
 intelligence_router = APIRouter(prefix="/api/intelligence", tags=["intelligence"])
@@ -50,7 +53,7 @@ def by_supplier(db: Session = Depends(get_db)) -> dict:
         .with_entities(
             func.coalesce(Call.detected_supplier, "Unknown").label("supplier"),
             func.count(Call.id).label("total"),
-            func.sum(func.cast(Call.compliant.is_(True), func.Integer())).label("compliant"),
+            func.sum(_COMPLIANT_INT).label("compliant"),
         )
         .group_by("supplier")
         .all()
@@ -88,7 +91,7 @@ def by_agent(
         .with_entities(
             Call.agent_name.label("agent"),
             func.count(Call.id).label("total"),
-            func.sum(func.cast(Call.compliant.is_(True), func.Integer())).label("compliant"),
+            func.sum(_COMPLIANT_INT).label("compliant"),
         )
         .group_by(Call.agent_name)
         .having(func.count(Call.id) >= 3)
