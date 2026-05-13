@@ -168,6 +168,46 @@ class CallResponse(BaseModel):
     def _risk_tags_default(cls, v):
         return v if v is not None else []
 
+    @field_validator("segments", "flags", mode="before")
+    @classmethod
+    def _orm_to_dict(cls, v):
+        # Call.segments / Call.flags are viewonly SQLAlchemy relationships.
+        # Pydantic's from_attributes mode walks them and tries to serialize
+        # the ORM objects as plain values — fails with PydanticSerializationError
+        # because the analyzer-written rows have non-JSONable columns.
+        # The dedicated /api/calls/{id}/segments endpoint owns the real shape;
+        # here we just need a clean (and stable) summary tuple so the call
+        # detail GET doesn't 500.
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            try:
+                v = list(v)
+            except TypeError:
+                return []
+        out = []
+        for item in v:
+            if isinstance(item, dict):
+                out.append(item)
+                continue
+            # ORM row — extract a small set of stable, JSON-safe fields.
+            d: dict = {}
+            for attr in (
+                "id", "idx", "stage", "score", "bucket", "compliant",
+                "compliance_status", "critical_breaches", "high_breaches",
+                "medium_breaches", "reason",
+                "severity", "rule_id", "evidence",  # Flag attrs
+            ):
+                if hasattr(item, attr):
+                    val = getattr(item, attr)
+                    if val is None or isinstance(val, (str, int, float, bool)):
+                        d[attr] = val
+                    else:
+                        d[attr] = str(val)
+            if d:
+                out.append(d)
+        return out
+
     class Config:
         from_attributes = True
 
