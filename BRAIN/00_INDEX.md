@@ -80,6 +80,7 @@ Read in order:
 - [[06_Operations/Deploy_Commands]] — copy/paste deploy cheat sheet
 - [[06_Operations/Routes_Map]] — frontend + backend route inventory
 - [[06_Operations/Credentials]] — where each secret/key lives (NOT the keys)
+- [[06_Operations/Available_Skills]] — full Claude Code skills roster (~1500 entries) with auto-trigger conditions, grouped by domain. **Read this when wondering "what can the assistant do without me asking?"**
 
 ### 07 Tomorrow
 - [[07_Tomorrow/Project_Handover]] — the live demo script
