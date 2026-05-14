@@ -2062,6 +2062,25 @@ def admin_backfill_agent_names(
         existing = (c.agent_name or "").strip()
         if existing and existing.lower() == new_name.lower():
             continue
+        # Safety: never overwrite a non-empty existing name with a SHORTER
+        # one (e.g. existing "Dominic Gratte" vs regex-only "Dominic") and
+        # never replace an existing name with a regex result that just
+        # happens to share the same first token (e.g. "Parat" → "Paris We").
+        # only_missing=True (default) already filters these out; this is
+        # defence-in-depth for the only_missing=False overwrite mode.
+        if existing:
+            ex_lower = existing.lower()
+            new_lower = new_name.lower()
+            ex_first = ex_lower.split()[0] if ex_lower else ""
+            new_first = new_lower.split()[0] if new_lower else ""
+            # Existing already richer than regex → keep existing.
+            if ex_first == new_first and len(existing) > len(new_name):
+                continue
+            # Regex changed the first name entirely → likely a regex false
+            # positive (regex catches the first self-intro phrase but the
+            # LLM had access to more context). Don't touch.
+            if ex_first and new_first and ex_first != new_first:
+                continue
         proposals.append(
             {
                 "call_id": str(c.id)[:8],

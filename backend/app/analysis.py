@@ -609,20 +609,17 @@ async def detect_names(transcript: str) -> tuple[str, str]:
         elif line.upper().startswith("CUSTOMER:"):
             customer = line.split(":", 1)[1].strip().strip('"') or "Unknown"
 
-    # \u2500\u2500 Regex override on the AGENT slot \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    # The regex is authoritative for self-introduction phrases. If the LLM
-    # disagrees, prefer regex (the prompt has no transcript-text access
-    # we can't audit \u2014 the regex match is grounded in the literal text).
-    if regex_agent:
-        if (
-            agent == "Unknown"
-            or agent.strip().lower() != regex_agent.strip().lower()
-        ):
-            log.info(
-                f"\U0001f464 DETECT names regex override \u2192 "
-                f"agent={regex_agent!r} (LLM said {agent!r})"
-            )
-            agent = regex_agent
+    # \u2500\u2500 Regex fallback on the AGENT slot \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # The LLM gets full-context resolution (surname, normalisation, dedup
+    # against customer); we only let regex win when the LLM returned
+    # Unknown. This stops the regex from overriding a high-quality LLM
+    # answer with a partial first-name-only match.
+    if regex_agent and agent == "Unknown":
+        log.info(
+            f"\U0001f464 DETECT names regex fallback \u2192 "
+            f"agent={regex_agent!r} (LLM said Unknown)"
+        )
+        agent = regex_agent
 
     # Sanity: if agent and customer collapsed to the same name (LLM
     # confusion), trust the customer (which gets cross-validated downstream
