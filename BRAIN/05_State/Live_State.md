@@ -4,7 +4,31 @@ updated: 2026-05-14
 tags: [state, live, ground-truth, phase-5-complete]
 ---
 
-# Live State — Phase 5 complete + CI green 2026-05-14
+# Live State — Reviewer polish sweep + bulletproof agent-name 2026-05-14 (late)
+
+> ✅ **2026-05-14 (late) — 8 reviewer-facing bugs shipped + Playwright-verified live.**
+> Tip commit `8eb9763` (agent-name regex is fallback-only); prior tips:
+> `cce70b9` (bulletproof agent-name extraction via regex pre-pass + admin
+> backfill endpoint), `1c990e7` (drag-to-scrub on call-detail Waveform
+> wrapper), `5749c90` (script-checkpoints UNION across segments + Chat
+> "Coming soon"), `2454dae` (LOA router matches script_name when
+> lifecycle_phase is NULL), `4c00335` (real speaker names + CheckpointCard
+> 2-row header).
+>
+> Highlights: transcript shows `Afak / AGENT / 0:00` (real analyzer-resolved
+> name + role); LOA segments grade against E.ON TPI Verbal LOA Script
+> (`875c4a0c`) at `supplier_script_loa` instead of v1_fallback; pre-sales
+> 88-rule cards carry their `required` script text; audio bar supports
+> drag-to-scrub via Pointer Events + keyboard arrows; Chat tab is gated
+> behind a "Coming soon" pill. Agent-name extraction now has a deterministic
+> regex pre-pass that catches unusual transliterated names ("Afak", "Parat",
+> "Aaqib") the LLM was rejecting as `Unknown`.
+>
+> Vercel: `dpl_7pvDJnNtCNcaQq1SNqJLuvhVSJVH` (commit `1c990e7`); two
+> subsequent backend-only commits did not require a frontend redeploy.
+> Backend (Railway): tip `8eb9763`. Both healthy.
+>
+> Resume guide: [[../04_Sessions/2026-05-14_Session_reviewer_polish]].
 
 > ✅ **Full Phase 5 (a-j) UI overhaul + 4 intelligence endpoints DEPLOYED 2026-05-14.**
 > Tip commit `8ccef2b` (intelligence SQL fix), prior tips: `2801fb0`
@@ -87,8 +111,16 @@ tags: [state, live, ground-truth, phase-5-complete]
 - **URL:** `https://compliance-agent-production-690e.up.railway.app`
 - **Healthcheck:** `/healthz` → 200, `/api/health` → 200, `/readyz` → 200 (`db: ok`)
 - **Service:** `compliance-agent` on project `compliance-agent-backend`
-- **Tip commit deployed (2026-05-13):** `394c438` — 4-pass extractor + heuristic fallback + /scripts upload rewire.
+- **Tip commit deployed (2026-05-14 late):** `8eb9763` — bulletproof agent-name extraction + 5 reviewer-polish fixes.
 - **Recent chain (most recent first):**
+  - `8eb9763` fix(names): regex is fallback-only when LLM returns Unknown
+  - `cce70b9` fix(names): bulletproof agent-name extraction via regex pre-pass + admin backfill endpoint
+  - `1c990e7` fix: drag-to-scrub on the actual call-detail Waveform wrapper
+  - `5749c90` fix: union segment scripts for 88-rule script text, draggable scrub, Chat 'Coming soon'
+  - `2454dae` fix(rubric): match LOA scripts by name when lifecycle_phase is NULL
+  - `4c00335` fix: real speaker names, LOA router fallback, CheckpointCard 2-row header
+  - `fcafa4b` fix(rubric): stage drives label — pre_sales always shows 88-rule pack
+  - `d414f8b` feat(checkpoints): rubric provenance + expandable nested SegmentCards (Plan §5b r2)
   - `394c438` feat(ai): 4-pass extractor with deterministic heuristic fallback (19/19 scripts)
   - `b72f0c2` fix(migration): 3 more migrations idempotent (verdict_state, fix_narrative, pipeline_step_log)
   - `b9bc0a6` fix(migration): failed_jobs CREATE TABLE idempotent — **this unblocked the alembic chain that had been silently failing since 2026-05-06**
@@ -105,6 +137,16 @@ tags: [state, live, ground-truth, phase-5-complete]
   - `3e1846b` feat(backend): Phase 1 — lock call_type taxonomy to {lead_gen,pre_sales,verbal,loa}
   - `818e312` feat(admin): POST /api/admin/wipe-all-calls (Phase 0 of taxonomy rebuild)
 - **Railway CLI auth status:** logged in as `mohamedhisham735@gmail.com`; service `compliance-agent`. `railway logs --json` works for runtime + `railway logs --build --json` for builds.
+
+## Database state (post 2026-05-14 reviewer polish sweep)
+- **Calls:** 6 (5 from prior sessions + 1 fresh `bad39296` Evangelical-LOA upload that validated the LOA router fix).
+  All 6 have populated `agent_name` + `customer_name`:
+  - `bad39296` E.ON LOA · agent `Zach` / customer `Christopher Neil Banks` · 1 LOA seg 9/11
+  - `1a085066` E.ON Verbal · agent **`Afak`** (backfilled today via regex) / customer `Christopher Neil Bank` · 1 verbal seg 20/26
+  - `54daad72` E.ON Verbal · agent `Sean Robbins` / customer `Nicola Mona Mcden`
+  - `f3a932d4` E.ON Verbal · agent `Parat` / customer `J. Fitzsimons`
+  - `55ecbe53` E.ON full · agent `Dominic Gratte` / customer `Barbara Ali` · 3 segs pre_sales 41/88 + verbal 21/26 + loa 9/11
+  - `528f6689` E.ON · agent `Paige` / customer `Baba`
 
 ## Database state (post 2026-05-13 wipe + re-ingest)
 - **Calls:** 0 (Phase 0 wipe ran successfully on `2026-05-13T18:08` UTC; second wipe at `18:48` after smoke).

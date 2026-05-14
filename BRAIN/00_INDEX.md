@@ -18,10 +18,11 @@ tags: [index, brain]
 
 ## 🚨 Read FIRST when resuming a session
 
-**As of 2026-05-14: PHASE 5 UI OVERHAUL COMPLETE + CI GREEN + INTELLIGENCE PANEL LIVE.**
+**As of 2026-05-14 (late): REVIEWER POLISH SWEEP COMPLETE + BULLETPROOF AGENT-NAME EXTRACTION.**
 Read in order:
 
-1. [[04_Sessions/2026-05-14_Session_phase5_complete]] — **MOST RECENT.** Today: shipped all 9 Phase 5 sub-tasks (a-i) + 4 intelligence endpoints + per-segment cards on call detail. Found+fixed the 7th CI-red test (non_compliant_v2 — same severity-weighted fix pattern as partial_v2). Fixed a runtime SQLAlchemy bug in intelligence_routes (`func.cast` → `case-when`). All CI green. Vercel + Railway both deployed.
+1. [[04_Sessions/2026-05-14_Session_reviewer_polish]] — **MOST RECENT.** Eight reviewer-facing bugs shipped this evening: real speaker names in transcript (`Afak / AGENT / 0:00`); LOA router resilient fallback against `script_name~'LOA'` when `lifecycle_phase` is NULL; CheckpointCard 2-row header (no more vertical text wrap); `/api/calls/{id}/script-checkpoints` returns UNION of every segment's script (so pre-sales 88-rule cards carry their `required` text); drag-to-scrub on the audio bar via Pointer Events; Chat tab gated behind "Coming soon" pill; deterministic regex layer in `detect_names` catches unusual transliterated names ("Afak", "Parat", "Aaqib") the LLM was rejecting as `Unknown`. Tip `8eb9763`.
+2. [[04_Sessions/2026-05-14_Session_phase5_complete]] — earlier today: shipped all 9 Phase 5 sub-tasks (a-i) + 4 intelligence endpoints + per-segment cards on call detail. Found+fixed the 7th CI-red test (non_compliant_v2 — same severity-weighted fix pattern as partial_v2). Fixed a runtime SQLAlchemy bug in intelligence_routes (`func.cast` → `case-when`). All CI green. Vercel + Railway both deployed.
 2. [[04_Sessions/2026-05-13_Session_deploy_and_19of19]] — Yesterday's deploy of the taxonomy rebuild, the silent alembic-chain failure since 2026-05-06 that we unblocked, the 4-pass extractor that filled the last 3 prose-heavy scripts, and the /scripts UI upload rewire.
 2. [[05_State/Live_State]] — current commit tip (`394c438`), deploy URLs, DB state (0 calls — wiped), Script counts (19/19), full recent-commit chain.
 3. [[04_Sessions/2026-05-12_Session_taxonomy_rebuild]] — yesterday's design + Phase 0-4 backend work (uncommitted then, all shipped now).
@@ -66,6 +67,8 @@ Read in order:
 - [[04_Sessions/2026-05-11_Session_deep_audit]] — root-cause audit: every script had `checkpoints=[]` so every call was graded on 3 universal rules. Built LLM script-checkpoint extractor + admin ingest endpoint → **164 checkpoints written across 10 of 15 scripts** (E.ON Next NHH+HH now has 26 rules used by 73% of calls). Built sync `reanalyze-all` endpoint (Inngest path was a no-op in prod). After reanalyze: scores moved from N/3 cluster → N/26 with `f017bb03 → 22/26`
 - [[04_Sessions/2026-05-12_Session_taxonomy_rebuild]] — Locked call_type to `{lead_gen, pre_sales, verbal, loa}`; built content_classifier agent (1-4 segments per recording); per-segment pipeline + score aggregator; rejection auto-create disabled. Designed-on-disk state (now all deployed — see 2026-05-13 session). Plan at `~/.claude/plans/magical-booping-crown.md`.
 - [[04_Sessions/2026-05-13_Session_deploy_and_19of19]] — **DEPLOY DAY.** Shipped Phases 0-4 + Phase 5j to prod (`compliance-agent-mu.vercel.app` + Railway `394c438`). Unblocked a silent alembic-chain failure that had been broken since 2026-05-06 (`failed_jobs` DuplicateTable was killing every migration after it). Added Call.segments + Call.flags relationships to fix 500-on-upload. Built 4-pass script extractor (strict → prose-mode → per-page split → deterministic heuristic) so **all 19 of 19** supplier scripts now have non-empty checkpoints. Rewired `/scripts` UI upload to use the same extractor. **Resume guide inside the session file.**
+- [[04_Sessions/2026-05-14_Session_phase5_complete]] — Phase 5 a-i UI overhaul + 4 intelligence endpoints + per-segment cards + CI fix (7th red test) + intelligence_routes `func.cast` → `case-when` runtime bug.
+- [[04_Sessions/2026-05-14_Session_reviewer_polish]] — **MOST RECENT.** Eight reviewer-facing bugs shipped: real speaker names in transcript · LOA router fallback (script_name match) · CheckpointCard 2-row header · script-checkpoints UNION across segments · drag-to-scrub audio bar · Chat tab "Coming soon" · bulletproof agent-name regex layer + backfill endpoint.
 - [[04_Sessions/Decisions]] — running list of architectural decisions
 
 ### 05 State
