@@ -10,6 +10,10 @@ tags: [operations, skills, claude-code, auto-trigger]
 > can invoke via the `Skill` tool. They are NOT generic prompts — each has
 > its own metadata, working directory, and trigger conditions.
 >
+> **For the task→skill routing matrix** (which skill fires for which user
+> intent), see [[Skill_Routing]]. That's the actionable companion; this
+> file is the lookup reference.
+>
 > **Why this lives in BRAIN.** When the user asks "what can you do?" or
 > wonders why a particular Skill fired during a task, this is the index.
 > Updated 2026-05-14.

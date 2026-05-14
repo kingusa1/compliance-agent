@@ -81,6 +81,7 @@ Read in order:
 - [[06_Operations/Routes_Map]] — frontend + backend route inventory
 - [[06_Operations/Credentials]] — where each secret/key lives (NOT the keys)
 - [[06_Operations/Available_Skills]] — full Claude Code skills roster (~1500 entries) with auto-trigger conditions, grouped by domain. **Read this when wondering "what can the assistant do without me asking?"**
+- [[06_Operations/Skill_Routing]] — **task pattern → skill matrix**. Maps user intents (plan / bug fix / refactor / SQL change / etc.) to the exact skills the assistant should auto-fire, in parallel where possible. Loaded into context via the project-root `CLAUDE.md` so the right skills fire without the user typing the slash name. **Update after every multi-skill task** — closed loop between observed behaviour and next-session behaviour.
 
 ### 07 Tomorrow
 - [[07_Tomorrow/Project_Handover]] — the live demo script
