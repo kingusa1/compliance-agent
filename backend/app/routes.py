@@ -2023,6 +2023,67 @@ async def admin_reanalyze_all(
     }
 
 
+@router.post("/api/admin/backfill-agent-names", status_code=200)
+def admin_backfill_agent_names(
+    apply: bool = False,
+    only_missing: bool = True,
+    db: Session = Depends(get_db),
+):
+    """Repair Call.agent_name for completed calls whose name extraction
+    failed at first-pass time.
+
+    Uses the new deterministic regex extractor in
+    ``app.analysis._extract_agent_name_regex`` against ``Call.transcript``
+    — no LLM call, so it runs in seconds across the whole catalogue.
+
+    Query params:
+      apply=false        — dry run; reports proposed names without writing.
+      apply=true         — commits the changes.
+      only_missing=true  — only touch rows where agent_name is NULL/empty
+                           (default). Set to false to also overwrite
+                           existing names (useful after the prompt update
+                           if the previous LLM made bad calls).
+    """
+    from app.analysis import _extract_agent_name_regex
+
+    q = db.query(Call).filter(Call.transcript.isnot(None))
+    if only_missing:
+        q = q.filter((Call.agent_name.is_(None)) | (Call.agent_name == ""))
+    calls = q.order_by(Call.created_at.desc()).all()
+
+    proposals: list[dict] = []
+    updated = 0
+    for c in calls:
+        if not c.transcript:
+            continue
+        new_name = _extract_agent_name_regex(c.transcript)
+        if not new_name:
+            continue
+        existing = (c.agent_name or "").strip()
+        if existing and existing.lower() == new_name.lower():
+            continue
+        proposals.append(
+            {
+                "call_id": str(c.id)[:8],
+                "was": existing or None,
+                "now": new_name,
+                "filename": (c.filename or "")[:80],
+            }
+        )
+        if apply:
+            c.agent_name = new_name
+            updated += 1
+    if apply:
+        db.commit()
+    return {
+        "scanned": len(calls),
+        "candidates": len(proposals),
+        "updated": updated if apply else 0,
+        "applied": apply,
+        "proposals": proposals[:50],
+    }
+
+
 @router.post("/api/admin/ingest-script-checkpoints", status_code=200)
 async def admin_ingest_script_checkpoints(
     apply: bool = False,

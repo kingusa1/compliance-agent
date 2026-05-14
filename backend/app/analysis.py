@@ -1,4 +1,5 @@
 import json
+import re
 
 import httpx
 
@@ -196,35 +197,47 @@ Answer:"""
 
 DETECT_NAMES_PROMPT = """Read the start of this energy brokerage call transcript and extract two names.
 
-The transcript is labeled with `Agent:` and `Customer:` per turn (a broker
-calls a business owner about their energy contract). The AGENT is the
-person from the brokerage (says "my name is …", "calling from …",
-"your electricity supply"). The CUSTOMER is the person on the line who
-owns or runs the business.
+A broker calls a business owner about their energy contract. Transcripts
+may or may not have `Agent:` / `Customer:` speaker labels — they are
+sometimes a single un-labelled paragraph. Use ALL textual cues to decide
+who is who.
 
 EXTRACT:
-1. AGENT name — the broker / sales agent's OWN name (the speaker tagged
-   `Agent:` who says "my name is X" or whose first name follows that
-   pattern). NEVER the customer's name.
-2. CUSTOMER name — the person tagged `Customer:`. Often introduced when
-   the agent says "speaking with [name]?" and the customer confirms, or
-   when the customer self-identifies. NEVER the agent's name.
+1. AGENT name — the broker / sales agent's OWN first (+ surname if given)
+   name. Look for self-introduction phrases the agent uses:
+     • "my name is X" / "my name's X"
+     • "this is X calling/speaking"
+     • "I'm X from …" / "I am X"
+     • "you're through to X" / "you're speaking with X"
+     • "X here from …"
+   The agent is also the one who says "calls are recorded for monitoring",
+   "third party intermediary", "act on your behalf", "your supplier".
+2. CUSTOMER name — the person who OWNS or RUNS the business. Often
+   introduced by the agent ("speaking with X?", "is that X?") and confirmed
+   by the customer, or self-identified in response to "please confirm
+   your name".
 
 CRITICAL RULES:
-- The two names MUST be different people. If you only see one name, put
-  it on the line that matches the speaker tag and "Unknown" on the other.
-- If the transcript shows "Agent: hi jay my name is paris" then
-  AGENT=Paris and CUSTOMER=Jay (the agent is greeting the customer by
-  name then introducing themselves).
-- Full name if given, first name if only first given.
-- "Unknown" if truly unclear.
-- Do NOT include titles (Mr, Mrs) or company names.
-- Do NOT mix up customer ↔ agent. Re-read the speaker tags before answering.
+- The two names MUST be different people. If only one name appears, fill
+  the matching slot and put "Unknown" on the other.
+- Names can be ANY length, ANY cultural origin, and may LOOK UNUSUAL or
+  MISSPELLED (e.g. "Afak", "Parat", "Aaqib") because of transcription
+  drift — accept them as names anyway. Do NOT reject as "Unknown" just
+  because a name looks unfamiliar.
+- A name token contains only letters, hyphens and apostrophes. Reject
+  generic words ("calling", "speaking", "here", "third", "party").
+- Full name if given (first + surname); first name alone if that's all
+  that's said.
+- "Unknown" ONLY if truly unclear — never as a hedge.
+- Do NOT include titles (Mr, Mrs, Dr) or company names.
+- Re-read the transcript before answering. Names usually appear in the
+  first 30 seconds.
 
 TRANSCRIPT START:
 {transcript_start}
 
-Respond with ONLY a single line in this exact format (no JSON, no prose):
+Respond with ONLY two lines in this exact format (no JSON, no prose, no
+markdown):
 AGENT: <name or Unknown>
 CUSTOMER: <name or Unknown>"""
 
@@ -461,19 +474,131 @@ async def detect_call_type(transcript: str) -> str | None:
     return None
 
 
-async def detect_names(transcript: str) -> tuple[str, str]:
-    """Extract (agent_name, customer_name) from the start of a transcript.
+# 2026-05-14 \u2014 deterministic agent-name extractor.
+#
+# Background: a call transcript "...my name is afak and we are third party
+# intermediate seaway utilities..." was getting agent_name=Unknown because
+# the LLM rejected "afak" as a name (unusual transliteration + the prompt
+# expected `Agent:` / `Customer:` speaker labels that aren't actually in the
+# transcript). This regex layer catches the canonical TPI self-introduction
+# phrases before we even call the LLM \u2014 and overrides the LLM if the LLM
+# returns Unknown / a different name for an obvious self-intro.
+#
+# Patterns are deliberately conservative \u2014 we only capture the first name
+# token after the trigger phrase (no greedy multi-word match) to avoid
+# slurping in "afak and we are..." \u2192 "afak and we are". Surname capture is
+# attempted separately when the next token is also a candidate name (not
+# in the stopword set).
+_AGENT_INTRO_TRIGGERS = re.compile(
+    r"\b(?:"
+    r"my\s+name(?:\s+is|\'s|s)?"
+    r"|this\s+is"
+    r"|i\s*am"
+    r"|i\'?m"
+    r"|you'?re\s+through\s+to"
+    r"|you'?ve\s+come\s+through\s+to"
+    r"|come\s+through\s+to"
+    r"|you'?re\s+speaking\s+(?:to|with)"
+    r"|speaking\s+(?:to|with)"
+    r"|it'?s"
+    r"|it\s+is"
+    r")\s+([A-Za-z][A-Za-z\-']{1,25})(?:\s+([A-Za-z][A-Za-z\-']{1,25}))?",
+    re.IGNORECASE,
+)
 
-    Single cheap LLM call; returns ("Unknown", "Unknown") on any failure.
+# Secondary pattern: name FIRST then a self-intro trigger.
+# Catches "sarah here from watt utilities", "jay speaking from …".
+_AGENT_TRAILING_TRIGGER = re.compile(
+    r"\b([A-Za-z][A-Za-z\-']{1,25})(?:\s+([A-Za-z][A-Za-z\-']{1,25}))?\s+"
+    r"(?:here\s+from|speaking\s+from|calling\s+from)\b",
+    re.IGNORECASE,
+)
+
+# Words that look like name candidates by shape but aren't real names.
+# These appear right after self-intro triggers in mis-transcribed calls
+# ("my name's calling you from", "this is regarding\u2026") and need filtering
+# so we don't write "Calling" or "Regarding" into call.agent_name.
+_NAME_STOPWORDS = frozenset(
+    {
+        "calling", "speaking", "here", "with", "from", "at", "for", "the",
+        "your", "you", "and", "but", "today", "yes", "no", "hi", "hello",
+        "ok", "okay", "perfect", "great", "good", "thanks", "thank",
+        "afternoon", "morning", "evening", "sir", "ma'am", "madam",
+        "going", "regarding", "checking", "ringing", "phoning", "back",
+        "about", "just", "actually", "obviously", "really", "very",
+        "third", "party", "intermediate", "intermediary", "broker",
+        "brokerage", "agent", "representative", "rep", "manager",
+        "company", "limited", "ltd", "incorporated", "supplier",
+        "utilities", "energy", "gas", "electric", "electricity",
+        "british", "scottish", "next", "eon", "totalenergies", "edf",
+        "drax", "smartest", "octopus", "pozitive", "watt",
+    }
+)
+
+
+def _title_case_name(raw: str) -> str:
+    """Normalize a name token to Display Case. 'afak' \u2192 'Afak'; 'mcdonald'
+    \u2192 'Mcdonald' (good enough \u2014 surname normalisation is downstream's job).
     """
+    return " ".join(w[:1].upper() + w[1:].lower() for w in raw.split() if w)
+
+
+def _extract_agent_name_regex(transcript: str) -> str | None:
+    """Return the first plausible agent-name candidate from canonical TPI
+    self-introduction phrases in the transcript head, else None.
+
+    Scans only the first 1500 chars because TPI agents always self-introduce
+    in the opening seconds \u2014 running on the full transcript would catch
+    other names (customer, brokerage staff, third parties) and we'd lose
+    determinism. Returns the title-cased first name, optionally with a
+    surname when the second captured token is also name-shaped.
+    """
+    head = transcript[:1500].replace("\n", " ")
+    for m in _AGENT_INTRO_TRIGGERS.finditer(head):
+        first = (m.group(1) or "").strip("'\"-,.;: ")
+        second = (m.group(2) or "").strip("'\"-,.;: ") if m.group(2) else ""
+        if not first:
+            continue
+        if first.lower() in _NAME_STOPWORDS:
+            continue
+        if not (2 <= len(first) <= 25):
+            continue
+        # Accept the surname only when it looks like a name (not a stopword,
+        # alphabetic, plausible length).
+        if second and 2 <= len(second) <= 25 and second.lower() not in _NAME_STOPWORDS:
+            return _title_case_name(f"{first} {second}")
+        return _title_case_name(first)
+    return None
+
+
+async def detect_names(transcript: str) -> tuple[str, str]:
+    """Extract (agent_name, customer_name) from a call transcript.
+
+    Two-layer extraction (2026-05-14):
+
+      Layer 1 \u2014 Regex pre-pass on canonical TPI self-introduction phrases
+                ("my name is X", "this is X", "I'm X", "you're through to X").
+                Bulletproof for the common cases the LLM has gotten wrong on
+                unusual or mis-transcribed names (Afak / Parat / etc).
+      Layer 2 \u2014 LLM call for nuance (resolves customer name and any case
+                the regex missed). The regex result wins on conflict for
+                the AGENT slot only; CUSTOMER stays with the LLM.
+
+    Returns ("Unknown", "Unknown") only when BOTH layers fail.
+    """
+    regex_agent = _extract_agent_name_regex(transcript)
+    if regex_agent:
+        log.info(f"\U0001f464 DETECT names regex pre-pass \u2192 agent={regex_agent!r}")
+
     words = transcript.split()
     transcript_start = " ".join(words[:600])
     prompt = DETECT_NAMES_PROMPT.replace("{transcript_start}", transcript_start)
     try:
         result = await _call_llm(prompt, timeout=20.0)
     except Exception as e:
-        log.warning(f"\U0001f464 DETECT names failed: {e}")
-        return "Unknown", "Unknown"
+        log.warning(f"\U0001f464 DETECT names LLM failed: {e}")
+        # Regex still wins for the agent when the LLM is down.
+        return (regex_agent or "Unknown"), "Unknown"
 
     agent = "Unknown"
     customer = "Unknown"
@@ -483,6 +608,21 @@ async def detect_names(transcript: str) -> tuple[str, str]:
             agent = line.split(":", 1)[1].strip().strip('"') or "Unknown"
         elif line.upper().startswith("CUSTOMER:"):
             customer = line.split(":", 1)[1].strip().strip('"') or "Unknown"
+
+    # \u2500\u2500 Regex override on the AGENT slot \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # The regex is authoritative for self-introduction phrases. If the LLM
+    # disagrees, prefer regex (the prompt has no transcript-text access
+    # we can't audit \u2014 the regex match is grounded in the literal text).
+    if regex_agent:
+        if (
+            agent == "Unknown"
+            or agent.strip().lower() != regex_agent.strip().lower()
+        ):
+            log.info(
+                f"\U0001f464 DETECT names regex override \u2192 "
+                f"agent={regex_agent!r} (LLM said {agent!r})"
+            )
+            agent = regex_agent
 
     # Sanity: if agent and customer collapsed to the same name (LLM
     # confusion), trust the customer (which gets cross-validated downstream
