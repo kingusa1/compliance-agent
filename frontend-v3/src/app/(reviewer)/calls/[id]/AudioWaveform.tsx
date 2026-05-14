@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Pause, Play, Rewind, FastForward } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -82,30 +82,112 @@ export const AudioWaveform = forwardRef<AudioWaveformHandle, AudioWaveformProps>
   const playedFrac = Math.max(0, Math.min(1, current / safeDuration));
   const playedBars = Math.floor(bars * playedFrac);
 
-  function seekToBar(idx: number) {
-    const t = (idx / bars) * safeDuration;
-    const a = audioRef.current;
-    if (a) a.currentTime = t;
-    setCurrent(t);
-    onTimeUpdate?.(t);
-  }
+  // ── Drag-to-scrub ──────────────────────────────────────────────────
+  // Reviewer requested 2026-05-14: mousedown on the waveform → drag the
+  // playhead anywhere; mouseup commits the final position. Works on touch
+  // devices too via Pointer Events so an iPad reviewer can scrub.
+  const waveformRef = useRef<HTMLDivElement | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const wasPlayingRef = useRef(false);
+
+  const seekToClientX = useCallback(
+    (clientX: number, commit: boolean) => {
+      const el = waveformRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
+      const frac = rect.width > 0 ? x / rect.width : 0;
+      const t = frac * safeDuration;
+      setCurrent(t);
+      onTimeUpdate?.(t);
+      if (commit) {
+        const a = audioRef.current;
+        if (a) a.currentTime = t;
+      }
+    },
+    [safeDuration, onTimeUpdate],
+  );
+
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (e: PointerEvent) => {
+      // While dragging, only update the visual playhead so the audio doesn't
+      // chase every pixel. The final commit happens on pointerup.
+      seekToClientX(e.clientX, false);
+    };
+    const onUp = (e: PointerEvent) => {
+      seekToClientX(e.clientX, true);
+      setDragging(false);
+      // Resume playback if the reviewer was playing audio when they
+      // started the drag.
+      if (wasPlayingRef.current) {
+        audioRef.current?.play().catch(() => {
+          /* user gesture missing — leave paused */
+        });
+        wasPlayingRef.current = false;
+      }
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [dragging, seekToClientX]);
+
+  const startDrag = useCallback(
+    (clientX: number) => {
+      const a = audioRef.current;
+      wasPlayingRef.current = !!a && !a.paused;
+      if (a && !a.paused) a.pause();
+      setDragging(true);
+      seekToClientX(clientX, true);
+    },
+    [seekToClientX],
+  );
 
   return (
     <div className="flex flex-col gap-2 px-5 py-4">
       <div
+        ref={waveformRef}
         role="slider"
         aria-label="Audio progress"
         aria-valuemin={0}
         aria-valuemax={Math.round(safeDuration)}
         aria-valuenow={Math.round(current)}
         data-testid="waveform"
-        className="relative flex h-10 cursor-pointer items-center gap-[1px]"
-        onClick={(e) => {
-          const rect = e.currentTarget.getBoundingClientRect();
-          const x = e.clientX - rect.left;
-          const idx = Math.round((x / rect.width) * bars);
-          seekToBar(idx);
+        className={
+          "relative flex h-10 items-center gap-[1px] select-none " +
+          (dragging ? "cursor-grabbing" : "cursor-grab")
+        }
+        style={{ touchAction: "none" }}
+        onPointerDown={(e) => {
+          // Capture pointer + drag-from-anywhere on the bar.
+          e.currentTarget.setPointerCapture?.(e.pointerId);
+          startDrag(e.clientX);
         }}
+        onKeyDown={(e) => {
+          // Keyboard scrubbing — left/right = ±5s, shift = ±15s.
+          const step = e.shiftKey ? 15 : 5;
+          if (e.key === "ArrowRight") {
+            e.preventDefault();
+            const next = Math.min(safeDuration, current + step);
+            const a = audioRef.current;
+            if (a) a.currentTime = next;
+            setCurrent(next);
+            onTimeUpdate?.(next);
+          } else if (e.key === "ArrowLeft") {
+            e.preventDefault();
+            const next = Math.max(0, current - step);
+            const a = audioRef.current;
+            if (a) a.currentTime = next;
+            setCurrent(next);
+            onTimeUpdate?.(next);
+          }
+        }}
+        tabIndex={0}
       >
         {Array.from({ length: bars }).map((_, i) => {
           const h =

@@ -1434,44 +1434,83 @@ def get_call_script_checkpoints(call_id: str, db: Session = Depends(get_db)):
     """Return the script's checkpoint definitions matched to this call so the
     UI can show Expected vs Actual ('what the agent should have said').
 
-    When the matched script has empty `checkpoints` (seed-only metadata), the
-    pipeline falls through to the V1 third-party-disclosure analyzer — so we
-    return those V1 rules here too. This stops the UI from showing
-    "Script text unavailable" when the AI did, in fact, evaluate the call
-    against a known rule set.
+    2026-05-14 — returns the UNION across all CallSegment scripts so per-segment
+    checkpoints from different rubrics (88-rule pre_sales pack + supplier
+    verbal script + LOA script) all carry their ``required`` text. Without
+    this, segments graded against a rubric different from ``call.script_id``
+    rendered as "Script text unavailable" in the checkpoint cards because
+    name-match against the single call-level script returned nothing.
+
+    When a script has empty ``checkpoints`` (seed-only metadata), the
+    pipeline falls through to the V1 third-party-disclosure analyzer — so
+    those V1 rules are appended too. Duplicate ``name`` entries are
+    dedupe'd (segment scripts win over the call-level script).
     """
     call = db.query(Call).filter_by(id=call_id).first()
     if not call:
         raise HTTPException(404, "Call not found")
-    if not call.script_id:
+
+    # Build the ordered set of script_ids to fetch: every segment's
+    # script_id first (so per-segment rubrics win), then the call-level
+    # script_id as a safety net. Falsy / duplicate ids are skipped.
+    script_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for seg in list(getattr(call, "segments", []) or []):
+        sid = getattr(seg, "script_id", None)
+        if sid and sid not in seen_ids:
+            script_ids.append(str(sid))
+            seen_ids.add(str(sid))
+    if call.script_id and str(call.script_id) not in seen_ids:
+        script_ids.append(str(call.script_id))
+        seen_ids.add(str(call.script_id))
+
+    if not script_ids:
+        # No segments resolved + no call-level script → V1 fallback only.
         return {"call_id": call_id, "checkpoints": _V1_TPI_FALLBACK_CHECKPOINTS}
 
-    script = db.query(Script).filter_by(id=call.script_id).first()
+    rows = (
+        db.query(Script).filter(Script.id.in_(script_ids)).all() if script_ids else []
+    )
+    scripts_by_id = {str(s.id): s for s in rows}
 
-    defs: list = []
-    if script and script.checkpoints:
+    merged: list = []
+    merged_names: set[str] = set()
+    primary: Script | None = None
+    for sid in script_ids:
+        s = scripts_by_id.get(sid)
+        if not s:
+            continue
+        if primary is None:
+            primary = s
         try:
-            defs = json.loads(script.checkpoints) or []
+            defs = json.loads(s.checkpoints or "[]") or []
         except Exception:
             defs = []
+        for d in defs:
+            if not isinstance(d, dict):
+                continue
+            name_key = (d.get("name") or "").strip().lower()
+            if not name_key or name_key in merged_names:
+                continue
+            merged.append(d)
+            merged_names.add(name_key)
 
-    if not defs:
-        # Match what the pipeline actually did at line 793-802 of pipeline.py:
-        # empty script.checkpoints → V1 TPI analyzer → 3 universal rules.
+    if not merged:
+        # Every script had empty checkpoints → V1 fallback.
         return {
             "call_id": call_id,
-            "script_name": (script.script_name if script else None),
-            "supplier": (script.supplier_name if script else None),
-            "mode": (script.mode if script else "v1_fallback"),
+            "script_name": (primary.script_name if primary else None),
+            "supplier": (primary.supplier_name if primary else None),
+            "mode": (primary.mode if primary else "v1_fallback"),
             "checkpoints": _V1_TPI_FALLBACK_CHECKPOINTS,
         }
 
     return {
         "call_id": call_id,
-        "script_name": script.script_name,
-        "supplier": script.supplier_name,
-        "mode": script.mode,
-        "checkpoints": defs,
+        "script_name": (primary.script_name if primary else None),
+        "supplier": (primary.supplier_name if primary else None),
+        "mode": (primary.mode if primary else None),
+        "checkpoints": merged,
     }
 
 

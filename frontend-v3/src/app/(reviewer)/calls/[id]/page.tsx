@@ -1462,30 +1462,45 @@ export default function CallDetailPage({
           >
             {(
               [
-                { key: "checkpoints", label: "Checkpoints", count: cpCards.length },
-                { key: "verdict", label: "Verdict", count: null },
-                { key: "chat", label: "Chat", count: null },
+                { key: "checkpoints", label: "Checkpoints", count: cpCards.length, disabled: false },
+                { key: "verdict", label: "Verdict", count: null, disabled: false },
+                { key: "chat", label: "Chat", count: null, disabled: true },
               ] as const
             ).map((t) => {
               const active = tab === t.key;
+              const disabled = t.disabled;
               return (
                 <button
                   key={t.key}
-                  onClick={() => setTab(t.key)}
+                  onClick={() => {
+                    // 2026-05-14: Chat is gated behind "Coming soon" until the
+                    // backend RAG endpoint is wired. Click is a no-op so the
+                    // empty/unbuilt tab body never renders.
+                    if (disabled) return;
+                    setTab(t.key);
+                  }}
+                  disabled={disabled}
+                  aria-disabled={disabled}
+                  title={disabled ? "Coming soon" : undefined}
                   style={{
                     padding: "12px 14px",
                     fontSize: 13,
                     fontWeight: 500,
-                    color: active ? "var(--text-primary)" : "var(--text-muted)",
-                    borderBottom: `2px solid ${active ? "var(--emerald)" : "transparent"}`,
+                    color: disabled
+                      ? "var(--text-faint)"
+                      : active
+                        ? "var(--text-primary)"
+                        : "var(--text-muted)",
+                    borderBottom: `2px solid ${active && !disabled ? "var(--emerald)" : "transparent"}`,
                     marginBottom: -1,
-                    cursor: "pointer",
+                    cursor: disabled ? "not-allowed" : "pointer",
                     display: "flex",
                     alignItems: "center",
                     gap: 6,
                     background: "transparent",
                     border: "none",
                     fontFamily: "inherit",
+                    opacity: disabled ? 0.55 : 1,
                   }}
                 >
                   {t.label}
@@ -1498,6 +1513,23 @@ export default function CallDetailPage({
                       }}
                     >
                       {t.count}
+                    </span>
+                  )}
+                  {disabled && (
+                    <span
+                      style={{
+                        fontSize: 9,
+                        fontWeight: 700,
+                        padding: "1px 6px",
+                        borderRadius: 999,
+                        background: "var(--bg-elev3)",
+                        color: "var(--text-faint)",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.06em",
+                        marginLeft: 2,
+                      }}
+                    >
+                      Coming soon
                     </span>
                   )}
                 </button>
