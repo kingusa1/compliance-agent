@@ -9,7 +9,7 @@
  * with PII pills + word-level karaoke (when wordsQuery has data).
  * Right = Checkpoints | Verdict | Chat tabs.
  */
-import { use, useEffect, useMemo, useRef, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -791,6 +791,65 @@ export default function CallDetailPage({
     void audioRef.current.play().catch(() => {});
   }
 
+  // ── Drag-to-scrub on the call-detail waveform ──────────────────────
+  // Reviewer ask 2026-05-14: pointer-down anywhere on the waveform bar
+  // → live drag the playhead to any timestamp. Releases commit the seek
+  // and resume playback if audio was already playing when the drag began.
+  const waveformWrapRef = useRef<HTMLDivElement | null>(null);
+  const [scrubbing, setScrubbing] = useState(false);
+  const wasPlayingDuringScrubRef = useRef(false);
+
+  const scrubToClientX = useCallback(
+    (clientX: number, commitAudio: boolean) => {
+      const el = waveformWrapRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
+      const frac = x / rect.width;
+      const t = frac * (duration > 0 ? duration : 1);
+      setCurrentSec(t);
+      if (commitAudio && audioRef.current) {
+        audioRef.current.currentTime = t;
+      }
+    },
+    [duration],
+  );
+
+  useEffect(() => {
+    if (!scrubbing) return;
+    const onMove = (e: PointerEvent) => scrubToClientX(e.clientX, false);
+    const onUp = (e: PointerEvent) => {
+      scrubToClientX(e.clientX, true);
+      setScrubbing(false);
+      if (wasPlayingDuringScrubRef.current) {
+        audioRef.current?.play().catch(() => {
+          /* user gesture lost — leave paused */
+        });
+        wasPlayingDuringScrubRef.current = false;
+      }
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [scrubbing, scrubToClientX]);
+
+  const startScrub = useCallback(
+    (clientX: number) => {
+      const a = audioRef.current;
+      wasPlayingDuringScrubRef.current = !!a && !a.paused;
+      if (a && !a.paused) a.pause();
+      setScrubbing(true);
+      scrubToClientX(clientX, true);
+    },
+    [scrubToClientX],
+  );
+
   // ── Checkpoint card data merge ─────────────────────────────────────
   //
   // Three sources combined per checkpoint, matched by name (case-insensitive
@@ -1194,7 +1253,41 @@ export default function CallDetailPage({
               flexShrink: 0,
             }}
           >
-            <div style={{ position: "relative", height: 48 }}>
+            <div
+              ref={waveformWrapRef}
+              role="slider"
+              aria-label="Audio playhead"
+              aria-valuemin={0}
+              aria-valuemax={Math.round(duration)}
+              aria-valuenow={Math.round(currentSec)}
+              tabIndex={0}
+              data-testid="call-waveform"
+              style={{
+                position: "relative",
+                height: 48,
+                cursor: scrubbing ? "grabbing" : "grab",
+                touchAction: "none",
+                userSelect: "none",
+              }}
+              onPointerDown={(e) => {
+                // 2026-05-14: reviewer-requested drag scrubbing. Click and
+                // drag anywhere on the waveform bar to move the playhead.
+                // Pointer capture lets the drag continue even if the cursor
+                // exits the bar's bounds.
+                e.currentTarget.setPointerCapture?.(e.pointerId);
+                startScrub(e.clientX);
+              }}
+              onKeyDown={(e) => {
+                const step = e.shiftKey ? 15 : 5;
+                if (e.key === "ArrowRight") {
+                  e.preventDefault();
+                  seekAndPlay(Math.min(duration, currentSec + step));
+                } else if (e.key === "ArrowLeft") {
+                  e.preventDefault();
+                  seekTo(Math.max(0, currentSec - step));
+                }
+              }}
+            >
               <Waveform
                 played={Math.floor((playedPct / 100) * 140)}
                 total={140}
