@@ -1,4 +1,25 @@
 "use client";
+/**
+ * /tracker side panel — full draft + Save form (2026-05-15 rewrite).
+ *
+ * Every editable field is held in local ``draft`` state until the reviewer
+ * presses **Save changes**. Save routes each diffed field to the right
+ * endpoint:
+ *
+ *   * Rejection-level fields (reason / fix_narrative / category /
+ *     fix_required / status / outcome / deadline / outcome_narrative) →
+ *     PATCH /api/tracker/rows/{rejection_id}.
+ *   * Deal-level fields (supplier / agent / MPAN / MPRN / annual value /
+ *     live date / term months / docusign) → PATCH /api/tracker/calls/{call_id}/meta.
+ *   * Assignee id → POST /api/tracker/rows/{rejection_id}/assignee.
+ *
+ * Reviewer can ALSO confirm the AI verdict in one click via "Confirm AI
+ * verdict" (replaces Save when no fields are dirty). The Confirm button
+ * fires /api/rejections/{id}/confirm — humans only path, by spec.
+ *
+ * Compliant rows (no rejection, no AWAITING_REVIEW status) render a
+ * read-only summary; their AI verdict is locked.
+ */
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CategoryChip, CATEGORY_KEYS, CATEGORY_LABEL } from "./CategoryChip";
@@ -6,38 +27,33 @@ import { StatusPipelinePill, PIPELINE_STEPS, PIPELINE_LABELS } from "./StatusPip
 import type { TrackerRow } from "@/lib/queries/tracker";
 import {
   useConfirmVerdict,
-  useOverrideVerdict,
-  useEditTrackerRow,
   useEditCallMeta,
+  useEditTrackerRow,
+  useOverrideVerdict,
   useSetAssignee,
 } from "@/lib/mutations/tracker";
 import { useActiveReviewersQuery } from "@/lib/queries/reviewers";
 
-// Canonical supplier list (mirrors backend SupplierEnum in payload_schema.py)
-// plus the legacy short-form aliases that the pipeline's auto-detector emits
-// on older rows (``E.ON Next`` vs canonical ``E.ON Next Energy``). Side-panel
-// uses it as the source of truth for the supplier dropdown so a reviewer can
-// correct a misdetected supplier on any rejection row. If we don't include
-// the legacy aliases the dropdown shows an empty value for current rows.
+// Canonical supplier list (mirrors backend SupplierEnum + legacy aliases).
 const SUPPLIER_OPTIONS = [
   "E.ON",
-  "E.ON Next",          // legacy alias for E.ON Next Energy
+  "E.ON Next",
   "E.ON Next Energy",
-  "British Gas",        // legacy generic
+  "British Gas",
   "British Gas Core",
   "British Gas Lite",
   "British Gas Business",
   "British Gas Trading",
-  "BGL",                // legacy abbrev (British Gas Lite)
+  "BGL",
   "Pozitive",
-  "Pozitive Energy",    // legacy alias
+  "Pozitive Energy",
   "Yu Energy",
   "Smartest Energy",
   "Affect Energy",
   "Britannia Gas",
   "United Gas & Power",
   "TotalEnergies (out-of-matrix)",
-  "EDF",                // historical pipeline value
+  "EDF",
   "Scottish Power",
   "Other",
 ];
@@ -55,99 +71,249 @@ const OUTCOMES = [
   "NOT_RECOVERABLE", "RESIGNED_TO_OTHER_SUPPLIER",
 ];
 
+// Every editable field that maps to the side panel form. Each value is
+// always a string (or "" for null) so the diff logic stays trivial. Final
+// numeric/date coercion happens in the per-field save router.
 type DraftFields = {
+  // Rejection-level
+  rejection_reason: string;
+  fix_narrative: string;
   category: string;
   fix_required: string;
-  fix_narrative: string;
-  rejection_reason: string;
+  status: string;
+  outcome: string;
+  outcome_narrative: string;
+  deadline: string;       // YYYY-MM-DD
+  fix_assignee_id: string;
+  // Deal-level
+  supplier: string;
+  sales_agent: string;
+  mpan_electricity: string;
+  mprn_gas: string;
+  deal_value_gbp: string;
+  expected_live_date: string;  // YYYY-MM-DD
+  term_months: string;         // "" | "12" ... "60"
+  docusign_reference: string;
 };
 
-function _initialDraft(row: TrackerRow): DraftFields {
+const REJECTION_KEYS: ReadonlyArray<keyof DraftFields> = [
+  "rejection_reason",
+  "fix_narrative",
+  "category",
+  "fix_required",
+  "status",
+  "outcome",
+  "outcome_narrative",
+  "deadline",
+];
+const DEAL_KEYS: ReadonlyArray<keyof DraftFields> = [
+  "supplier",
+  "sales_agent",
+  "mpan_electricity",
+  "mprn_gas",
+  "deal_value_gbp",
+  "expected_live_date",
+  "term_months",
+  "docusign_reference",
+];
+
+function rowToDraft(row: TrackerRow): DraftFields {
   return {
+    rejection_reason: row.rejection_reason ?? "",
+    fix_narrative: row.fix_narrative ?? "",
     category: row.category ?? "",
     fix_required: row.fix_required ?? "",
-    fix_narrative: row.fix_narrative ?? "",
-    rejection_reason: row.rejection_reason ?? "",
+    status: row.status ?? "",
+    outcome: row.outcome ?? "",
+    outcome_narrative: row.outcome_narrative ?? "",
+    deadline: row.deadline?.slice(0, 10) ?? "",
+    fix_assignee_id: row.fix_assignee_id ?? "",
+    supplier: row.supplier ?? "",
+    sales_agent: row.sales_agent ?? "",
+    mpan_electricity: row.mpan_electricity ?? "",
+    mprn_gas: row.mprn_gas ?? "",
+    deal_value_gbp: row.deal_value_gbp != null ? String(row.deal_value_gbp) : "",
+    expected_live_date: row.expected_live_date?.slice(0, 10) ?? "",
+    term_months: row.term_months != null ? String(row.term_months) : "",
+    docusign_reference: row.docusign_reference ?? "",
   };
 }
 
-export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: () => void }) {
-  // 2026-05-14: a row without `rejection_id` could be one of TWO things —
-  // a fully-compliant call (green) OR an awaiting-review call the AI flagged
-  // (amber). Previously both were collapsed into a single "Compliant" branch,
-  // which mis-labelled every AI-flagged-but-not-yet-reviewed call as
-  // compliant. Distinguish via the synthetic AWAITING_REVIEW status that
-  // tracker_aggregator._awaiting_review_row stamps.
+export function TrackerSidePanel({
+  row,
+  onClose,
+}: {
+  row: TrackerRow;
+  onClose: () => void;
+}) {
+  // Row classification — kept verbatim from prior version. Awaiting-review
+  // rows live without a Rejection (they're calls flagged by the AI but not
+  // yet signed off); compliant rows have neither. Both still expose every
+  // editable field except the verdict bucket.
   const isAwaitingReview = !row.rejection_id && row.status === "AWAITING_REVIEW";
   const isCompliant = !row.rejection_id && !isAwaitingReview;
-  const editNotes = useEditTrackerRow();
+  const editRow = useEditTrackerRow();
   const editCallMeta = useEditCallMeta();
   const confirm = useConfirmVerdict();
   const override = useOverrideVerdict();
   const setAssignee = useSetAssignee();
   const reviewersQ = useActiveReviewersQuery();
 
-  // Helper — patch a single editable field. Routes to the rejection PATCH
-  // endpoint when a rejection_id exists (the existing reviewer flow), or
-  // to the call-level PATCH endpoint otherwise (awaiting-review + compliant
-  // rows where the reviewer still needs to correct supplier/agent/meter
-  // before formalising a Rejection). Both endpoints normalise the same
-  // payload shape on the server so we don't need divergent field keys.
-  const patchField = (field: string, value: string | number | null) => {
-    if (row.rejection_id) {
-      editNotes.mutate({
-        rejectionId: row.rejection_id,
-        fields: { [field]: value },
-      });
-    } else if (row.call_id) {
-      editCallMeta.mutate({
-        callId: row.call_id,
-        fields: { [field]: value },
-      });
-    }
-  };
+  // ── Draft state ───────────────────────────────────────────────────────
+  // Single source of truth for every editable field. Reset whenever the
+  // selected row changes OR a successful mutation refreshes the server
+  // value so the form re-anchors to the saved state.
+  const [draft, setDraft] = useState<DraftFields>(() => rowToDraft(row));
+  useEffect(() => {
+    setDraft(rowToDraft(row));
+  }, [
+    row.rejection_id,
+    row.call_id,
+    row.rejection_reason,
+    row.fix_narrative,
+    row.category,
+    row.fix_required,
+    row.status,
+    row.outcome,
+    row.outcome_narrative,
+    row.deadline,
+    row.fix_assignee_id,
+    row.supplier,
+    row.sales_agent,
+    row.mpan_electricity,
+    row.mprn_gas,
+    row.deal_value_gbp,
+    row.expected_live_date,
+    row.term_months,
+    row.docusign_reference,
+  ]);
 
-  // Editability gate — we let reviewers edit Identity + Meter+Deal cards on
-  // any row that has a backing call or deal. Compliant rows (no rejection,
-  // no AWAITING_REVIEW status) are read-only because their AI verdict is
-  // already locked in.
+  const original = useMemo(() => rowToDraft(row), [row]);
+
   const editable = Boolean(row.rejection_id || (isAwaitingReview && row.call_id));
 
-  // Local draft + dirty tracking. When reviewer edits any of the 4
-  // override-eligible fields, dirty becomes true → Save replaces the
-  // Confirm button. Save flips state to HUMAN_OVERRIDDEN backend-side.
-  const [draft, setDraft] = useState<DraftFields>(() => _initialDraft(row));
-  // Reset draft whenever the selected row changes (different rejection).
-  useEffect(() => setDraft(_initialDraft(row)), [row.rejection_id]);
+  // Which keys are editable on THIS row.
+  const rejectionEditable = Boolean(row.rejection_id);
+  const dealEditable = editable && Boolean(row.deal_id);
 
-  const dirty = useMemo(() => {
-    const original = _initialDraft(row);
-    return (Object.keys(draft) as (keyof DraftFields)[]).some(
-      (k) => (draft[k] ?? "") !== (original[k] ?? ""),
-    );
-  }, [draft, row]);
+  // ── Dirty calculation ─────────────────────────────────────────────────
+  const diffs = useMemo(() => {
+    const out: Partial<Record<keyof DraftFields, string>> = {};
+    (Object.keys(draft) as (keyof DraftFields)[]).forEach((k) => {
+      if (draft[k] !== original[k]) out[k] = draft[k];
+    });
+    return out;
+  }, [draft, original]);
+  const dirty = Object.keys(diffs).length > 0;
 
   const verdictState = row.verdict_state ?? "AI_PENDING";
   const isAiPending = verdictState === "AI_PENDING";
+
+  const saving =
+    editRow.isPending ||
+    editCallMeta.isPending ||
+    setAssignee.isPending ||
+    override.isPending;
+
+  const update = <K extends keyof DraftFields>(key: K, value: string) =>
+    setDraft((d) => ({ ...d, [key]: value }));
+
+  // ── Save router ───────────────────────────────────────────────────────
+  // Splits dirty fields into (rejection-level / deal-level / assignee) and
+  // fires one mutation per group. Each mutation invalidates the tracker
+  // query so the row refreshes after Save resolves.
+  const onSave = () => {
+    if (!dirty) return;
+    const dirtyKeys = Object.keys(diffs) as (keyof DraftFields)[];
+
+    // Coerce string-form draft values back to backend types.
+    const toServerValue = (k: keyof DraftFields): string | number | null => {
+      const v = diffs[k];
+      if (v === undefined) return null;
+      if (v === "") return null;
+      if (k === "deal_value_gbp") return Number(v);
+      if (k === "term_months") return Number(v);
+      return v;
+    };
+
+    // 1. Rejection-level fields (only when a rejection_id exists).
+    if (rejectionEditable) {
+      const rejectionDiffs: Record<string, string | number | null> = {};
+      dirtyKeys.forEach((k) => {
+        if (REJECTION_KEYS.includes(k)) {
+          rejectionDiffs[k] = toServerValue(k);
+        }
+      });
+      // We deliberately use the override path when any reviewer-overrideable
+      // field changes so verdict_state flips to HUMAN_OVERRIDDEN. Otherwise
+      // a plain PATCH leaves provenance as AI_PENDING which is wrong after
+      // a manual edit. Other simple fields (status / deadline / outcome /
+      // outcome_narrative) still go through the row-edit PATCH.
+      const overrideKeys = new Set([
+        "rejection_reason",
+        "fix_narrative",
+        "category",
+        "fix_required",
+      ]);
+      const overrideBody: Record<string, string | null> = {};
+      const editBody: Record<string, string | number | null> = {};
+      Object.entries(rejectionDiffs).forEach(([k, v]) => {
+        if (overrideKeys.has(k)) overrideBody[k] = v as string | null;
+        else editBody[k] = v;
+      });
+      if (Object.keys(overrideBody).length > 0 && row.rejection_id) {
+        override.mutate({
+          rejectionId: row.rejection_id,
+          body: overrideBody,
+        });
+      }
+      if (Object.keys(editBody).length > 0 && row.rejection_id) {
+        editRow.mutate({
+          rejectionId: row.rejection_id,
+          fields: editBody,
+        });
+      }
+    }
+
+    // 2. Deal-level fields — route through the right endpoint based on
+    //    whether a rejection exists for this call.
+    if (dealEditable) {
+      const dealDiffs: Record<string, string | number | null> = {};
+      dirtyKeys.forEach((k) => {
+        if (DEAL_KEYS.includes(k)) {
+          dealDiffs[k] = toServerValue(k);
+        }
+      });
+      if (Object.keys(dealDiffs).length > 0) {
+        if (row.rejection_id) {
+          editRow.mutate({
+            rejectionId: row.rejection_id,
+            fields: dealDiffs,
+          });
+        } else if (row.call_id) {
+          editCallMeta.mutate({
+            callId: row.call_id,
+            fields: dealDiffs,
+          });
+        }
+      }
+    }
+
+    // 3. Assignee — separate endpoint.
+    if (rejectionEditable && diffs.fix_assignee_id !== undefined && row.rejection_id) {
+      setAssignee.mutate({
+        rejectionId: row.rejection_id,
+        assigneeId: diffs.fix_assignee_id === "" ? null : diffs.fix_assignee_id,
+      });
+    }
+  };
 
   const onConfirm = () => {
     if (!row.rejection_id) return;
     confirm.mutate(row.rejection_id);
   };
 
-  const onSave = () => {
-    if (!row.rejection_id || !dirty) return;
-    const original = _initialDraft(row);
-    const body: Record<string, string | null> = {};
-    (Object.keys(draft) as (keyof DraftFields)[]).forEach((k) => {
-      const v = draft[k];
-      if ((v ?? "") !== (original[k] ?? "")) {
-        body[k] = v === "" ? null : v;
-      }
-    });
-    override.mutate({ rejectionId: row.rejection_id, body });
-  };
-
+  // ── Render ────────────────────────────────────────────────────────────
   return (
     <aside className="flex h-full flex-col gap-4 border-l border-[var(--border-subtle)] bg-[var(--surface-1)] p-4">
       <header className="flex items-center justify-between">
@@ -161,25 +327,14 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
         </button>
       </header>
 
-      {/* AI auto-categorized banner — shown only on AI_PENDING REJECTION rows.
-          2026-05-14 audit: previously this also rendered for awaiting-review
-          rows (rejection_id null, verdict_state="AI_PENDING") which stacked
-          two amber banners on top of each other. Gate by `!isAwaitingReview`
-          so each row type gets exactly one banner. */}
-      {!isCompliant && !isAwaitingReview && isAiPending && (
+      {/* AI auto-categorized banner — only on AI_PENDING rejection rows. */}
+      {!isCompliant && !isAwaitingReview && isAiPending && rejectionEditable && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-[12px] text-amber-900">
           <div className="flex items-start gap-2">
             <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="mt-0.5 flex-shrink-0"
-              aria-hidden
+              width="14" height="14" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+              strokeLinejoin="round" className="mt-0.5 flex-shrink-0" aria-hidden
             >
               <circle cx="12" cy="12" r="9" />
               <path d="M12 8v4l3 3" />
@@ -188,17 +343,15 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
               <div className="font-medium">AI auto-categorized — review required</div>
               <div className="mt-0.5 text-[11px] text-amber-800">
                 Review and confirm before this counts toward Compliant /
-                Non-compliant totals. Editing any field then saving flips
-                this to a human-overridden record.
+                Non-compliant totals. Editing any field then pressing Save
+                flips this to a human-overridden record.
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Identity card — editable on any row that backs a call OR rejection.
-          Compliant rows fall back to the read-only summary because the AI
-          verdict is locked in once the call is signed off as compliant. */}
+      {/* Identity card */}
       {editable ? (
         <section className="space-y-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-3 text-[12px]">
           <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
@@ -206,36 +359,22 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
           </div>
           <div className="grid grid-cols-1 gap-2">
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-                Supplier
-              </span>
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Supplier</span>
               <select
                 className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
-                value={row.supplier ?? ""}
-                disabled={editNotes.isPending || editCallMeta.isPending}
-                onChange={(e) => patchField("supplier", e.target.value || null)}
+                value={draft.supplier}
+                onChange={(e) => update("supplier", e.target.value)}
               >
                 <option value="">—</option>
-                {SUPPLIER_OPTIONS.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
+                {SUPPLIER_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-                Agent
-              </span>
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Agent</span>
               <input
                 type="text"
-                key={`agent-${row.rejection_id ?? ""}-${row.sales_agent ?? ""}`}
-                defaultValue={row.sales_agent ?? ""}
-                onBlur={(e) => {
-                  if (e.target.value !== (row.sales_agent ?? "")) {
-                    patchField("sales_agent", e.target.value || null);
-                  }
-                }}
+                value={draft.sales_agent}
+                onChange={(e) => update("sales_agent", e.target.value)}
                 className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
                 placeholder="Agent name…"
               />
@@ -244,132 +383,77 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
         </section>
       ) : (
         <dl className="space-y-1 text-[12px]">
-          <div className="flex justify-between">
-            <dt className="text-[var(--text-muted)]">Supplier</dt>
-            <dd>{row.supplier ?? "—"}</dd>
-          </div>
-          <div className="flex justify-between">
-            <dt className="text-[var(--text-muted)]">Agent</dt>
-            <dd>{row.sales_agent ?? "—"}</dd>
-          </div>
-          <div className="flex justify-between">
-            <dt className="text-[var(--text-muted)]">MPAN/MPRN</dt>
-            <dd className="font-mono">{row.mpan_mprn ?? "—"}</dd>
-          </div>
+          <div className="flex justify-between"><dt className="text-[var(--text-muted)]">Supplier</dt><dd>{row.supplier ?? "—"}</dd></div>
+          <div className="flex justify-between"><dt className="text-[var(--text-muted)]">Agent</dt><dd>{row.sales_agent ?? "—"}</dd></div>
+          <div className="flex justify-between"><dt className="text-[var(--text-muted)]">MPAN/MPRN</dt><dd className="font-mono">{row.mpan_mprn ?? "—"}</dd></div>
         </dl>
       )}
 
-      {/* Meter + Deal card — renders on any editable row that resolved to
-          a deal. The PATCH endpoint will 400 if the underlying call has
-          no deal, so we hide this section entirely rather than show
-          fields that would explode on save. ``deal_id`` is set on every
-          row whose parent call has a deal — true for any reviewer-initiated
-          row and the auto-detect path post-2026-05-15 matcher landing. */}
-      {editable && row.deal_id && (
+      {/* Meter + Deal card */}
+      {dealEditable && (
         <section className="space-y-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-3 text-[12px]">
-          <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-            Meter &amp; deal
-          </div>
+          <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Meter &amp; deal</div>
           <div className="grid grid-cols-2 gap-2">
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-                MPAN
-              </span>
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">MPAN</span>
               <input
                 type="text"
-                key={`mpan-${row.deal_id ?? ""}-${row.mpan_electricity ?? ""}`}
-                defaultValue={row.mpan_electricity ?? ""}
-                onBlur={(e) =>
-                  patchField("mpan_electricity", e.target.value || null)
-                }
+                value={draft.mpan_electricity}
+                onChange={(e) => update("mpan_electricity", e.target.value)}
                 className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 font-mono text-[11px]"
                 placeholder="13-digit core"
                 inputMode="numeric"
               />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-                MPRN
-              </span>
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">MPRN</span>
               <input
                 type="text"
-                key={`mprn-${row.deal_id ?? ""}-${row.mprn_gas ?? ""}`}
-                defaultValue={row.mprn_gas ?? ""}
-                onBlur={(e) =>
-                  patchField("mprn_gas", e.target.value || null)
-                }
+                value={draft.mprn_gas}
+                onChange={(e) => update("mprn_gas", e.target.value)}
                 className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 font-mono text-[11px]"
                 placeholder="6-10 digits"
                 inputMode="numeric"
               />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-                Annual value (£)
-              </span>
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Annual value (£)</span>
               <input
                 type="number"
                 min={0}
                 step={1}
-                key={`value-${row.deal_id ?? ""}-${row.deal_value_gbp ?? ""}`}
-                defaultValue={row.deal_value_gbp ?? ""}
-                onBlur={(e) =>
-                  patchField(
-                    "deal_value_gbp",
-                    e.target.value === "" ? null : Number(e.target.value),
-                  )
-                }
+                value={draft.deal_value_gbp}
+                onChange={(e) => update("deal_value_gbp", e.target.value)}
                 className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
                 placeholder="0"
               />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-                Live date
-              </span>
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Live date</span>
               <input
                 type="date"
-                key={`live-${row.deal_id ?? ""}-${row.expected_live_date ?? ""}`}
-                defaultValue={row.expected_live_date?.slice(0, 10) ?? ""}
-                onBlur={(e) =>
-                  patchField("expected_live_date", e.target.value || null)
-                }
+                value={draft.expected_live_date}
+                onChange={(e) => update("expected_live_date", e.target.value)}
                 className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
               />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-                Term (mo)
-              </span>
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Term (mo)</span>
               <select
                 className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
-                value={row.term_months?.toString() ?? ""}
-                onChange={(e) =>
-                  patchField(
-                    "term_months",
-                    e.target.value === "" ? null : Number(e.target.value),
-                  )
-                }
+                value={draft.term_months}
+                onChange={(e) => update("term_months", e.target.value)}
               >
                 <option value="">—</option>
-                {TERM_MONTHS_OPTIONS.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
+                {TERM_MONTHS_OPTIONS.map((m) => <option key={m} value={m}>{m}</option>)}
               </select>
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-                DocuSign ref
-              </span>
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">DocuSign ref</span>
               <input
                 type="text"
-                key={`ds-${row.deal_id ?? ""}-${row.docusign_reference ?? ""}`}
-                defaultValue={row.docusign_reference ?? ""}
-                onBlur={(e) =>
-                  patchField("docusign_reference", e.target.value || null)
-                }
+                value={draft.docusign_reference}
+                onChange={(e) => update("docusign_reference", e.target.value)}
                 className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 font-mono text-[11px]"
                 placeholder="envelope id"
               />
@@ -393,8 +477,8 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
           ) : null}
           <div className="mt-1 text-[11px]">
             Open the call analysis to commit a Pass / Needs Review / Non-Compliant verdict.
-            Until a reviewer signs off, this call doesn&apos;t roll up to the
-            Compliant or Non-Compliant totals.
+            Until a reviewer signs off, this call doesn&apos;t roll up to the Compliant or
+            Non-Compliant totals and stays out of the Rejections tab.
           </div>
           {row.call_id && (
             <Link
@@ -412,7 +496,7 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
             <textarea
               className="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-2 text-[12px]"
               value={draft.rejection_reason}
-              onChange={(e) => setDraft((d) => ({ ...d, rejection_reason: e.target.value }))}
+              onChange={(e) => update("rejection_reason", e.target.value)}
               rows={2}
             />
           </div>
@@ -421,9 +505,9 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
             <textarea
               className="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-2 text-[12px]"
               value={draft.fix_narrative}
-              onChange={(e) => setDraft((d) => ({ ...d, fix_narrative: e.target.value }))}
+              onChange={(e) => update("fix_narrative", e.target.value)}
               rows={2}
-              placeholder="LLM-generated free-text fix narrative…"
+              placeholder="Free-text fix narrative…"
             />
           </div>
 
@@ -432,12 +516,10 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
             <select
               className="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
               value={draft.category}
-              onChange={(e) => setDraft((d) => ({ ...d, category: e.target.value }))}
+              onChange={(e) => update("category", e.target.value)}
             >
               <option value="">—</option>
-              {CATEGORY_KEYS.map((k) => (
-                <option key={k} value={k}>{CATEGORY_LABEL[k]}</option>
-              ))}
+              {CATEGORY_KEYS.map((k) => <option key={k} value={k}>{CATEGORY_LABEL[k]}</option>)}
             </select>
             <div className="mt-1"><CategoryChip category={draft.category || row.category} /></div>
           </div>
@@ -447,90 +529,57 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
             <select
               className="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
               value={draft.fix_required}
-              onChange={(e) => setDraft((d) => ({ ...d, fix_required: e.target.value }))}
+              onChange={(e) => update("fix_required", e.target.value)}
             >
               <option value="">—</option>
-              {FIX_ACTIONS.map((k) => (<option key={k} value={k}>{k}</option>))}
+              {FIX_ACTIONS.map((k) => <option key={k} value={k}>{k}</option>)}
             </select>
           </div>
 
           <div>
             <div className="mb-1 text-[11px] uppercase tracking-wide text-[var(--text-muted)]">Status</div>
-            <div className="flex flex-wrap gap-1">
-              {PIPELINE_STEPS.map((step) => {
-                const active = row.status === step;
-                return (
-                  <span
-                    key={step}
-                    className={`rounded-full border px-2 py-0.5 text-[10px] ${active ? "border-emerald-500 bg-emerald-50 text-emerald-900" : "border-[var(--border-subtle)] text-[var(--text-muted)]"}`}
-                  >
-                    {PIPELINE_LABELS[step] ?? step}
-                  </span>
-                );
-              })}
-            </div>
-            <div className="mt-2"><StatusPipelinePill status={row.status} /></div>
+            <select
+              className="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
+              value={draft.status}
+              onChange={(e) => update("status", e.target.value)}
+            >
+              <option value="">—</option>
+              {PIPELINE_STEPS.map((step) => (
+                <option key={step} value={step}>{PIPELINE_LABELS[step] ?? step}</option>
+              ))}
+              <option value="DEAD">Dead</option>
+            </select>
+            <div className="mt-2"><StatusPipelinePill status={draft.status || row.status} /></div>
           </div>
 
           <div>
             <div className="mb-1 text-[11px] uppercase tracking-wide text-[var(--text-muted)]">Outcome</div>
             <select
               className="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
-              value={row.outcome ?? ""}
-              disabled={!row.rejection_id || editNotes.isPending}
-              onChange={(e) => {
-                // Commit immediately on selection — outcome is a simple
-                // enum field so the row-by-row PATCH endpoint (same flow as
-                // Notes textarea) is enough; no need to thread it through
-                // the draft / Save-changes / Override gate.
-                if (!row.rejection_id) return;
-                const v = e.target.value;
-                editNotes.mutate({
-                  rejectionId: row.rejection_id,
-                  fields: { outcome: v === "" ? null : v },
-                });
-              }}
+              value={draft.outcome}
+              onChange={(e) => update("outcome", e.target.value)}
             >
               <option value="">—</option>
-              {OUTCOMES.map((k) => (<option key={k} value={k}>{k}</option>))}
+              {OUTCOMES.map((k) => <option key={k} value={k}>{k}</option>)}
             </select>
           </div>
 
-          {/* Deadline + Assignee — sibling fields that were read-only
-              previously. Both persist immediately on change. */}
           <div className="grid grid-cols-2 gap-2">
             <label className="flex flex-col gap-1 text-[12px]">
-              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-                Deadline
-              </span>
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Deadline</span>
               <input
                 type="date"
-                key={`deadline-${row.rejection_id ?? ""}-${row.deadline ?? ""}`}
-                defaultValue={row.deadline?.slice(0, 10) ?? ""}
-                onBlur={(e) => {
-                  const v = e.target.value;
-                  if (v !== (row.deadline?.slice(0, 10) ?? "")) {
-                    patchField("deadline", v || null);
-                  }
-                }}
+                value={draft.deadline}
+                onChange={(e) => update("deadline", e.target.value)}
                 className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
               />
             </label>
             <label className="flex flex-col gap-1 text-[12px]">
-              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-                Assigned to
-              </span>
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Assigned to</span>
               <select
                 className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
-                value={row.fix_assignee_id ?? ""}
-                disabled={!row.rejection_id || setAssignee.isPending}
-                onChange={(e) => {
-                  if (!row.rejection_id) return;
-                  setAssignee.mutate({
-                    rejectionId: row.rejection_id,
-                    assigneeId: e.target.value === "" ? null : e.target.value,
-                  });
-                }}
+                value={draft.fix_assignee_id}
+                onChange={(e) => update("fix_assignee_id", e.target.value)}
               >
                 <option value="">— Unassigned</option>
                 {(reviewersQ.data ?? []).map((p) => (
@@ -544,79 +593,83 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
         </>
       )}
 
-      {row.rejection_id && (
+      {/* Notes — visible on rejection rows. Always controlled by the draft. */}
+      {rejectionEditable && (
         <div className="mt-2">
           <label className="text-[10px] uppercase text-[var(--text-muted)]">Notes</label>
           <textarea
-            // 2026-05-14 audit: `defaultValue` makes this uncontrolled, so
-            // it never refreshes after a TanStack query invalidation. Remount
-            // on every change to the underlying field by keying on the row id
-            // + the canonical value. Editing-in-flight stays smooth because
-            // the key only changes when the SERVER value changes (after a
-            // successful PATCH), not while the user is typing.
-            key={`${row.rejection_id ?? ""}-${row.outcome_narrative ?? ""}`}
-            defaultValue={row.outcome_narrative ?? ""}
-            onBlur={(e) => {
-              if (e.target.value !== (row.outcome_narrative ?? "")) {
-                editNotes.mutate({
-                  rejectionId: row.rejection_id!,
-                  fields: { outcome_narrative: e.target.value || null },
-                });
-              }
-            }}
+            value={draft.outcome_narrative}
+            onChange={(e) => update("outcome_narrative", e.target.value)}
             className="mt-1 w-full rounded-md border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-2 text-[12px] min-h-[80px]"
             placeholder="Reviewer notes…"
           />
           {row.last_action_date && (
             <p className="mt-1 text-[10px] text-[var(--text-dim)]">
-              {/* `last_action_date` is the MAX(rejection_audit_log.created_at)
-                  — ANY audit event on this rejection, not specifically a
-                  notes edit. Renamed from "Last edited" to "Last activity"
-                  to stop reviewers thinking it stamps every keystroke in
-                  the box. */}
               Last activity {new Date(row.last_action_date).toLocaleString("en-GB")}
             </p>
           )}
         </div>
       )}
 
-      <div className="mt-auto flex items-center justify-between gap-2 border-t border-[var(--border-subtle)] pt-3">
-        {row.call_id && (
-          <Link
-            href={`/calls/${row.call_id}`}
-            className="text-[12px] text-emerald-700 hover:underline"
-          >
-            Open call analysis →
-          </Link>
-        )}
-        {row.rejection_id && (
-          <div className="flex items-center gap-2">
-            {dirty ? (
-              <button
-                onClick={onSave}
-                disabled={override.isPending}
-                className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-              >
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                  <path d="M12 20h9" />
-                  <path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4z" />
-                </svg>
-                {override.isPending ? "Saving…" : "Save changes"}
-              </button>
-            ) : isAiPending ? (
-              <button
-                onClick={onConfirm}
-                disabled={confirm.isPending}
-                className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-              >
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                  <path d="M20 6L9 17l-5-5" />
-                </svg>
-                {confirm.isPending ? "Confirming…" : "Confirm AI verdict"}
-              </button>
-            ) : null}
-          </div>
-        )}
+      {/* Footer — Open call · Open in /rejections · Save / Confirm. */}
+      <div className="mt-auto flex flex-col gap-2 border-t border-[var(--border-subtle)] pt-3">
+        <div className="flex flex-wrap items-center gap-3">
+          {row.call_id && (
+            <Link
+              href={`/calls/${row.call_id}`}
+              className="text-[12px] text-emerald-700 hover:underline"
+            >
+              Open call analysis →
+            </Link>
+          )}
+          {row.rejection_id && (
+            <Link
+              href={`/rejections?id=${encodeURIComponent(row.rejection_id)}`}
+              className="text-[12px] text-emerald-700 hover:underline"
+            >
+              Open in Rejections →
+            </Link>
+          )}
+        </div>
+        <div className="flex items-center justify-end gap-2">
+          {dirty && (
+            <button
+              type="button"
+              onClick={() => setDraft(original)}
+              disabled={saving}
+              className="inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-3 py-1.5 text-[12px] text-[var(--text-muted)] hover:bg-[var(--bg-elev2)] disabled:opacity-50"
+            >
+              Discard
+            </button>
+          )}
+          {dirty ? (
+            <button
+              type="button"
+              onClick={onSave}
+              disabled={saving}
+              className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                <polyline points="17 21 17 13 7 13 7 21" />
+                <polyline points="7 3 7 8 15 8" />
+              </svg>
+              {saving ? "Saving…" : `Save (${Object.keys(diffs).length})`}
+            </button>
+          ) : rejectionEditable && isAiPending ? (
+            <button
+              type="button"
+              onClick={onConfirm}
+              disabled={confirm.isPending}
+              className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M20 6L9 17l-5-5" />
+              </svg>
+              {confirm.isPending ? "Confirming…" : "Confirm AI verdict"}
+            </button>
+          ) : null}
+        </div>
       </div>
     </aside>
   );

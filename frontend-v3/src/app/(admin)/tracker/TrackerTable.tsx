@@ -1,10 +1,12 @@
 "use client";
+import { useMemo } from "react";
 import { CategoryChip } from "./CategoryChip";
 import { VerdictBadge } from "./VerdictBadge";
 import { StatusPipelinePill } from "./StatusPipelinePill";
 import { InlineEditCell } from "./InlineEditCell";
 import { SourceBadge } from "./SourceBadge";
 import type { TrackerFieldSource, TrackerRow, TrackerTab } from "@/lib/queries/tracker";
+import { useActiveReviewersQuery } from "@/lib/queries/reviewers";
 
 type Props = {
   rows: TrackerRow[];
@@ -82,6 +84,19 @@ const REJECTION_STATUSES = [
 ] as const;
 
 export function TrackerTable({ rows, tab, selectedRowId, onSelect }: Props) {
+  // Resolve fix_assignee_id (UUID) → reviewer display name. Lookup is hot
+  // (one map per render across all rows) so we build a Record<id, name>
+  // once per query refresh. Falls back to "Unassigned"/"Unknown reviewer"
+  // when the UUID has no matching profile (stale assignment).
+  const reviewersQ = useActiveReviewersQuery();
+  const reviewerById = useMemo(() => {
+    const out: Record<string, string> = {};
+    (reviewersQ.data ?? []).forEach((p) => {
+      out[p.id] = p.name || p.email || p.id.slice(0, 8);
+    });
+    return out;
+  }, [reviewersQ.data]);
+
   if (rows.length === 0) {
     return (
       <div className="flex h-64 items-center justify-center text-sm text-[var(--text-muted)]">
@@ -115,6 +130,7 @@ export function TrackerTable({ rows, tab, selectedRowId, onSelect }: Props) {
                 <th className={HEADER_CELL}>Last action</th>
                 <th className={HEADER_CELL}>Deadline</th>
                 <th className={HEADER_CELL}>Outcome</th>
+                <th className={HEADER_CELL}>Notes</th>
               </>
             )}
             {tab === "compliant" && <th className={HEADER_CELL}>Score</th>}
@@ -221,12 +237,13 @@ export function TrackerTable({ rows, tab, selectedRowId, onSelect }: Props) {
                       )}
                     </td>
                     <td className={BODY_CELL + " text-[var(--text-muted)]"} title={row.fix_assignee_id ?? undefined}>
-                      {/* fix_assignee_id is a UUID. Showing 8 hex chars is
-                          worse than showing "—" — reviewers can't act on
-                          either, but at least "—" sets the expectation
-                          that nobody's been assigned. Real reviewer-name
-                          resolution is queued behind a reviewer picker. */}
-                      {row.fix_assignee_id ? "Assigned" : "—"}
+                      {/* 2026-05-15: resolve assignee UUID to the reviewer's
+                          display name via /api/reviewers/active. Falls back
+                          to "Assigned" while reviewers query is in flight so
+                          we never flash "—" between page load and resolve. */}
+                      {row.fix_assignee_id
+                        ? (reviewerById[row.fix_assignee_id] ?? "Assigned")
+                        : "—"}
                     </td>
                     <td className={BODY_CELL} onClick={(e) => e.stopPropagation()}>
                       {row.rejection_id ? (
@@ -265,6 +282,17 @@ export function TrackerTable({ rows, tab, selectedRowId, onSelect }: Props) {
                       ) : (
                         row.outcome ?? "—"
                       )}
+                    </td>
+                    <td
+                      className={BODY_CELL + " max-w-[18ch] truncate text-[var(--text-muted)]"}
+                      title={row.outcome_narrative ?? ""}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {/* Watt XLSX col P = "Notes". 2026-05-15 audit: column
+                          was missing from the table entirely; reviewers had
+                          to open each row to scan notes. Truncate with a
+                          hover-title so a 1-line preview fits the row. */}
+                      {row.outcome_narrative ? row.outcome_narrative : "—"}
                     </td>
                   </>
                 )}

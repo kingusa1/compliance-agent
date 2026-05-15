@@ -446,15 +446,19 @@ async def _do_score(call_id: str, analysis: dict) -> dict:
     sync — it lets the workflow handler stay uniform and lets us await any
     future I/O the score step grows.
 
-    Sprint A5: also auto-create a Rejection row when score sits below
-    threshold. Mirrors the legacy ``app.pipeline.process_call`` path so
-    durable Inngest runs land tracker rows the same way the asyncio
-    fire-and-forget path does. Failures degrade silently — a bad
-    rejection insert must never block call finalisation.
+    2026-05-15 compliance contract: rejections are **reviewer-initiated
+    only**. The Inngest path no longer auto-creates a Rejection row from
+    the AI verdict; AI hints surface on the awaiting-review row in
+    /tracker but the call stays out of the /rejections tab until a human
+    submits a FAIL/REVIEW verdict via /api/verdict (which calls
+    ``auto_create_rejection_for_verdict`` from hitl_routes.submit_verdict).
+    Mirrors the asyncio ``app.pipeline.process_call`` path which already
+    dropped its ``_maybe_create_rejection`` call during the 2026-05-12
+    taxonomy rebuild.
     """
     from app.database import SessionLocal
     from app.models import Call
-    from app.pipeline import _maybe_create_rejection, _step_score
+    from app.pipeline import _step_score
 
     db = SessionLocal()
     try:
@@ -477,16 +481,6 @@ async def _do_score(call_id: str, analysis: dict) -> dict:
                 "reason": call.reason,
             }
         result = _step_score(call_id, analysis, db)
-        try:
-            score_call = db.query(Call).filter_by(id=call_id).first()
-            if score_call is not None:
-                await _maybe_create_rejection(score_call, db)
-                db.commit()
-        except Exception as rej_err:
-            app_log.error(
-                f"\U0001f6a9 REJECTION_CREATE_FAILED call_id={call_id} err={rej_err!r}"
-            )
-            db.rollback()
         return result
     finally:
         db.close()

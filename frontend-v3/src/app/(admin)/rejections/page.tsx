@@ -11,8 +11,9 @@
  * detail panel via useRejectionQuery on the right side. Status pipeline
  * lives in the panel.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   useRejectionsQuery,
   useRejectionQuery,
@@ -31,9 +32,32 @@ const TAB_LABELS: Record<RejectionTab, string> = {
 };
 
 export default function RejectionsPage() {
+  const router = useRouter();
+  const sp = useSearchParams();
   const [tab, setTab] = useState<RejectionTab>("active");
   const [search, setSearch] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // 2026-05-15: hydrate ``selectedId`` from ``?id=<uuid>`` so other pages
+  // can deep-link straight to a specific rejection (the /tracker side
+  // panel and /calls/[id] both expose "View in rejections" links). The
+  // selected id stays mirrored in the URL on row clicks so reviewers can
+  // share/bookmark a rejection.
+  const [selectedId, setSelectedId] = useState<string | null>(
+    () => sp.get("id"),
+  );
+  useEffect(() => {
+    const next = sp.get("id");
+    if (next !== selectedId) setSelectedId(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sp]);
+
+  const selectRow = (id: string | null) => {
+    setSelectedId(id);
+    const params = new URLSearchParams(sp.toString());
+    if (id) params.set("id", id);
+    else params.delete("id");
+    const qs = params.toString();
+    router.replace(qs ? `?${qs}` : "?", { scroll: false });
+  };
 
   // 2026-05-14 audit fix: Phase 4 gate. The /rejections page must only
   // show reviewer-initiated rejections — AI auto-created rows pre-dated
@@ -87,7 +111,7 @@ export default function RejectionsPage() {
             key={t}
             onClick={() => {
               setTab(t);
-              setSelectedId(null);
+              selectRow(null);
             }}
             className={`rounded-md px-3 py-1 text-[12.5px] transition-colors ${
               tab === t
@@ -148,7 +172,7 @@ export default function RejectionsPage() {
                 rejections={rejections}
                 selectedId={selectedId}
                 tab={tab}
-                onSelect={setSelectedId}
+                onSelect={selectRow}
                 isLoading={listQ.isLoading}
               />
             )}
