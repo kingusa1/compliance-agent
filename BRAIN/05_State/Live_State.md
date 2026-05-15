@@ -4,6 +4,38 @@ updated: 2026-05-15
 tags: [state, live, ground-truth, phase-5-complete, deal-linker, tracker-filters]
 ---
 
+# Live State — Rejection pipeline contract validated + 7 bugs fixed 2026-05-15
+
+> 🚀 **2026-05-15 (evening) — REJECTION PIPELINE CONTRACT WORKS END-TO-END + Andrew call data fixed.**
+> Tip commit `3662afd` on `origin/main`. Railway has all 7 backend fixes live; Vercel queue stuck on 4 UNKNOWN-state builds, prod alias still serves `cduzhlzb5` (= `0f56394`, the morning build with the tracker N+1 fix + CP20 "Not Scored" label). Two UI polish fixes (pass-rate% next to score, reviewer-override top badge) BUILT but not yet promoted — recommend manual dashboard redeploy.
+>
+> **Commits this evening:**
+> - `0f56394` — `perf+fix: tracker N+1 + pipeline normalize + Not Scored UI state`
+> - `42ee1de` — `feat(admin): /api/admin/normalize-checkpoint-results backfill endpoint`
+> - `a83e441` — `fix: segment card pass-rate% + bucket gate (medium-only at <50% → review)`
+> - `af3e0af` — `fix(call-detail): top badge reflects reviewer's verdict with ' · Human' suffix`
+> - `c03e0af` — `fix(hitl): case-insensitive verdict check for auto-rejection trigger`
+> - `5708bcf` — `fix(rejections): stamp confirmed_by=actor_id on auto-create from FAIL verdict`
+> - `3662afd` — `docs(brain): pipeline-validation session log`
+>
+> **Andrew (`2652a095`) data fixes applied via `/api/admin/normalize-checkpoint-results`:**
+> - CP20 "Confirm Microbusiness/Small Business status" now has `status=not_scored` with the clear "Checkpoint not evaluated by the AI" note
+> - Verbal segment: `23/26 → 22/26` (dedup of analyzer-duplicated entry)
+> - LOA segment: `0/11 / coaching / compliant=true → 0/11 / review / compliant=false`
+>
+> **Rejection pipeline contract — Playwright end-to-end validated on prod:**
+> 1. AI alone creates 0 Rejections (6 awaiting-review calls in DB, none with `rejection_id`)
+> 2. Reviewer submits FAIL via `POST /api/calls/{id}/verdict` → 6 Rejections created (1 per failing CP)
+> 3. Every row has `confirmed_by` populated → visible in `/rejections?source=reviewer`
+> 4. Call moved from awaiting-review (count 6→5) → tracker active tab (6 rows for that call)
+> 5. Test artifacts deleted afterwards
+>
+> **Friend's tracker N+1 diagnosis verified:** TRUE for our codebase (lines 524/549/598-600 had the per-row `.first()` calls). Fixed via 2 `IN(...)` queries → dict lookup. 100-row page: 301 SQL queries → 5.
+>
+> **Earlier today** ([[../04_Sessions/2026-05-15_Session_deal_linker_tracker_filters]]): deal-linker + filters + side-panel rewrite. Earlier tip `6327268`.
+
+---
+
 # Live State — Deal-linker + advanced tracker filters live in prod 2026-05-15
 
 > 🚀 **2026-05-15 — Deal-linker + advanced tracker filters + editable side panel DEPLOYED (incl. awaiting-review row editing).**

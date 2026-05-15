@@ -6,9 +6,37 @@ tags: [state, issues, gotchas]
 
 # Known issues / gotchas
 
-## 🚨 Rejection-create contract: HUMAN-ONLY (2026-05-15)
+## 🚨 Rejection-create contract: HUMAN-ONLY (2026-05-15) — TWO P0 SUB-INVARIANTS
 
 **Hard invariant**: rejection rows are created **exclusively** when a human reviewer commits a FAIL or REVIEW verdict. AI pipeline output never creates a Rejection row — it produces a *hint* on the awaiting-review row (`tracker_aggregator._awaiting_review_row` reads it from `_ai_suggestions_for_call`) but the call stays out of the /rejections tab until a human signs off.
+
+### Sub-invariant 1 — verdict case must be normalised
+
+`submit_verdict` in `hitl_routes.py` MUST do `payload.verdict.strip().upper()` before the `("FAIL", "REVIEW")` membership check that gates `auto_create_rejection_for_verdict`. Frontend sends lowercase ("fail"/"review"). If the comparison reverts to case-sensitive, the entire auto-rejection branch silently skips and reviewer FAIL clicks produce nothing in `/rejections` — even though `verdict_history` saves correctly.
+
+**Caught 2026-05-15 evening by Playwright pipeline test**: `submit_verdict` returned 200 with `auto_rejection_id: null` and the call sat in awaiting-review forever. Fix shipped in `c03e0af`.
+
+### Sub-invariant 2 — auto-created Rejection MUST stamp confirmed_by
+
+`auto_create_rejection_for_verdict` in `rejections_routes.py` (~line 1028) MUST set `confirmed_by=actor_id` + `confirmed_at=datetime.utcnow()` on the `Rejection(...)` constructor. The `/rejections?source=reviewer` filter is `confirmed_by IS NOT NULL`. If the constructor omits these fields, a reviewer-created rejection lands in the DB with `confirmed_by=NULL` and gets EXCLUDED by the reviewer-side filter — the human-only contract appears inverted (reviewer's row looks AI-equivalent in the UI).
+
+**Caught 2026-05-15 evening**: rejection was created (`auto_rejection_id` populated) but absent from `/rejections?source=reviewer`. Fix shipped in `5708bcf`.
+
+### Test-before-touching invariant
+
+Any future change to the verdict-submit or rejection-create flow MUST be followed by:
+```js
+// Playwright contract test — fire on prod after each backend deploy
+POST /api/calls/{id}/verdict {verdict: "fail", checkpoint_id: "cp_0"}
+GET  /api/rejections?source=reviewer&limit=20
+// → expected: new rejection visible with confirmed_by set
+GET  /api/tracker/rows?tab=awaiting_review
+// → expected: call DISAPPEARED from list
+GET  /api/tracker/rows?tab=active
+// → expected: call APPEARED with rejection rows
+```
+
+
 
 Authorised call sites that produce a Rejection row:
 - `POST /api/rejections` (`backend/app/rejections_routes.py:391` — `Depends(require_admin)`) — operator-created.
