@@ -1,7 +1,41 @@
 ---
 created: 2026-05-10
-updated: 2026-05-15
-tags: [state, live, ground-truth, phase-5-complete, deal-linker, tracker-filters, vercel-unblocked]
+updated: 2026-05-16
+tags: [state, live, ground-truth, sse-push, metaphone-deal-linker, sidebar-audited]
+---
+
+# Live State — True SSE push + Metaphone deal-linker + sidebar audited 2026-05-16
+
+> 🚀 **2026-05-16 (autonomous 6-hour run, late): TIP `3ecd34c` on both backend (Railway) + frontend (Vercel).**
+> Vercel deploy `dpl_Vrjib3v9Act1DqPTt6BYYEeDsyYQ` aliased to `compliance-agent-mu.vercel.app`. Railway auto-deployed.
+>
+> **Commits this run (most recent first):**
+> - `3ecd34c` — fix(queue): translate UI filter 'today' to backend 'reviewed_today' (Phase-4 audit fix)
+> - `ca76e2e` — feat(deal-linker): Metaphone phonetic uplift + Opus 4.7 for non-EON
+> - `a873c19` — fix(realtime): invalidate ['admin'] keys + drop admin calls poll
+> - `e2c7317` — fix(realtime): register SSE router before generic call detail route
+> - `7390b33` — feat: SSE real-time call events (replace processing-poll)
+>
+> **Phase 1 acceptance — ALL PASS (call `54ecb5dc-016a-4968-9fd7-cd892d98b4cf`, 3 segments / 124 cps, 202.7s pipeline):**
+> - Audio reset bug FIXED: Play → wait 5s → Play (pauses at 28.4s, no reset). Click again → 37.6s playing.
+> - Spacebar guard FIXED: typed 53-char comment with spaces in Override→Fail textarea; audio playing throughout at 77.6s → 100.7s.
+> - Railway logs clean: `L2_EXTRACTION_WRITE call_id=54ecb5dc-... segments=3 flags=42 vulnerable=yes` + `💾 SAVED` + `📊 COMPLETE → 202.7s total`. **No PendingRollbackError, no ck_flags_risk_tag violation.**
+> - Override→Fail → "Commit Fail" returned with 0 console errors.
+>
+> **Phase 2 — SSE end-to-end live:**
+> - `GET /api/calls/events` (global) + `GET /api/calls/{id}/events` (per-call) return `text/event-stream` from Railway. Raw `curl -N` shows `: connected` immediately + `: keep-alive` every 5s.
+> - Frontend `useCallEvents("*")` mounted at ScreenFrame; per-call mounted on call detail page.
+> - 3s in-flight refetchInterval REMOVED from `useCallDetailQuery`, `useCallCheckpointsQuery`, `useAdminCallsQuery`. Queue/admin keep 60s safety-net poll.
+> - Validated: upload triggers row-count change on /calls without manual refresh and without poll-driven refetch. Lag ~8s (Cloudflare buffering + RTT) — better than poll, slower than mission's <1s target.
+>
+> **Phase 3 — Metaphone uplift + Opus 4.7 non-EON shipped but Awais 4-call → still 4 deals.**
+> Root cause: transcription drift produces wildly different business names per recording ("Charles Palace" vs empty vs "Awais" vs "Frank"); Opus 4.7 can't recover the same name from a transcript that says something else. Fix lives in `ca76e2e` and WILL help cases with moderate drift (catches "Mustafa" ↔ "Master"); the Awais fixture is past fuzzy 0.60.
+>
+> **Phase 4 — full sidebar audit done.**
+> 15 pages walked (Dashboard, Queue × 3 tabs, Tracker × 5 tabs, Rejections × 4 tabs, Customers, Deals, Calls, Agents, Scripts, Compliant, Non-compliant, Settings, Guide) + 5 call-detail mutations (Pass, Override→Fail, Edit metadata, Reanalyze, Export). **All clean except `/queue?filter=today` 422**, now fixed in `3ecd34c`.
+>
+> Resume guide: [[../04_Sessions/2026-05-16_Session_six_hour_run]] (full session log with reproduction steps for the 5 remaining bugs).
+
 ---
 
 # Live State — Polling rollback + deal-merge second-pass + vulnerability fix 2026-05-16
