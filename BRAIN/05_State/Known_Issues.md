@@ -6,6 +6,21 @@ tags: [state, issues, gotchas]
 
 # Known issues / gotchas
 
+## 🚨 Rejection-create contract: HUMAN-ONLY (2026-05-15)
+
+**Hard invariant**: rejection rows are created **exclusively** when a human reviewer commits a FAIL or REVIEW verdict. AI pipeline output never creates a Rejection row — it produces a *hint* on the awaiting-review row (`tracker_aggregator._awaiting_review_row` reads it from `_ai_suggestions_for_call`) but the call stays out of the /rejections tab until a human signs off.
+
+Authorised call sites that produce a Rejection row:
+- `POST /api/rejections` (`backend/app/rejections_routes.py:391` — `Depends(require_admin)`) — operator-created.
+- `submit_verdict` in `backend/app/hitl_routes.py:426` (`Depends(current_reviewer)`) → `auto_create_rejection_for_verdict` — the only production path on `verdict_action ∈ {FAIL, REVIEW}`.
+- `import_xlsx_tracker.py` — CLI back-fill (operator-invoked).
+
+**Both pipeline paths now drop `_maybe_create_rejection`**:
+- `backend/app/pipeline.py:_step_finalize` — already done during 2026-05-12 taxonomy rebuild.
+- `backend/app/workflows/process_call.py:_do_score` — fixed 2026-05-15 (was still calling `_maybe_create_rejection` after the asyncio path stopped).
+
+Sanity check before any future pipeline change: grep `_maybe_create_rejection`. If it has any call site outside `backend/app/pipeline.py:1882` (the helper definition itself), you've reintroduced the bug.
+
 ## 🚨 field_sources value vocabulary invariant (2026-05-15)
 
 When backend code stamps `Rejection.field_sources[<field>] = <source>` or `CustomerDeal.field_sources[<field>] = <source>`, the value MUST be one of the strings listed in the frontend's `TrackerFieldSource` union (`frontend-v3/src/lib/queries/tracker.ts`). Otherwise `SourceBadge` (and any other consumer that does a strict-keyed lookup) crashes the whole React tree with `Cannot read properties of undefined (reading 'bg')` and the user sees **"This page couldn't load"** on /tracker.

@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { TrackerTable } from "./TrackerTable";
 import { TrackerSidePanel } from "./TrackerSidePanel";
@@ -53,6 +53,23 @@ export default function TrackerPage() {
   const q = useTrackerRowsQuery(filters);
   const rows = q.data?.rows ?? [];
   const counts = q.data?.count ?? 0;
+
+  // 2026-05-15: re-sync ``selectedRow`` to the freshly-fetched row whenever
+  // the query refetches (e.g. after the side-panel Save mutation invalidates
+  // the cache). Without this, the side panel keeps holding the stale row
+  // reference and its draft diff against the original never resets to
+  // zero — the Save button stays "Save (1)" forever even though the server
+  // accepted the change.
+  useEffect(() => {
+    if (!selectedRow) return;
+    const id = selectedRow.rejection_id ?? selectedRow.call_id;
+    if (!id) return;
+    const next = rows.find(
+      (r) => (r.rejection_id ?? r.call_id) === id,
+    );
+    if (next && next !== selectedRow) setSelectedRow(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows]);
 
   // Background fetch for the "Awaiting review" pill so the count shows
   // even when reviewer is on a different tab. Polls the AI_PENDING tab
