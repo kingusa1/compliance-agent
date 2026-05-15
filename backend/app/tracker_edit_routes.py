@@ -349,6 +349,7 @@ def patch_call_meta(
             if old_call != v:
                 db.add(ReviewerEdit(
                     rejection_id=None,
+                    call_id=str(call.id),
                     field="call.detected_supplier",
                     old_value=old_call,
                     new_value=v,
@@ -378,6 +379,7 @@ def patch_call_meta(
             if old != v:
                 db.add(ReviewerEdit(
                     rejection_id=None,
+                    call_id=str(call.id),
                     field=f"call.{k}",
                     old_value=str(old) if old is not None else None,
                     new_value=str(v) if v is not None else None,

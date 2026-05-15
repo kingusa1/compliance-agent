@@ -1062,7 +1062,12 @@ class ReviewerEdit(Base):
     __tablename__ = "reviewer_edits"
 
     id = Column(UUIDCompat, primary_key=True, default=uuid.uuid4)
-    rejection_id = Column(UUIDCompat, nullable=False, index=True)
+    # 2026-05-15: rejection_id is nullable so the call-meta PATCH endpoint
+    # can log edits on awaiting-review rows that have no Rejection yet.
+    # A check constraint (migration 2026_05_15_rev_call) enforces that at
+    # least one of (rejection_id, call_id) is populated.
+    rejection_id = Column(UUIDCompat, nullable=True, index=True)
+    call_id = Column(String(64), nullable=True, index=True)
     field = Column(String(64), nullable=False)
     old_value = Column(Text, nullable=True)
     new_value = Column(Text, nullable=True)
