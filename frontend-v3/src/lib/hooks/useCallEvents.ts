@@ -58,6 +58,10 @@ export function useCallEvents(scope: string | null | undefined, enabled = true):
 
     function invalidate(callId: string, eventType: string): void {
       if (scope === "*") {
+        // List pages: queue (reviewer), tracker, calls (admin), customers,
+        // deals, dashboard, intelligence. Cache keys span TWO naming
+        // conventions: the reviewer keys (top-level "queue" / "calls" /
+        // etc.) and the admin keys ("admin" prefix from lib/queries/admin.ts).
         qc.invalidateQueries({ queryKey: ["queue"] });
         qc.invalidateQueries({ queryKey: ["calls"] });
         qc.invalidateQueries({ queryKey: ["tracker"] });
@@ -65,6 +69,7 @@ export function useCallEvents(scope: string | null | undefined, enabled = true):
         qc.invalidateQueries({ queryKey: ["intelligence"] });
         qc.invalidateQueries({ queryKey: ["customers"] });
         qc.invalidateQueries({ queryKey: ["deals"] });
+        qc.invalidateQueries({ queryKey: ["admin"] });
         if (callId) {
           qc.invalidateQueries({ queryKey: ["call", callId] });
         }
@@ -74,6 +79,7 @@ export function useCallEvents(scope: string | null | undefined, enabled = true):
           qc.invalidateQueries({ queryKey: ["queue"] });
           qc.invalidateQueries({ queryKey: ["tracker"] });
           qc.invalidateQueries({ queryKey: ["intelligence"] });
+          qc.invalidateQueries({ queryKey: ["admin"] });
         }
       }
     }

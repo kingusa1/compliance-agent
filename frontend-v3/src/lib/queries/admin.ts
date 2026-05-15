@@ -195,16 +195,12 @@ export function useAdminCallsQuery(params: { limit?: number; offset?: number } =
   return useQuery({
     queryKey: adminKeys.calls(params),
     queryFn: () => fetchAdminCalls(params),
-    staleTime: 10_000,
-    // Live-refresh while any uploaded call is still processing — matches
-    // v1's SSE behaviour without re-wiring the stream endpoint.
-    refetchInterval: (q) => {
-      const calls = (q.state.data as { calls?: Array<{ status?: string }> } | undefined)?.calls ?? [];
-      const anyInFlight = calls.some(
-        (c) => c.status === "processing" || c.status === "pending",
-      );
-      return anyInFlight ? 5000 : false;
-    },
+    // 2026-05-16: SSE-driven via useCallEvents("*") mounted in ScreenFrame.
+    // Drop the 5s in-flight refetchInterval — every pipeline transition
+    // pushes an invalidation, so /calls fills in live without polling.
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
   });
 }
 
