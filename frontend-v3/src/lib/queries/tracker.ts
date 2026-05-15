@@ -75,12 +75,36 @@ export type TrackerRow = {
 
 export type TrackerTab = "active" | "fixed" | "dead" | "compliant" | "awaiting_review";
 
+export type TrackerVerdictState =
+  | "AI_PENDING"
+  | "HUMAN_CONFIRMED"
+  | "HUMAN_OVERRIDDEN";
+
+export type TrackerDeadlineState =
+  | "overdue"
+  | "due_3d"
+  | "due_7d"
+  | "on_track";
+
 export type TrackerFilters = {
   tab?: TrackerTab;
-  month?: string;       // YYYY-MM
-  category?: string[];  // category enum keys
+  // Legacy single-value filters — kept for back-compat with bookmarked URLs.
+  month?: string;
+  category?: string[];
   supplier?: string;
   search?: string;
+  // 2026-05-15 advanced filters — multi-value lists win when both forms set.
+  suppliers?: string[];
+  agents?: string[];
+  statuses?: string[];
+  verdict_states?: TrackerVerdictState[];
+  date_from?: string;       // YYYY-MM-DD inclusive
+  date_to?: string;         // YYYY-MM-DD inclusive
+  date_on?: string;         // YYYY-MM-DD single day
+  meter?: string;           // MPAN/MPRN substring
+  value_min?: number;       // £ annual deal value
+  value_max?: number;
+  deadline_state?: TrackerDeadlineState;
 };
 
 type TrackerResponse = {
@@ -101,6 +125,28 @@ export function useTrackerRowsQuery(filters: TrackerFilters) {
       }
       if (filters.supplier) qs.set("supplier", filters.supplier);
       if (filters.search) qs.set("search", filters.search);
+      // Advanced multi-select / range filters.
+      const csv = (xs?: string[]) =>
+        xs && xs.length > 0 ? xs.join(",") : null;
+      const suppliersCsv = csv(filters.suppliers);
+      if (suppliersCsv) qs.set("suppliers", suppliersCsv);
+      const agentsCsv = csv(filters.agents);
+      if (agentsCsv) qs.set("agents", agentsCsv);
+      const statusesCsv = csv(filters.statuses);
+      if (statusesCsv) qs.set("statuses", statusesCsv);
+      const vsCsv = csv(filters.verdict_states);
+      if (vsCsv) qs.set("verdict_states", vsCsv);
+      if (filters.date_from) qs.set("date_from", filters.date_from);
+      if (filters.date_to) qs.set("date_to", filters.date_to);
+      if (filters.date_on) qs.set("date_on", filters.date_on);
+      if (filters.meter) qs.set("meter", filters.meter);
+      if (filters.value_min !== undefined && filters.value_min !== null) {
+        qs.set("value_min", String(filters.value_min));
+      }
+      if (filters.value_max !== undefined && filters.value_max !== null) {
+        qs.set("value_max", String(filters.value_max));
+      }
+      if (filters.deadline_state) qs.set("deadline_state", filters.deadline_state);
       return apiFetch<TrackerResponse>(`/api/tracker/rows?${qs.toString()}`);
     },
     // Cached + revalidated lazily so /tracker feels instant after first load.

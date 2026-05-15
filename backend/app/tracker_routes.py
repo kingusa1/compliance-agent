@@ -12,6 +12,14 @@ from app.tracker_aggregator import build_tracker_rows
 tracker_router = APIRouter()
 
 
+def _split_csv(v: Optional[str]) -> Optional[list[str]]:
+    """Comma-separated query param → trimmed non-empty list (or None)."""
+    if not v:
+        return None
+    out = [x.strip() for x in v.split(",") if x.strip()]
+    return out or None
+
+
 @tracker_router.get("/api/tracker/rows")
 def list_tracker_rows(
     tab: str = Query("active", regex="^(active|fixed|dead|compliant|awaiting_review)$"),
@@ -20,10 +28,27 @@ def list_tracker_rows(
     supplier: Optional[str] = None,
     search: Optional[str] = None,
     limit: int = Query(500, ge=1, le=2000),
+    # 2026-05-15 advanced filters
+    suppliers: Optional[str] = Query(None, description="comma-separated supplier names"),
+    agents: Optional[str] = Query(None, description="comma-separated agent names"),
+    statuses: Optional[str] = Query(None, description="comma-separated rejection statuses"),
+    verdict_states: Optional[str] = Query(
+        None,
+        description="comma-separated AI_PENDING|HUMAN_CONFIRMED|HUMAN_OVERRIDDEN",
+    ),
+    date_from: Optional[str] = Query(None, regex=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: Optional[str] = Query(None, regex=r"^\d{4}-\d{2}-\d{2}$"),
+    date_on: Optional[str] = Query(None, regex=r"^\d{4}-\d{2}-\d{2}$"),
+    meter: Optional[str] = Query(None, description="MPAN/MPRN substring match"),
+    value_min: Optional[float] = Query(None, ge=0),
+    value_max: Optional[float] = Query(None, ge=0),
+    deadline_state: Optional[str] = Query(
+        None, regex=r"^(overdue|due_3d|due_7d|on_track)$"
+    ),
     db: Session = Depends(get_db),
     user=Depends(current_user),
 ):
-    cats = [c.strip() for c in category.split(",")] if category else None
+    cats = _split_csv(category)
     rows = build_tracker_rows(
         db,
         tab=tab,
@@ -32,6 +57,17 @@ def list_tracker_rows(
         supplier=supplier,
         search=search,
         limit=limit,
+        suppliers=_split_csv(suppliers),
+        agents=_split_csv(agents),
+        statuses=_split_csv(statuses),
+        verdict_states=_split_csv(verdict_states),
+        date_from=date_from,
+        date_to=date_to,
+        date_on=date_on,
+        meter=meter,
+        value_min=value_min,
+        value_max=value_max,
+        deadline_state=deadline_state,
     )
 
     def _serialise(r):

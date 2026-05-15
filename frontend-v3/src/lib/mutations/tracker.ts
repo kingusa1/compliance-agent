@@ -90,3 +90,32 @@ export function useOverrideVerdict() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "tracker"] }),
   });
 }
+
+// ── Assignee mutation (2026-05-15) ──────────────────────────────────────
+// POST /api/tracker/rows/{rejection_id}/assignee — body {assignee_id}.
+// Null clears the assignment. Backend validates assignee_id is a known
+// profile so a stale dropdown can't poison the row.
+
+export type SetAssigneeVars = {
+  rejectionId: string;
+  assigneeId: string | null;
+};
+
+async function setAssignee({ rejectionId, assigneeId }: SetAssigneeVars): Promise<{
+  id: string;
+  fix_assignee_id: string | null;
+}> {
+  return apiFetch(`/api/tracker/rows/${encodeURIComponent(rejectionId)}/assignee`, {
+    method: "POST",
+    body: JSON.stringify({ assignee_id: assigneeId }),
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function useSetAssignee() {
+  const qc = useQueryClient();
+  return useMutation<{ id: string; fix_assignee_id: string | null }, Error, SetAssigneeVars>({
+    mutationFn: setAssignee,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "tracker"] }),
+  });
+}

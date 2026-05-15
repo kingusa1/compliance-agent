@@ -8,7 +8,31 @@ import {
   useConfirmVerdict,
   useOverrideVerdict,
   useEditTrackerRow,
+  useSetAssignee,
 } from "@/lib/mutations/tracker";
+import { useActiveReviewersQuery } from "@/lib/queries/reviewers";
+
+// Canonical supplier list (mirrors backend SupplierEnum in payload_schema.py).
+// Side-panel uses it as the source of truth for the supplier dropdown so a
+// reviewer can correct a misdetected supplier on any rejection row.
+const SUPPLIER_OPTIONS = [
+  "E.ON",
+  "E.ON Next Energy",
+  "British Gas Core",
+  "British Gas Lite",
+  "British Gas Business",
+  "British Gas Trading",
+  "Pozitive",
+  "Yu Energy",
+  "Smartest Energy",
+  "Affect Energy",
+  "Britannia Gas",
+  "United Gas & Power",
+  "TotalEnergies (out-of-matrix)",
+  "Other",
+];
+
+const TERM_MONTHS_OPTIONS = [12, 24, 36, 48, 60] as const;
 
 const FIX_ACTIONS = [
   "AMENDMENT_CALL", "CONFIRMATION_CALL", "NEW_LOA", "NEW_DOCUSIGN",
@@ -49,6 +73,20 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
   const editNotes = useEditTrackerRow();
   const confirm = useConfirmVerdict();
   const override = useOverrideVerdict();
+  const setAssignee = useSetAssignee();
+  const reviewersQ = useActiveReviewersQuery();
+
+  // Helper — patch a single editable field via the tracker PATCH endpoint.
+  // Used by the new Identity / Meter+Deal / Status cards so each blur or
+  // dropdown change persists immediately. We never block on the mutation
+  // (background invalidation refreshes the row) so the UI stays snappy.
+  const patchField = (field: string, value: string | number | null) => {
+    if (!row.rejection_id) return;
+    editNotes.mutate({
+      rejectionId: row.rejection_id,
+      fields: { [field]: value },
+    });
+  };
 
   // Local draft + dirty tracking. When reviewer edits any of the 4
   // override-eligible fields, dirty becomes true → Save replaces the
@@ -133,11 +171,187 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
         </div>
       )}
 
-      <dl className="space-y-1 text-[12px]">
-        <div className="flex justify-between"><dt className="text-[var(--text-muted)]">Supplier</dt><dd>{row.supplier ?? "—"}</dd></div>
-        <div className="flex justify-between"><dt className="text-[var(--text-muted)]">Agent</dt><dd>{row.sales_agent ?? "—"}</dd></div>
-        <div className="flex justify-between"><dt className="text-[var(--text-muted)]">MPAN/MPRN</dt><dd className="font-mono">{row.mpan_mprn ?? "—"}</dd></div>
-      </dl>
+      {/* Identity card — every field editable when a rejection_id exists;
+          compliant/awaiting-review rows fall back to the read-only summary
+          so the reviewer can still see the values. */}
+      {row.rejection_id ? (
+        <section className="space-y-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-3 text-[12px]">
+          <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+            Identity
+          </div>
+          <div className="grid grid-cols-1 gap-2">
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+                Supplier
+              </span>
+              <select
+                className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
+                value={row.supplier ?? ""}
+                disabled={editNotes.isPending}
+                onChange={(e) => patchField("supplier", e.target.value || null)}
+              >
+                <option value="">—</option>
+                {SUPPLIER_OPTIONS.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+                Agent
+              </span>
+              <input
+                type="text"
+                key={`agent-${row.rejection_id ?? ""}-${row.sales_agent ?? ""}`}
+                defaultValue={row.sales_agent ?? ""}
+                onBlur={(e) => {
+                  if (e.target.value !== (row.sales_agent ?? "")) {
+                    patchField("sales_agent", e.target.value || null);
+                  }
+                }}
+                className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
+                placeholder="Agent name…"
+              />
+            </label>
+          </div>
+        </section>
+      ) : (
+        <dl className="space-y-1 text-[12px]">
+          <div className="flex justify-between">
+            <dt className="text-[var(--text-muted)]">Supplier</dt>
+            <dd>{row.supplier ?? "—"}</dd>
+          </div>
+          <div className="flex justify-between">
+            <dt className="text-[var(--text-muted)]">Agent</dt>
+            <dd>{row.sales_agent ?? "—"}</dd>
+          </div>
+          <div className="flex justify-between">
+            <dt className="text-[var(--text-muted)]">MPAN/MPRN</dt>
+            <dd className="font-mono">{row.mpan_mprn ?? "—"}</dd>
+          </div>
+        </dl>
+      )}
+
+      {/* Meter + Deal card — only renders on rows that resolved to a deal.
+          The PATCH endpoint will 400 if the underlying call has no deal,
+          so we hide this section entirely rather than show fields that
+          would explode on save. ``deal_id`` is set on every row whose
+          parent call has a deal — true for any reviewer-initiated row
+          and the auto-detect path post-2026-05-15 matcher landing. */}
+      {row.rejection_id && row.deal_id && (
+        <section className="space-y-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-3 text-[12px]">
+          <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+            Meter &amp; deal
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+                MPAN
+              </span>
+              <input
+                type="text"
+                key={`mpan-${row.deal_id ?? ""}`}
+                defaultValue={row.mpan_mprn?.split("/")[0]?.trim() ?? ""}
+                onBlur={(e) =>
+                  patchField("mpan_electricity", e.target.value || null)
+                }
+                className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 font-mono text-[11px]"
+                placeholder="13-digit core"
+                inputMode="numeric"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+                MPRN
+              </span>
+              <input
+                type="text"
+                key={`mprn-${row.deal_id ?? ""}`}
+                defaultValue={row.mpan_mprn?.split("/")[1]?.trim() ?? ""}
+                onBlur={(e) =>
+                  patchField("mprn_gas", e.target.value || null)
+                }
+                className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 font-mono text-[11px]"
+                placeholder="6-10 digits"
+                inputMode="numeric"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+                Annual value (£)
+              </span>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                key={`value-${row.deal_id ?? ""}-${row.deal_value_gbp ?? ""}`}
+                defaultValue={row.deal_value_gbp ?? ""}
+                onBlur={(e) =>
+                  patchField(
+                    "deal_value_gbp",
+                    e.target.value === "" ? null : Number(e.target.value),
+                  )
+                }
+                className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
+                placeholder="0"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+                Live date
+              </span>
+              <input
+                type="date"
+                key={`live-${row.deal_id ?? ""}-${row.expected_live_date ?? ""}`}
+                defaultValue={row.expected_live_date?.slice(0, 10) ?? ""}
+                onBlur={(e) =>
+                  patchField("expected_live_date", e.target.value || null)
+                }
+                className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+                Term (mo)
+              </span>
+              <select
+                className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
+                defaultValue=""
+                onChange={(e) =>
+                  patchField(
+                    "term_months",
+                    e.target.value === "" ? null : Number(e.target.value),
+                  )
+                }
+              >
+                <option value="">—</option>
+                {TERM_MONTHS_OPTIONS.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+                DocuSign ref
+              </span>
+              <input
+                type="text"
+                key={`ds-${row.deal_id ?? ""}`}
+                defaultValue=""
+                onBlur={(e) =>
+                  patchField("docusign_reference", e.target.value || null)
+                }
+                className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 font-mono text-[11px]"
+                placeholder="envelope id"
+              />
+            </label>
+          </div>
+        </section>
+      )}
 
       {isCompliant ? (
         <div className="rounded-md border border-emerald-300 bg-emerald-50 p-3 text-[12px] text-emerald-900">
@@ -255,6 +469,52 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
               <option value="">—</option>
               {OUTCOMES.map((k) => (<option key={k} value={k}>{k}</option>))}
             </select>
+          </div>
+
+          {/* Deadline + Assignee — sibling fields that were read-only
+              previously. Both persist immediately on change. */}
+          <div className="grid grid-cols-2 gap-2">
+            <label className="flex flex-col gap-1 text-[12px]">
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+                Deadline
+              </span>
+              <input
+                type="date"
+                key={`deadline-${row.rejection_id ?? ""}-${row.deadline ?? ""}`}
+                defaultValue={row.deadline?.slice(0, 10) ?? ""}
+                onBlur={(e) => {
+                  const v = e.target.value;
+                  if (v !== (row.deadline?.slice(0, 10) ?? "")) {
+                    patchField("deadline", v || null);
+                  }
+                }}
+                className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-[12px]">
+              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+                Assigned to
+              </span>
+              <select
+                className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
+                value={row.fix_assignee_id ?? ""}
+                disabled={!row.rejection_id || setAssignee.isPending}
+                onChange={(e) => {
+                  if (!row.rejection_id) return;
+                  setAssignee.mutate({
+                    rejectionId: row.rejection_id,
+                    assigneeId: e.target.value === "" ? null : e.target.value,
+                  });
+                }}
+              >
+                <option value="">— Unassigned</option>
+                {(reviewersQ.data ?? []).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name || p.email} ({p.role})
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
         </>
       )}

@@ -3,8 +3,15 @@ import { useMemo, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { TrackerTable } from "./TrackerTable";
 import { TrackerSidePanel } from "./TrackerSidePanel";
+import { TrackerFilterBar } from "./TrackerFilterBar";
 import { CATEGORY_KEYS, CATEGORY_LABEL, CATEGORY_HEX } from "./CategoryChip";
-import { useTrackerRowsQuery, trackerExportUrl, type TrackerRow, type TrackerTab } from "@/lib/queries/tracker";
+import {
+  useTrackerRowsQuery,
+  trackerExportUrl,
+  type TrackerFilters,
+  type TrackerRow,
+  type TrackerTab,
+} from "@/lib/queries/tracker";
 import { UploadModal } from "@/app/(admin)/calls/UploadModal";
 
 const TABS: TrackerTab[] = ["awaiting_review", "active", "fixed", "dead", "compliant"];
@@ -14,21 +21,34 @@ export default function TrackerPage() {
   const sp = useSearchParams();
   const tab = (sp.get("tab") ?? "active") as TrackerTab;
   const [month, setMonth] = useState(sp.get("month") ?? "");
-  const [supplier, setSupplier] = useState(sp.get("supplier") ?? "");
   const [search, setSearch] = useState(sp.get("search") ?? "");
   const [categories, setCategories] = useState<Set<string>>(
     new Set((sp.get("category") ?? "").split(",").filter(Boolean)),
   );
+  // Advanced filters (date, multi-select, ranges) — held in one state blob
+  // so URL persistence and reviewer "Clear all" are trivial.
+  const [advanced, setAdvanced] = useState<Partial<TrackerFilters>>(() => ({
+    suppliers: (sp.get("suppliers") ?? "").split(",").filter(Boolean) || undefined,
+    agents: (sp.get("agents") ?? "").split(",").filter(Boolean) || undefined,
+    statuses: (sp.get("statuses") ?? "").split(",").filter(Boolean) || undefined,
+    date_from: sp.get("date_from") ?? undefined,
+    date_to: sp.get("date_to") ?? undefined,
+    date_on: sp.get("date_on") ?? undefined,
+    meter: sp.get("meter") ?? undefined,
+    value_min: sp.get("value_min") ? Number(sp.get("value_min")) : undefined,
+    value_max: sp.get("value_max") ? Number(sp.get("value_max")) : undefined,
+    deadline_state: (sp.get("deadline_state") as TrackerFilters["deadline_state"]) ?? undefined,
+  }));
   const [selectedRow, setSelectedRow] = useState<TrackerRow | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
 
-  const filters = useMemo(() => ({
+  const filters = useMemo<TrackerFilters>(() => ({
     tab,
     month: month || undefined,
-    supplier: supplier || undefined,
     search: search || undefined,
     category: categories.size > 0 ? [...categories] : undefined,
-  }), [tab, month, supplier, search, categories]);
+    ...advanced,
+  }), [tab, month, search, categories, advanced]);
 
   const q = useTrackerRowsQuery(filters);
   const rows = q.data?.rows ?? [];
@@ -55,6 +75,24 @@ export default function TrackerPage() {
       set.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
     }
     return [...set].sort().reverse();
+  }, [rows]);
+
+  // Derive supplier + agent multi-select options from the current row set
+  // so the dropdowns surface only values actually present (avoids the
+  // "typo in free-text input → no results" UX trap the legacy version had).
+  const availableSuppliers = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of rows) {
+      if (r.supplier && r.supplier.trim()) set.add(r.supplier.trim());
+    }
+    return [...set].sort();
+  }, [rows]);
+  const availableAgents = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of rows) {
+      if (r.sales_agent && r.sales_agent.trim()) set.add(r.sales_agent.trim());
+    }
+    return [...set].sort();
   }, [rows]);
 
   return (
@@ -142,20 +180,18 @@ export default function TrackerPage() {
           </div>
         )}
 
-        <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border-subtle)] px-6 py-2">
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search customer, agent, reason…"
-            className="flex-1 min-w-[200px] rounded-md border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[12px]"
-          />
-          <input
-            value={supplier}
-            onChange={(e) => setSupplier(e.target.value)}
-            placeholder="Supplier"
-            className="w-40 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[12px]"
-          />
-        </div>
+        <TrackerFilterBar
+          filters={{ ...advanced, search }}
+          onChange={(next) => {
+            // Search is a top-level state so the input stays controlled
+            // independently; everything else lives in ``advanced``.
+            setSearch(next.search ?? "");
+            const { search: _s, ...rest } = next;
+            setAdvanced(rest);
+          }}
+          supplierOptions={availableSuppliers}
+          agentOptions={availableAgents}
+        />
 
         <div className="flex-1 overflow-auto px-6 py-3">
           {q.isLoading || q.isFetching ? (

@@ -325,13 +325,136 @@ def build_tracker_rows(
     supplier: Optional[str] = None,
     search: Optional[str] = None,
     limit: int = 500,
+    # 2026-05-15 advanced filters — every field optional, falsy=ignore.
+    suppliers: Optional[list[str]] = None,         # multi-select supplier
+    agents: Optional[list[str]] = None,            # multi-select sales_agent
+    statuses: Optional[list[str]] = None,          # multi-select rejection status
+    verdict_states: Optional[list[str]] = None,    # AI_PENDING|HUMAN_CONFIRMED|HUMAN_OVERRIDDEN
+    date_from: Optional[str] = None,               # ISO yyyy-mm-dd inclusive
+    date_to: Optional[str] = None,                 # ISO yyyy-mm-dd inclusive
+    date_on: Optional[str] = None,                 # ISO yyyy-mm-dd single day
+    meter: Optional[str] = None,                   # substring MPAN/MPRN match
+    value_min: Optional[float] = None,
+    value_max: Optional[float] = None,
+    deadline_state: Optional[str] = None,          # overdue|due_3d|due_7d|on_track
 ) -> list[TrackerRow]:
     """Return rows for the requested tab.
 
     ``tab`` ∈ active | fixed | dead | compliant | awaiting_review.
     awaiting_review = rejections with verdict_state=AI_PENDING (any status),
     surfaced as a reviewer queue separate from the active/fixed/dead workflow.
+
+    Filter handling: legacy single-value params (``supplier``, ``month``)
+    are honoured for backward-compat; the new multi-value lists win when
+    both are provided.
     """
+    # ---- helpers for the advanced-filter block ----
+    from datetime import date, datetime, timedelta
+
+    def _parse_iso_date(s: Optional[str]):
+        if not s:
+            return None
+        try:
+            return datetime.strptime(s.strip(), "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            return None
+
+    df = _parse_iso_date(date_from)
+    dt = _parse_iso_date(date_to)
+    don = _parse_iso_date(date_on)
+    if don:
+        # date_on overrides range — collapses to a single day.
+        df = don
+        dt = don
+
+    today = date.today()
+    deadline_cutoff: Optional[date] = None
+    if deadline_state == "due_3d":
+        deadline_cutoff = today + timedelta(days=3)
+    elif deadline_state == "due_7d":
+        deadline_cutoff = today + timedelta(days=7)
+
+    # When any deal-level filter is active, narrow to a sub-population of
+    # deal_ids first; later branches use ``Call.deal_id.in_(...)`` /
+    # ``Rejection.call_id.in_(call_ids_for_deals)`` so we don't have to
+    # JOIN CustomerDeal into every branch.
+    restricted_deal_ids: Optional[list] = None
+    if meter or value_min is not None or value_max is not None:
+        dq = db.query(CustomerDeal.id)
+        if meter:
+            mlike = f"%{meter}%"
+            dq = dq.filter(or_(
+                CustomerDeal.mpan_electricity.ilike(mlike),
+                CustomerDeal.mprn_gas.ilike(mlike),
+            ))
+        if value_min is not None:
+            dq = dq.filter(CustomerDeal.deal_value_gbp >= value_min)
+        if value_max is not None:
+            dq = dq.filter(CustomerDeal.deal_value_gbp <= value_max)
+        restricted_deal_ids = [row[0] for row in dq.all()]
+        if not restricted_deal_ids:
+            # Empty deal set → empty result. Short-circuit so the branch
+            # queries below don't generate a malformed ``IN ()`` clause.
+            return []
+
+    def _apply_call_advanced(q):
+        """Apply df/dt/suppliers/agents/meter-via-deals to a Call query."""
+        if df:
+            q = q.filter(func.date(Call.created_at) >= df)
+        if dt:
+            q = q.filter(func.date(Call.created_at) <= dt)
+        if suppliers:
+            q = q.filter(Call.detected_supplier.in_(suppliers))
+        if agents:
+            q = q.filter(Call.agent_name.in_(agents))
+        if restricted_deal_ids is not None:
+            q = q.filter(Call.deal_id.in_(restricted_deal_ids))
+        return q
+
+    def _apply_rejection_advanced(q):
+        """Apply df/dt/suppliers/agents/verdict_states/statuses/deadline_state/
+        meter-via-deals to a Rejection query."""
+        if df:
+            q = q.filter(func.date(Rejection.rejected_at) >= df)
+        if dt:
+            q = q.filter(func.date(Rejection.rejected_at) <= dt)
+        if suppliers:
+            q = q.filter(Rejection.supplier.in_(suppliers))
+        if agents:
+            q = q.filter(Rejection.sales_agent.in_(agents))
+        if verdict_states:
+            q = q.filter(Rejection.verdict_state.in_(verdict_states))
+        if statuses:
+            # Multi-select overrides the tab→statuses default below.
+            q = q.filter(Rejection.status.in_(statuses))
+        if deadline_state == "overdue":
+            q = q.filter(Rejection.deadline.isnot(None)).filter(
+                func.date(Rejection.deadline) < today
+            )
+        elif deadline_state in ("due_3d", "due_7d") and deadline_cutoff is not None:
+            q = q.filter(Rejection.deadline.isnot(None)).filter(
+                func.date(Rejection.deadline) >= today,
+                func.date(Rejection.deadline) <= deadline_cutoff,
+            )
+        elif deadline_state == "on_track":
+            q = q.filter(or_(
+                Rejection.deadline.is_(None),
+                func.date(Rejection.deadline) > today,
+            ))
+        if restricted_deal_ids is not None:
+            # Filter to rejections whose call's deal is in the restricted set.
+            call_ids = [
+                row[0]
+                for row in db.query(Call.id).filter(
+                    Call.deal_id.in_(restricted_deal_ids)
+                ).all()
+            ]
+            if not call_ids:
+                # Force empty result through a sentinel filter.
+                q = q.filter(Rejection.id == None)  # noqa: E711
+            else:
+                q = q.filter(Rejection.call_id.in_(call_ids))
+        return q
     if tab == "awaiting_review":
         # Post-2026-05-12: rejections are reviewer-initiated only, so the
         # awaiting_review tab can no longer be sourced from Rejection rows.
@@ -360,6 +483,7 @@ def build_tracker_rows(
                 Call.customer_name.ilike(like),
                 Call.agent_name.ilike(like),
             ))
+        q = _apply_call_advanced(q)
         # Newest first so freshly-processed calls land at the top.
         calls = q.order_by(Call.created_at.desc()).limit(limit).all()
         rows: list[TrackerRow] = []
@@ -385,6 +509,7 @@ def build_tracker_rows(
                 Call.customer_name.ilike(like),
                 Call.agent_name.ilike(like),
             ))
+        q = _apply_call_advanced(q)
         calls = q.order_by(Call.created_at.desc()).limit(limit).all()
         rows: list[TrackerRow] = []
         for call in calls:
@@ -397,18 +522,23 @@ def build_tracker_rows(
         return rows
 
     # Rejection-row tabs:
-    statuses = {
-        "active": _ACTIVE_STATUSES,
-        "fixed": _FIXED_STATUSES,
-        "dead": _DEAD_STATUSES,
-    }.get(tab, _ACTIVE_STATUSES)
+    # When the new ``statuses`` multi-select param is provided, it wins
+    # outright (the user is explicitly asking for the union of states);
+    # otherwise we fall back to the tab→default-status mapping.
+    if not statuses:
+        tab_statuses = {
+            "active": _ACTIVE_STATUSES,
+            "fixed": _FIXED_STATUSES,
+            "dead": _DEAD_STATUSES,
+        }.get(tab, _ACTIVE_STATUSES)
+    else:
+        tab_statuses = None  # _apply_rejection_advanced handles statuses
 
     # Same orphan-rejection guard as awaiting_review — never surface
     # a rejection whose parent call was deleted.
-    q = db.query(Rejection).filter(
-        Rejection.status.in_(statuses),
-        Rejection.call_id.isnot(None),
-    )
+    q = db.query(Rejection).filter(Rejection.call_id.isnot(None))
+    if tab_statuses is not None:
+        q = q.filter(Rejection.status.in_(tab_statuses))
     if category:
         q = q.filter(Rejection.category.in_(category))
     if supplier:
@@ -423,6 +553,7 @@ def build_tracker_rows(
             Rejection.sales_agent.ilike(like),
             Rejection.rejection_reason.ilike(like),
         ))
+    q = _apply_rejection_advanced(q)
     # Sort newest first by created_at (upload time) so freshly-processed
     # calls land at the top — reviewers spot new work immediately. Falls
     # back to rejected_at if created_at is null (XLSX-imported rows).

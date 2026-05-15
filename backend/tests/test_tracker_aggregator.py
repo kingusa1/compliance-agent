@@ -71,7 +71,7 @@ def test_active_tab_returns_rejection_row(test_db):
     assert r["last_action_date"] is None
     assert r["deadline"] is not None
     assert r["outcome"] is None
-    assert r["notes"] == "Full coaching narrative."
+    assert r["outcome_narrative"] == "Full coaching narrative."
     assert r["call_id"] == call.id
     assert r["rejection_id"] == str(rej.id)
     assert r["deal_id"] == str(deal.id)
