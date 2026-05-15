@@ -131,6 +131,11 @@ function fmtSecs(secs: number | null): string {
 }
 
 function ConfidenceDial({ value }: { value: number | null }) {
+  // 2026-05-15: confidence is the classifier's belief in the segment's
+  // STAGE tag, NOT the pass rate. Was rendered next to the score string
+  // which made "82% · 0/11 · Coaching" look like a math contradiction
+  // (you'd read 82% as the pass rate). Dropped the bare percent number;
+  // dots-only + hover-title preserves the signal without confusing users.
   if (value == null) return null;
   const pct = Math.max(0, Math.min(1, value));
   const stops = 5;
@@ -138,38 +143,48 @@ function ConfidenceDial({ value }: { value: number | null }) {
   return (
     <span
       title={`Classifier confidence ${Math.round(pct * 100)}%`}
+      aria-label={`Classifier confidence ${Math.round(pct * 100)} percent`}
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 4,
+        gap: 2,
         fontSize: 10,
         color: "var(--text-faint)",
-        fontFamily: "var(--font-mono)",
       }}
     >
-      <span style={{ display: "inline-flex", gap: 2 }}>
-        {Array.from({ length: stops }).map((_, i) => (
-          <span
-            key={i}
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: 1.5,
-              background:
-                i < filled
-                  ? pct >= 0.85
-                    ? "var(--emerald)"
-                    : pct >= 0.6
-                      ? "var(--amber)"
-                      : "var(--red)"
-                  : "var(--bg-elev3)",
-            }}
-          />
-        ))}
-      </span>
-      <span>{Math.round(pct * 100)}%</span>
+      {Array.from({ length: stops }).map((_, i) => (
+        <span
+          key={i}
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: 1.5,
+            background:
+              i < filled
+                ? pct >= 0.85
+                  ? "var(--emerald)"
+                  : pct >= 0.6
+                    ? "var(--amber)"
+                    : "var(--red)"
+                : "var(--bg-elev3)",
+          }}
+        />
+      ))}
     </span>
   );
+}
+
+// Compute pass-rate% from the "passed/total" score string. Returns null
+// when the score is missing or malformed. Used to show a percentage that
+// MATCHES the score (so reviewers don't see "82% · 0/11" again).
+function passRatePct(score: string | null | undefined): number | null {
+  if (!score) return null;
+  const m = /^(\d+)\s*\/\s*(\d+)$/.exec(score.trim());
+  if (!m) return null;
+  const passed = Number(m[1]);
+  const total = Number(m[2]);
+  if (!Number.isFinite(passed) || !Number.isFinite(total) || total <= 0) return null;
+  return Math.round((passed / total) * 100);
 }
 
 function BreachPill({
@@ -453,6 +468,36 @@ export function SegmentCards({ callId, cpCards = [], cpFilter = "all", innerProp
                 </span>
                 <ConfidenceDial value={s.confidence} />
                 <div style={{ flex: 1 }} />
+                {/* Pass-rate% derived from the score string so the
+                    percentage matches what the reviewer expects.
+                    Previously a bare classifier-confidence % shown here
+                    made "82% · 0/11 · Coaching" look broken. */}
+                {(() => {
+                  const pct = passRatePct(s.score);
+                  if (pct == null) return null;
+                  return (
+                    <span
+                      title={`Pass rate ${pct}% (${s.score})`}
+                      style={{
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 11,
+                        fontWeight: 500,
+                        color:
+                          pct >= 90
+                            ? "var(--emerald-400, #34d399)"
+                            : pct >= 60
+                              ? "var(--amber-400, #fbbf24)"
+                              : "var(--red-400, #f87171)",
+                        fontVariantNumeric: "tabular-nums",
+                        padding: "1px 6px",
+                        borderRadius: 3,
+                        background: "var(--bg-elev2)",
+                      }}
+                    >
+                      {pct}%
+                    </span>
+                  );
+                })()}
                 <span
                   style={{
                     fontFamily: "var(--font-mono)",

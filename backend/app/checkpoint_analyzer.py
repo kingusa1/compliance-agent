@@ -784,8 +784,17 @@ async def analyze_all_checkpoints(
         bucket = "review"
         compliant = False
     elif medium_hits:
-        bucket = "coaching"
-        compliant = True  # passes with note
+        # 2026-05-15: "coaching" means "mostly clean, just 1-2 nudges".
+        # When the pass rate is below 50% — even with all-medium-only
+        # breaches — the segment is a real review case (e.g. Andrew's
+        # LOA segment had 0/11 with 11 mediums and was bucketed
+        # "coaching/compliant", which contradicted the obvious failure).
+        if total > 0 and (passed / total) < 0.5:
+            bucket = "review"
+            compliant = False
+        else:
+            bucket = "coaching"
+            compliant = True  # passes with note
     else:
         bucket = "pass"
         compliant = total > 0

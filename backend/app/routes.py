@@ -2283,8 +2283,93 @@ def admin_normalize_checkpoint_results(
             if (r.get("name") or "").strip().lower() not in existing_names
         )
         diff = {"call_id": c.id, "before": before, "after": after, "filled_not_scored": filled, "duplicates_collapsed": max(0, before - (after - added))}
+
+        # 2026-05-15: also re-derive each CallSegment's score / bucket /
+        # compliant from the normalized flat list, restricted to that
+        # segment's own template. Fixes Andrew's LOA segment which had
+        # score="0/11", compliant=True, bucket="coaching" while its own
+        # checkpoint_results was empty `[]` — the segment row never got
+        # the analyzer's verified list persisted.
+        seg_fixes: list[dict] = []
+        norm = lambda s: (s or "").strip().lower()
+        flat_by_name = {norm(r.get("name")): r for r in normalized}
+        for seg in segments:
+            seg_tmpl: list[str] = []
+            if seg.script_id:
+                script = db.query(Script).filter(Script.id == seg.script_id).first()
+                if script:
+                    try:
+                        tcps = json.loads(script.checkpoints or "[]") or []
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        tcps = []
+                    seg_tmpl = [(t.get("name") or "").strip() for t in tcps if t.get("name")]
+            if not seg_tmpl:
+                continue
+            # Collect this segment's CPs from the normalized flat list.
+            seg_cps = [flat_by_name.get(norm(n)) for n in seg_tmpl]
+            seg_cps = [c2 for c2 in seg_cps if c2]
+            if not seg_cps:
+                continue
+            total_cps = len(seg_cps)
+            passed_cps = sum(1 for c2 in seg_cps if c2.get("status") == "pass")
+            # Severity-aware bucket — mirrors checkpoint_analyzer logic
+            # for the post-2026-05-15 contract.
+            critical = sum(1 for c2 in seg_cps if (c2.get("severity") or "").lower() == "critical" and c2.get("status") in ("fail", "partial", "unverified"))
+            high = sum(1 for c2 in seg_cps if (c2.get("severity") or "").lower() == "high" and c2.get("status") in ("fail", "partial", "unverified"))
+            medium = sum(1 for c2 in seg_cps if (c2.get("severity") or "medium").lower() in ("medium", "low", "info") and c2.get("status") in ("fail", "partial", "unverified", "not_scored"))
+            if critical:
+                bucket = "blocked"; compliant = False
+            elif high:
+                bucket = "review"; compliant = False
+            elif medium:
+                if total_cps > 0 and (passed_cps / total_cps) < 0.5:
+                    bucket = "review"; compliant = False
+                else:
+                    bucket = "coaching"; compliant = True
+            else:
+                bucket = "pass"; compliant = total_cps > 0
+            new_score = f"{passed_cps}/{total_cps}"
+            new_compliance_status = (
+                "compliant" if bucket == "pass" else
+                ("compliant" if bucket == "coaching" else
+                 ("pending" if bucket == "review" else "non_compliant"))
+            )
+            changed = (
+                seg.score != new_score or
+                seg.bucket != bucket or
+                bool(seg.compliant) != compliant or
+                (seg.critical_breaches or 0) != critical or
+                (seg.high_breaches or 0) != high or
+                (seg.medium_breaches or 0) != medium
+            )
+            if changed:
+                seg_fixes.append({
+                    "segment_id": str(seg.id),
+                    "stage": seg.stage,
+                    "old_score": seg.score,
+                    "new_score": new_score,
+                    "old_bucket": seg.bucket,
+                    "new_bucket": bucket,
+                    "old_compliant": bool(seg.compliant),
+                    "new_compliant": compliant,
+                })
+                if apply:
+                    seg.score = new_score
+                    seg.bucket = bucket
+                    seg.compliant = compliant
+                    seg.compliance_status = new_compliance_status
+                    seg.critical_breaches = critical
+                    seg.high_breaches = high
+                    seg.medium_breaches = medium
+                    # Also persist the normalized CPs back to the segment
+                    # row so /segments shows the same data the call-level
+                    # JSON has.
+                    seg.checkpoint_results = json.dumps([c2 for c2 in seg_cps])
+        if seg_fixes:
+            diff["segment_fixes"] = seg_fixes
+
         diffs.append(diff)
-        if apply and (filled or after != before):
+        if apply and (filled or after != before or seg_fixes):
             c.checkpoint_results = json.dumps(normalized)
             updated += 1
     if apply:
