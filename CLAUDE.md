@@ -62,6 +62,40 @@ run in isolated context windows; serial chaining triples wall time for no benefi
 - **Confirm before** destructive ops (`git reset --hard`, force-push, dropping tables, `--no-verify`).
 - **Default git identity is wrong** for this repo — see "GitHub" above. Earlier sessions pushed under the right identity; the credential helper can revert mid-session, leading to "Repository not found" errors. If push fails with that error, that's the cause.
 
+## CI parity guardrail — run touched tests BEFORE every push
+
+**MUST run touched + impacted tests locally before `git push`.** The GitHub Actions `coverage` workflow runs the full `pytest` suite — and it FAILS on stale tests just as fast as on new bugs. Recent regressions that slipped through:
+
+- `test_ai_rejection_reason::test_ai_rejection_reason_propagates_to_rejection_row` asserted on `Rejection.outcome_narrative` after the 2026-05-15 audit moved the AI narrative write to `Rejection.fix_narrative`. CI red for 5 commits before being caught.
+- `test_routes.py::test_retry_call_*` (4 tests) returned 401 after `Depends(current_reviewer)` was added to `/api/calls/{id}/retry`. CI red for 5 commits before adding `app.dependency_overrides[current_reviewer]` to the test module's setup.
+
+### The minimum gate before every push
+
+```bash
+# Touched-file tests (must pass)
+./venv/Scripts/python.exe -m pytest tests/test_<area>.py -q --tb=line
+
+# Once a session ends OR before merging to main, run the equivalent of CI's coverage job:
+./venv/Scripts/python.exe -m pytest -q --tb=line
+```
+
+### When changing **any** of these patterns, also re-run the named tests:
+
+| Change | Re-run |
+|---|---|
+| Add/remove `Depends(current_reviewer)` or `Depends(_require_admin)` on a route | `tests/test_routes.py` + grep for that route's existing test file |
+| Move which Rejection column an AI field writes to | `tests/test_ai_rejection_reason.py` + `tests/test_rejection_factory*.py` |
+| Add/remove fields from `TrackerRow` or `tracker_aggregator._*_row` | `tests/test_tracker_aggregator.py` |
+| Alembic migration | `alembic upgrade head` on a fresh SQLite (the CI workflow does this) |
+| New endpoint that writes `ReviewerEdit` audit rows | confirm `reviewer_edits` schema allows the (rejection_id, call_id) combo |
+
+### If CI breaks despite the gate
+
+1. `gh run list --limit 5 --workflow=coverage` — pick the failed run id
+2. `gh run view <id> --log-failed | tail -80` — look for `FAILED tests/...` lines
+3. Fix locally → re-run the specific failing test → commit + push
+4. **Never push more commits on top of a red CI** — each additional commit costs an extra full re-run (~7 min) and clouds the failure diff.
+
 ## When work is local-only
 
 User regularly says "don't push, fix locally". Track local fixes in TodoWrite,

@@ -6,6 +6,33 @@ tags: [state, issues, gotchas]
 
 # Known issues / gotchas
 
+## 🚨 CI parity guardrail (2026-05-15)
+
+GitHub Actions `coverage` workflow runs the full `pytest` suite on every push to `main`. Two recurring failure modes silently broke CI for 5 commits in a row this session:
+
+1. **Stale test assertions after audit-driven field renames.** When a write site moves (e.g. AI narrative `Rejection.outcome_narrative → Rejection.fix_narrative`), the test that locks the old assertion fails. Cycle: code change → push → CI red → notice → fix the test → push again.
+2. **Test client missing `Depends(current_reviewer)` override** when a new auth gate is added to a route. Tests get 401 instead of the asserted 200/400/404.
+
+**Both prevented by running the touched test file before pushing.** Full gate documented in [`CLAUDE.md`](../../CLAUDE.md#ci-parity-guardrail--run-touched-tests-before-every-push) — "CI parity guardrail". Minimum:
+
+```bash
+# Touched tests first
+./venv/Scripts/python.exe -m pytest tests/test_<area>.py -q --tb=line
+# Full sweep before merging to main
+./venv/Scripts/python.exe -m pytest -q --tb=line
+```
+
+Triggers:
+- Changed `Depends(...)` on a route → re-run `tests/test_routes.py` + the route's existing test file.
+- Moved which `Rejection.*` column an AI field writes to → re-run `tests/test_ai_rejection_reason.py` + `tests/test_rejection_factory*.py`.
+- Added/removed fields on `TrackerRow` → re-run `tests/test_tracker_aggregator.py`.
+- Wrote a new endpoint that creates `ReviewerEdit` audit rows → ensure the CHECK constraint `rejection_id IS NOT NULL OR call_id IS NOT NULL` is satisfied (every ctor passes one or both).
+
+If CI does break:
+1. `gh run list --limit 5 --workflow=coverage` → pick failed run id
+2. `gh run view <id> --log-failed | tail -80` → look for `FAILED tests/...` lines
+3. **Never push more commits on top of a red CI** — each adds ~7 min of build time and clouds the failure diff. Fix → re-run the specific test locally → single follow-up commit.
+
 ## 🆕 Scripts coverage gaps (2026-05-15 audit)
 
 Full report: [[Scripts_Validation_2026_05_15]].

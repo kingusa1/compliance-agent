@@ -77,7 +77,13 @@ def _seed(db) -> Call:
 def test_ai_rejection_reason_propagates_to_rejection_row():
     """W5/A1 happy path — analyzer-supplied ai_rejection_reason +
     ai_narrative_notes land on Rejection.rejection_reason +
-    Rejection.outcome_narrative."""
+    Rejection.fix_narrative.
+
+    2026-05-15 audit: AI narrative is written to ``fix_narrative`` (not
+    ``outcome_narrative``) so the reviewer's outcome-notes slot stays
+    clean for human input. See rejections_routes.py:1020 area for the
+    write site.
+    """
     db = TestSessionLocal()
     try:
         call = _seed(db)
@@ -107,7 +113,10 @@ def test_ai_rejection_reason_propagates_to_rejection_row():
 
         assert rej is not None
         assert rej.rejection_reason == "Agent did not state the call was being recorded"
-        assert rej.outcome_narrative == checkpoint["ai_narrative_notes"]
+        # AI narrative writes to fix_narrative (reviewer's outcome_narrative
+        # slot stays clean).
+        assert rej.fix_narrative == checkpoint["ai_narrative_notes"]
+        assert rej.outcome_narrative is None
         # AI confidence ≥ 0.7, so the AI-suggested category + fix should win.
         assert rej.category == "COMPLIANCE_ERROR"
         assert rej.fix_required == "AMENDMENT_CALL"

@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.models import Call, CallCheckpoint
+from app.reviewers import current_reviewer
 from app.routes import router
 
 # Setup test app with in-memory SQLite using StaticPool so all connections share same DB
@@ -33,6 +34,16 @@ def override_get_db():
 
 
 app.dependency_overrides[get_db] = override_get_db
+# 2026-05-14 audit added `Depends(current_reviewer)` to /retry + several
+# other write endpoints. Tests don't pass a Bearer token, so the dep
+# would 401 every request before the route logic ran. Override it to
+# return a fake admin so the tests assert against the real response
+# code (404 / 400 / 200) instead of the auth gate's 401.
+app.dependency_overrides[current_reviewer] = lambda: {
+    "id": "test-reviewer",
+    "email": "test@compliance-agent.local",
+    "role": "admin",
+}
 client = TestClient(app)
 
 
