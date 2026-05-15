@@ -361,6 +361,7 @@ def patch_call_meta(
                 if old_deal != v:
                     db.add(ReviewerEdit(
                         rejection_id=None,
+                        call_id=str(call.id),
                         field="deal.supplier",
                         old_value=old_deal,
                         new_value=v,
@@ -394,6 +395,7 @@ def patch_call_meta(
         if deal is not None and old != v:
             db.add(ReviewerEdit(
                 rejection_id=None,
+                call_id=str(call.id),
                 field=f"deal.{k}",
                 old_value=str(old) if old is not None else None,
                 new_value=str(v) if v is not None else None,
