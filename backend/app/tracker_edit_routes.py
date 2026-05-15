@@ -304,6 +304,13 @@ def patch_call_meta(
     if not isinstance(body, dict):
         raise HTTPException(400, "body must be a JSON object")
 
+    # The side panel uses the tracker display key ``sales_agent`` for the
+    # Agent input on awaiting-review rows even though the underlying Call
+    # column is ``agent_name``. Translate so the reviewer doesn't have to
+    # know the schema difference.
+    if "sales_agent" in body and "agent_name" not in body:
+        body["agent_name"] = body.pop("sales_agent")
+
     accepted: dict[str, str] = {}  # field → "call" | "deal" | "both"
     for k in body:
         if k in CALL_META_FIELDS:
