@@ -206,9 +206,10 @@ export function useQueueQuery(filter: QueueFilter = "all") {
   return useQuery({
     queryKey: reviewerKeys.queue(filter),
     queryFn: () => fetchQueue(filter),
-    // Queue should feel live — refetch on focus + every 30s while open.
-    staleTime: 5_000,
-    refetchInterval: 30_000,
+    // Queue must feel live — fast poll so a freshly-uploaded call shows
+    // up within ~3 s and a verdict submission disappears immediately.
+    staleTime: 0,
+    refetchInterval: 3_000,
   });
 }
 
@@ -217,13 +218,13 @@ export function useCallDetailQuery(id: string) {
     queryKey: reviewerKeys.callDetail(id),
     queryFn: () => fetchCallDetail(id),
     enabled: !!id,
-    // Auto-refresh while the pipeline is still working — matches the v1
-    // SSE-on-stream behaviour without re-wiring the stream endpoint.
-    // Stops polling once the call is in a terminal state.
+    // Aggressively poll while processing so the reviewer sees segments /
+    // score / agent_name fill in live. Slow to 5 s once terminal (still
+    // refresh in case a reviewer override on another tab mutates the row).
     refetchInterval: (q) => {
       const status = (q.state.data as { status?: string } | undefined)?.status;
-      if (status === "completed" || status === "failed") return false;
-      return 3000;
+      if (status === "completed" || status === "failed") return 5_000;
+      return 1_500;
     },
   });
 }

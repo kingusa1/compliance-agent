@@ -77,7 +77,10 @@ export function useRejectionsQuery(params: RejectionsListParams = {}) {
   return useQuery({
     queryKey: rejectionsKeys.list(params),
     queryFn: () => fetchRejections(params),
-    staleTime: 10_000,
+    // Operational page — must reflect every new reviewer-created rejection
+    // within seconds. Inherits global window-focus + reconnect refresh.
+    staleTime: 0,
+    refetchInterval: 3_000,
   });
 }
 
