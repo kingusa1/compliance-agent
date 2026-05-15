@@ -273,6 +273,7 @@ CALL_META_FIELDS = {
 }
 
 
+@tracker_edit_router.patch("/api/tracker/calls/{call_id}/meta")
 @tracker_edit_router.patch("/api/calls/{call_id}/meta")
 def patch_call_meta(
     call_id: str,

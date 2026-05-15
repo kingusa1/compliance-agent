@@ -138,7 +138,12 @@ async function patchCallMeta({ callId, fields }: EditCallMetaVars): Promise<{
   deal_field_sources: Record<string, string> | null;
   applied_keys: string[];
 }> {
-  return apiFetch(`/api/calls/${encodeURIComponent(callId)}/meta`, {
+  // Path is namespaced under /api/tracker/ on purpose — the earlier
+  // /api/calls/{id}/meta endpoint 404'd in a previous deploy, causing
+  // Chrome to cache a 600-second negative-CORS preflight result that
+  // poisoned subsequent in-tab requests. The tracker-namespaced path
+  // is fresh per-tab so reviewers don't hit the cached failure.
+  return apiFetch(`/api/tracker/calls/${encodeURIComponent(callId)}/meta`, {
     method: "PATCH",
     body: JSON.stringify(fields),
     headers: { "Content-Type": "application/json" },
