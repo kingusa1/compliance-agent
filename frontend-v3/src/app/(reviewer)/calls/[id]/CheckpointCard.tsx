@@ -187,15 +187,33 @@ export function CheckpointCard(props: CheckpointCardProps) {
   // Display-state derivation (5 director-facing buckets) — uses needs_review
   // + status + evidence emptiness. Falls through to "unverified" when no
   // verdict has been scored yet.
-  const state: DisplayState = verdict
+  //
+  // 2026-05-15: when the reviewer has committed a verdict (pass/fail),
+  // the top badge reflects the REVIEWER's choice — not the AI's. The
+  // "AI Verdict" section below still shows the AI's reasoning verbatim.
+  // Was: badge said "Passed" even when the human marked "Fail", which
+  // looked like the save hadn't taken effect (real user complaint).
+  const aiState: DisplayState = verdict
     ? deriveDisplayState({
         status: verdict.status,
         evidence: verdict.evidence,
         needs_review: verdict.needs_review,
       })
     : "unverified";
+  const reviewerVerdict = verdict?.reviewer_verdict;
+  const state: DisplayState =
+    reviewerVerdict === "fail"
+      ? (verdict?.evidence && verdict.evidence.trim() ? "said_wrong" : "not_said")
+      : reviewerVerdict === "pass"
+        ? "passed"
+        : aiState;
   const accent = verdict ? displayStateAccent(state) : "#8a857e";
-  const label = verdict ? displayStateLabel(state) : "Not yet scored";
+  const aiOverridden = reviewerVerdict && state !== aiState;
+  const label = verdict
+    ? aiOverridden
+      ? `${displayStateLabel(state)} · Human`
+      : displayStateLabel(state)
+    : "Not yet scored";
 
   const isApproximate = state === "not_said" || computedStartMs == null;
   const targetMs =
