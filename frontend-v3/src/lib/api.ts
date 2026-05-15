@@ -153,7 +153,11 @@ export type QueueResponse = {
 };
 
 export async function getQueue(filter: string = "all"): Promise<QueueResponse> {
-  return apiFetch<QueueResponse>(`/api/queue?filter=${encodeURIComponent(filter)}`);
+  // 2026-05-16: backend pattern is `^(all|unclaimed|in_review|reviewed_today)$`.
+  // Frontend UI uses the shorthand "today" for the Reviewed tab — translate
+  // at the wire boundary so it stops returning 422.
+  const wireFilter = filter === "today" ? "reviewed_today" : filter;
+  return apiFetch<QueueResponse>(`/api/queue?filter=${encodeURIComponent(wireFilter)}`);
 }
 
 // ── Customers ─────────────────────────────────────────────────────
