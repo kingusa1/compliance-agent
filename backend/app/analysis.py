@@ -105,22 +105,56 @@ TRANSCRIPT:
 # callers that still concatenate everything client-side.
 V2_PROMPT = V2_SYSTEM_TEMPLATE + "\n\n" + V2_USER_TEMPLATE
 
-DETECT_PROMPT = """You are analyzing a call from an energy brokerage. The agent works for a broker/TPI (third-party intermediary) and is offering or discussing a deal from a specific energy SUPPLIER.
+DETECT_PROMPT = """You are analyzing a UK energy-broker compliance call (Watt Utilities / TPI). The agent works for a broker and is selling a contract on behalf of ONE specific energy SUPPLIER.
 
-Your job: identify which energy SUPPLIER's deal is being offered or discussed in this call. The supplier is NOT the broker — it's the energy company whose contract/tariff is being sold.
+YOUR JOB
+Identify the SUPPLIER the agent is selling FOR in THIS call — the supplier
+whose contract / rate / verbal script the agent will read out (or did read
+out). Many calls also mention OTHER suppliers in passing (the customer's
+current supplier they're leaving, prior supplier history, comparison
+quotes). Those are RED HERRINGS — pick only the broker's TARGET supplier.
 
-Look for clues like:
-- Direct mentions of supplier names
-- References to tariffs, contracts, or deals from a specific supplier
-- "We can put you on [supplier]" or "the rates from [supplier]"
-- Supplier names may appear anywhere in the call, not just the beginning
+HOW TO TELL THEM APART
+The broker's target supplier is the one tied to phrases like:
+  • "calling on behalf of <SUPPLIER>"
+  • "not directly employed by <SUPPLIER>"  (verbal contract preamble)
+  • "your new contract is with <SUPPLIER>"
+  • "you've agreed a 24-month plan with <SUPPLIER>"
+  • "<SUPPLIER> are planning to change your meter"
+  • the verbal-contract script comes from <SUPPLIER>'s template
 
-Known suppliers: British Gas, E.ON Next, Scottish Power, EDF, Pozitive, BGL, Npower, SSE, Opus Energy, Haven Power, Total Energies
+The customer's CURRENT (departing) supplier is referenced via:
+  • "how have you found everything with <SUPPLIER>?"
+  • "your contract with <SUPPLIER> is ending"
+  • "we'll let <SUPPLIER> know"
+  • "are you happy to leave <SUPPLIER>?"
+Those are NOT the target supplier.
+
+KNOWN SUPPLIERS (canonical labels — return exactly as written when matched)
+  British Gas
+  E.ON Next
+  Scottish Power
+  EDF
+  Pozitive
+  BGL
+  Npower
+  SSE
+  Opus Energy
+  Haven Power
+  Total Energies
+  Drax
+  SmartestEnergy
+  Octopus
+
+If the transcript names a supplier outside this list, still output the
+canonical form they used.
 
 FULL TRANSCRIPT:
 {transcript_start}
 
-Respond with ONLY the supplier name. If you truly cannot identify any supplier after reading the entire transcript, respond "Unknown"."""
+Respond with ONLY the supplier name on a single line. If after reading
+the entire transcript you genuinely cannot identify the broker's target
+supplier, output exactly: Unknown"""
 
 DETECT_SCRIPT_PROMPT = """Based on this call transcript, which specific script type best matches this call?
 
@@ -250,13 +284,27 @@ async def _call_llm(
     prompt: str,
     timeout: float = 60.0,
     system: str | None = None,
+    *,
+    cheap: bool = False,
 ) -> str:
     """Provider-agnostic LLM call.
 
-    `system` is an optional cacheable prefix. Anthropic uses it as a system
-    block with `cache_control: ephemeral` so identical prefixes are billed at
-    ~10% on subsequent calls. Other providers receive `system + "\n\n" + prompt`
-    as a single user message.
+    Args:
+        prompt:   user message.
+        timeout:  request timeout in seconds.
+        system:   optional cacheable prefix. Anthropic uses it as a system
+                  block with ``cache_control: ephemeral`` so identical prefixes
+                  are billed at ~10% on subsequent calls. Other providers
+                  receive ``system + "\\n\\n" + prompt`` as a single user
+                  message.
+        cheap:    route this call to the cheaper model (Sonnet 4.6 instead of
+                  Opus 4.7 on OpenRouter). Use for high-volume / low-judgment
+                  tasks: name extraction, supplier detection, business-name
+                  extraction, call-type classification, date extraction. Keep
+                  False for the LLM calls that drive compliance grading
+                  (content_classifier, checkpoint_analyzer) where Opus's
+                  judgment is worth the cost. Per Aly 2026-05-15 ask: "use
+                  Sonnet and Opus next to each other to weigh the price."
     """
     provider = settings.active_provider
     dispatch = {
@@ -267,9 +315,14 @@ async def _call_llm(
     }
     fn = dispatch.get(provider, _call_openrouter)
     if provider == "anthropic":
+        # Anthropic direct API path doesn't route by `cheap` today — it
+        # always uses settings.anthropic_model. Most prod traffic flows
+        # through OpenRouter so this is fine.
         return await fn(prompt, timeout, system=system)
     if system:
         prompt = f"{system}\n\n{prompt}"
+    if provider == "openrouter":
+        return await fn(prompt, timeout, cheap=cheap)
     return await fn(prompt, timeout)
 
 
@@ -306,11 +359,13 @@ async def _call_openai_compat(url: str, api_key: str, model: str, prompt: str, t
     return content
 
 
-async def _call_openrouter(prompt: str, timeout: float) -> str:
+async def _call_openrouter(prompt: str, timeout: float, *, cheap: bool = False) -> str:
+    model = settings.openrouter_cheap_model if cheap else settings.openrouter_model
+    label = "OpenRouter/cheap" if cheap else "OpenRouter"
     return await _call_openai_compat(
         "https://openrouter.ai/api/v1/chat/completions",
-        settings.openrouter_api_key, settings.openrouter_model,
-        prompt, timeout, "OpenRouter",
+        settings.openrouter_api_key, model,
+        prompt, timeout, label,
     )
 
 
@@ -412,7 +467,9 @@ async def detect_supplier(transcript: str) -> str:
     words = transcript.split()
     transcript_text = " ".join(words[:3000])
     prompt = DETECT_PROMPT.replace("{transcript_start}", transcript_text)
-    result = await _call_llm(prompt, timeout=30.0)
+    # Sonnet is plenty for picking the broker-target supplier; routes through
+    # OpenRouter at ~5x lower cost than Opus.
+    result = await _call_llm(prompt, timeout=30.0, cheap=True)
     detected = result.strip().strip('"')
     log.info(f"\U0001f50d DETECT supplier \u2192 \"{detected}\"")
     return detected
@@ -449,7 +506,8 @@ async def detect_call_type(transcript: str) -> str | None:
     transcript_start = " ".join(words[:2500])
     prompt = DETECT_CALL_TYPE_PROMPT.replace("{transcript_start}", transcript_start)
     try:
-        raw = await _call_llm(prompt, timeout=20.0)
+        # Coarse 4-way classification; Sonnet is fine for this.
+        raw = await _call_llm(prompt, timeout=20.0, cheap=True)
     except Exception as e:
         log.warning(f"\U0001f3af DETECT call_type LLM failed: {e}")
         return None
@@ -617,7 +675,8 @@ async def detect_names(transcript: str) -> tuple[str, str]:
     transcript_start = " ".join(words[:600])
     prompt = DETECT_NAMES_PROMPT.replace("{transcript_start}", transcript_start)
     try:
-        result = await _call_llm(prompt, timeout=20.0)
+        # Cheap two-line classification — Sonnet handles this perfectly.
+        result = await _call_llm(prompt, timeout=20.0, cheap=True)
     except Exception as e:
         log.warning(f"\U0001f464 DETECT names LLM failed: {e}")
         # Regex still wins for the agent when the LLM is down.

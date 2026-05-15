@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     # tone-sensitive tracker fix_required text). Override per-env.
     openrouter_api_key: str = ""
     openrouter_model: str = "anthropic/claude-opus-4.7"
+    # Cheaper model for high-volume / low-judgment detector calls (supplier
+    # detection, name extraction, business-name extraction, call-type, date
+    # extraction). Routed via the ``cheap=True`` flag on ``_call_llm``. Set
+    # to Sonnet 4.6 by default — Aly's 2026-05-15 cost-mix ask.
+    openrouter_cheap_model: str = "anthropic/claude-sonnet-4.6"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
     anthropic_api_key: str = ""

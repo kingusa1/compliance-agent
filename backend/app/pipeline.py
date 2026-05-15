@@ -414,14 +414,17 @@ def _maybe_merge_into_existing_deal(call: Call, db: Session) -> None:
     supplier. If found, re-attach the call and delete the stub Deal that
     upload-time auto-created (only if the stub has no other calls).
 
-    Sprint v3-C1 — mirrors Watt's mental model where a single ``customer
-    + supplier`` tuple maps to ONE open Deal regardless of how many calls
-    land for it. The auto-detect upload path creates a fresh stub Deal
-    for every upload; this helper collapses that stub back into the
-    existing open Deal once detection has filled in the identifying
-    fields.
+    2026-05-16: loosened the customer-name predicate from exact match to
+    fuzzy match (case-insensitive, dedups Ltd/Limited variations, accepts
+    >= 0.85 SequenceMatcher ratio). Catches the common case where the
+    same business gets slightly different names extracted per call
+    (e.g. "Awais Mustafa Ta Shah's Palace" vs "Shah's Palace" vs "Shah
+    Palace"). Without this, every same-customer upload created its own
+    deal, defeating the lifecycle workflow.
     """
     from app.models import CustomerDeal
+    from difflib import SequenceMatcher
+
     detected_supplier = (call.detected_supplier or "").strip()
     detected_customer = (call.customer_name or "").strip()
     if not detected_supplier or not detected_customer:
@@ -431,20 +434,61 @@ def _maybe_merge_into_existing_deal(call: Call, db: Session) -> None:
     stub = db.query(CustomerDeal).filter_by(id=call.deal_id).first()
     if stub is None:
         return
-    # Find a different open Deal under the same customer + supplier.
+
+    def _normalise_for_compare(raw: str) -> str:
+        s = (raw or "").lower().strip()
+        # Strip common legal-form suffixes so "Shah's Palace Limited" matches
+        # "Shah's Palace". Keeps the discriminating tokens intact.
+        for suffix in (" limited", " ltd", " plc", " llc", " llp", " inc"):
+            if s.endswith(suffix):
+                s = s[: -len(suffix)].rstrip(",.; ")
+        # Collapse multiple spaces, drop punctuation that varies per
+        # transcription pass.
+        s = " ".join(s.replace("'", "").replace(",", " ").replace(".", " ").split())
+        return s
+
+    target_norm = _normalise_for_compare(detected_customer)
+
     candidates = db.query(CustomerDeal).filter(
         CustomerDeal.id != stub.id,
-        CustomerDeal.supplier == detected_supplier,
-        CustomerDeal.customer_name == detected_customer,
         CustomerDeal.status.in_(("open", "in_progress")),
     ).order_by(CustomerDeal.created_at.desc()).all()
-    if not candidates:
+
+    best: CustomerDeal | None = None
+    best_score = 0.0
+    for cand in candidates:
+        cand_supplier = (cand.supplier or "").strip()
+        # If the candidate has a supplier set, it must match the detected one.
+        # Allow a candidate with NO supplier to match (matched on customer
+        # alone) so the supplier-detect-failed case still collapses.
+        if cand_supplier and cand_supplier != detected_supplier:
+            continue
+        cand_norm = _normalise_for_compare(cand.customer_name or "")
+        if not cand_norm:
+            continue
+        # Exact (post-normalisation) match wins outright.
+        if cand_norm == target_norm:
+            best = cand
+            best_score = 1.0
+            break
+        # Substring containment (either direction) is a strong signal.
+        if target_norm in cand_norm or cand_norm in target_norm:
+            score = 0.95
+        else:
+            score = SequenceMatcher(None, target_norm, cand_norm).ratio()
+        if score >= 0.85 and score > best_score:
+            best = cand
+            best_score = score
+
+    if best is None:
         return
-    target = candidates[0]
+
     log.info(
-        f"\U0001f517 DEAL MERGE call_id={call.id} stub={stub.id} → existing={target.id}"
+        f"\U0001f517 DEAL MERGE call_id={call.id} stub={stub.id} "
+        f"→ existing={best.id} score={best_score:.2f} "
+        f"target={detected_customer!r} match={best.customer_name!r}"
     )
-    call.deal_id = target.id
+    call.deal_id = best.id
     # Stub had only this one call; delete it. If the stub still has
     # other calls attached we leave it alone — orphan Deals are safer
     # than accidentally clobbering an unrelated workflow.
