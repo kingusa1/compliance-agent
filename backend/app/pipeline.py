@@ -488,7 +488,29 @@ def _maybe_merge_into_existing_deal(
         s = " ".join(s.replace("'", "").replace(",", " ").replace(".", " ").split())
         return s
 
+    # 2026-05-16 — Metaphone bridge for transcription drift.
+    # Same business spoken into different mics / transcribers can come back as
+    # "Awais Mustafa Trading As Shah's Palace" vs "Waste Master Trading As
+    # Charles Palace". Pure SequenceMatcher floor at 0.80 won't collapse those.
+    # Compare first 2 tokens' phonetic keys + the full-name token-set overlap;
+    # if either lights up we lower the SequenceMatcher floor to 0.60.
+    from app.intake.matcher import _metaphone as _mp_key
+    _STOP_TOKENS = {"the", "ltd", "limited", "plc", "and", "of", "for", "trading", "as"}
+
+    def _token_metaphones(s: str) -> list[str]:
+        out: list[str] = []
+        for tok in s.split():
+            if tok in _STOP_TOKENS:
+                continue
+            m = _mp_key(tok)
+            if m:
+                out.append(m)
+        return out
+
     target_norm = _normalise_for_compare(detected_customer)
+    target_mp = _token_metaphones(target_norm)
+    target_first2_mp = set(target_mp[:2])
+    target_all_mp = set(target_mp)
 
     candidates = db.query(CustomerDeal).filter(
         CustomerDeal.id != stub.id,
@@ -517,9 +539,31 @@ def _maybe_merge_into_existing_deal(
             score = 0.95
         else:
             score = SequenceMatcher(None, target_norm, cand_norm).ratio()
-        if score >= 0.80 and score > best_score:
+
+        # Metaphone uplift: if first-2-tokens phonetic keys overlap OR
+        # the all-token phonetic set has >= 50% Jaccard, lower the floor
+        # to 0.60 (catches "Awais Mustafa" ↔ "Waste Master" drift).
+        cand_mp_all = set(_token_metaphones(cand_norm))
+        cand_mp_first2 = set(_token_metaphones(cand_norm)[:2])
+        phonetic_first2_hit = bool(target_first2_mp & cand_mp_first2)
+        phonetic_jaccard = (
+            len(target_all_mp & cand_mp_all) / max(len(target_all_mp | cand_mp_all), 1)
+            if (target_all_mp or cand_mp_all)
+            else 0.0
+        )
+        phonetic_strong = phonetic_first2_hit or phonetic_jaccard >= 0.5
+        floor = 0.60 if phonetic_strong else 0.80
+
+        if score >= floor and score > best_score:
             best = cand
             best_score = score
+            if phonetic_strong:
+                log.info(
+                    f"\U0001f517 PHONETIC_UPLIFT call_id={call.id} "
+                    f"score={score:.2f} floor={floor:.2f} "
+                    f"first2_hit={phonetic_first2_hit} jaccard={phonetic_jaccard:.2f} "
+                    f"target={target_norm!r} cand={cand_norm!r}"
+                )
 
     if best is None:
         return
@@ -826,7 +870,11 @@ async def _step_detect_metadata(
             and (current_deal.customer_name or "").startswith("(auto-detect pending")
         )
         if current_deal:
-            business_name = await detect_business_name(transcript)
+            # 2026-05-16: pass detected supplier so non-EON transcripts get
+            # Opus 4.7 (transcript drift is worst on BG/Pozitive uploads).
+            business_name = await detect_business_name(
+                transcript, supplier_hint=call.detected_supplier or ""
+            )
             # Last-resort fallback: when no business name surfaces, fall back to
             # the detected customer's name so we never leave the stub label.
             if not business_name and call.customer_name and call.customer_name.strip():
