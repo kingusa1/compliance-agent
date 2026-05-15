@@ -306,7 +306,9 @@ const VERDICTS: Array<{
   },
   {
     key: "REVIEW",
-    label: "Review",
+    // 2026-05-14: user requested "Review" -> "Human Review" everywhere
+    // the AI escalates a call for human attention.
+    label: "Human Review",
     Icon: AlertTriangle,
     fillBg: "var(--amber)",
     fillFg: "#1a1100",

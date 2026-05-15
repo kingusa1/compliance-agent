@@ -1018,6 +1018,13 @@ def auto_create_rejection_for_verdict(
     )
 
     rid = uuid.uuid4()
+    # 2026-05-14 audit fix: AI-generated narrative belongs in `fix_narrative`
+    # (the AI coaching slot), never `outcome_narrative` (the human reviewer
+    # scratchpad). Previously the two were collapsed and a reviewer's
+    # post-Confirm edit overwrote the AI text — silently destroying the
+    # forensic trail. The tracker Notes column reads `outcome_narrative`,
+    # so this also means freshly-created AI rejections no longer carry a
+    # stale AI sentence into the reviewer's notes field.
     r = Rejection(
         id=rid,
         call_id=getattr(call, "id", None),
@@ -1027,7 +1034,8 @@ def auto_create_rejection_for_verdict(
         sales_agent=getattr(call, "agent_name", None),
         category=category,
         rejection_reason=final_reason[:1000],
-        outcome_narrative=ai_narrative_notes,
+        fix_narrative=ai_narrative_notes,
+        outcome_narrative=None,
         fix_required=fix_required,
         status="NOT_STARTED",
         rejected_at=rejected_at,

@@ -35,7 +35,17 @@ export default function RejectionsPage() {
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const listQ = useRejectionsQuery({ tab, search: search || undefined, limit: 100 });
+  // 2026-05-14 audit fix: Phase 4 gate. The /rejections page must only
+  // show reviewer-initiated rejections — AI auto-created rows pre-dated
+  // the gate and were leaking through because the page wasn't passing
+  // a `source` filter. Backend defaults to "all" so the explicit
+  // "reviewer" passthrough is required.
+  const listQ = useRejectionsQuery({
+    tab,
+    search: search || undefined,
+    source: "reviewer",
+    limit: 100,
+  });
   const detailQ = useRejectionQuery(selectedId);
 
   const rejections = listQ.data?.rejections ?? [];

@@ -311,17 +311,36 @@ async def _step_transcribe(call_id: str, audio_path: str, db: Session) -> dict:
             return None
 
     async def _gq():
-        return await transcribe_audio_groq(audio_path) if "groq_whisper" in enabled else None
+        # 2026-05-14 audit fix: previously bare — a Groq HTTP 5xx would
+        # propagate to asyncio.gather as an exception object and get
+        # assigned directly to call.groq_whisper_transcript, corrupting
+        # the Text column with a Python exception repr. Mirror the
+        # try/except pattern already used for Deepgram / Gemini / AAI.
+        if "groq_whisper" not in enabled:
+            return None
+        try:
+            return await transcribe_audio_groq(audio_path)
+        except Exception as e:
+            log.warning(f"⚠️ GROQ transcription failed: {e}")
+            return None
 
     async def _co():
-        return await transcribe_audio_cohere(audio_path) if "cohere" in enabled else None
+        if "cohere" not in enabled:
+            return None
+        try:
+            return await transcribe_audio_cohere(audio_path)
+        except Exception as e:
+            log.warning(f"⚠️ COHERE transcription failed: {e}")
+            return None
 
     aai_result, dg_result, gm_result, gq_result, co_result = await asyncio.gather(
         _aai(), _dg(), _gm(), _gq(), _co(),
     )
 
-    call.groq_whisper_transcript = gq_result
-    call.cohere_transcript = co_result
+    # Defence-in-depth: even if the try/except above is removed, never
+    # write a non-string into these Text columns.
+    call.groq_whisper_transcript = gq_result if isinstance(gq_result, str) else None
+    call.cohere_transcript = co_result if isinstance(co_result, str) else None
 
     if isinstance(dg_result, dict):
         call.transcript = dg_result["transcript"]
@@ -1123,10 +1142,50 @@ async def _step_analyze_checkpoints(
             # _step_analyze_checkpoints. Emits CallCheckpoint rows + a
             # per-segment verdict so the UI keeps grading the call
             # rather than stubbing it out.
-            v1 = await analyze_compliance_v1(seg_transcript)
-            if v1.agent_name and v1.agent_name != "Unknown":
+            #
+            # 2026-05-14 audit fix: wrap the LLM call in try/except so a
+            # JSONDecodeError / HTTP 5xx on this segment doesn't lose the
+            # work already done on earlier segments. Marks this segment
+            # as `review` bucket with a clear reason and continues.
+            try:
+                v1 = await analyze_compliance_v1(seg_transcript)
+            except Exception as e:
+                log.warning(
+                    f"⚠️ V1 fallback failed for segment {seg.idx} "
+                    f"({seg.stage!r}): {type(e).__name__}: {str(e)[:200]}"
+                )
+                seg.script_id = None
+                seg.score = "0/0"
+                seg.compliant = False
+                seg.bucket = "review"
+                seg.compliance_status = "pending"
+                seg.critical_breaches = 0
+                seg.high_breaches = 0
+                seg.medium_breaches = 0
+                seg.reason = (
+                    f"V1 fallback errored ({type(e).__name__}). Reviewer "
+                    "must grade this segment manually."
+                )
+                seg.checkpoint_results = json.dumps([])
+                segment_summaries.append(
+                    {
+                        "stage": seg.stage,
+                        "passed": 0,
+                        "total": 0,
+                        "bucket": seg.bucket,
+                        "critical_breaches": 0,
+                        "high_breaches": 0,
+                        "medium_breaches": 0,
+                        "compliant": False,
+                    }
+                )
+                continue
+            # Don't let a segment-local agent_name override the call-level
+            # one set by detect_metadata. Only fill it when the call has
+            # nothing yet — fixes the "last-segment wins" overwrite bug.
+            if v1.agent_name and v1.agent_name != "Unknown" and not (call.agent_name or "").strip():
                 call.agent_name = v1.agent_name
-            if v1.customer_name and v1.customer_name != "Unknown":
+            if v1.customer_name and v1.customer_name != "Unknown" and not (call.customer_name or "").strip():
                 call.customer_name = v1.customer_name
             if not call.excerpt and v1.excerpt:
                 call.excerpt = v1.excerpt
@@ -1203,9 +1262,21 @@ async def _step_analyze_checkpoints(
             call_id=call_id,
         )
 
-        if result.get("agent_name") and result["agent_name"] != "Unknown":
+        # 2026-05-14 audit fix: don't overwrite a non-empty agent/customer
+        # name set by detect_metadata or an earlier segment. Previously
+        # the last segment iterated would silently clobber the prior
+        # name with whatever the last LLM call returned.
+        if (
+            result.get("agent_name")
+            and result["agent_name"] != "Unknown"
+            and not (call.agent_name or "").strip()
+        ):
             call.agent_name = result["agent_name"]
-        if result.get("customer_name") and result["customer_name"] != "Unknown":
+        if (
+            result.get("customer_name")
+            and result["customer_name"] != "Unknown"
+            and not (call.customer_name or "").strip()
+        ):
             call.customer_name = result["customer_name"]
 
         verified = result["results"]

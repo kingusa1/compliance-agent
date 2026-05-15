@@ -71,11 +71,23 @@ def _require_admin(x_admin_key: str = Header(default="")):
 
     Constant-time comparison via secrets.compare_digest defends against
     timing-side-channel attacks on the admin key.
+
+    2026-05-14 audit fix: previously this returned silently when
+    ``settings.admin_key`` was empty — turning every guarded endpoint into
+    an open mutation surface in any environment that forgot to set the env
+    var. Now hard-fails so a deploy misconfiguration is visible immediately
+    rather than silently world-readable.
     """
     if not settings.admin_key:
-        return
-    if not secrets.compare_digest(x_admin_key.encode("utf-8"),
-                                  settings.admin_key.encode("utf-8")):
+        raise HTTPException(
+            503,
+            "Admin endpoints are unavailable — ADMIN_KEY env var is not set "
+            "on this deployment. Configure it before exposing admin routes.",
+        )
+    if not secrets.compare_digest(
+        x_admin_key.encode("utf-8"),
+        settings.admin_key.encode("utf-8"),
+    ):
         raise HTTPException(403, "Invalid or missing X-Admin-Key header")
 
 
@@ -588,7 +600,12 @@ def list_calls(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
 
 
 @router.post("/api/calls/{call_id}/retry", response_model=CallResponse)
-async def retry_call(call_id: str, db: Session = Depends(get_db)):
+async def retry_call(
+    call_id: str,
+    db: Session = Depends(get_db),
+    # 2026-05-14 audit fix: re-runs the full AI pipeline; was anonymous.
+    user=Depends(current_reviewer),
+):
     call = (
         db.query(Call)
         .options(joinedload(Call.checkpoints))
@@ -670,7 +687,12 @@ async def retry_checkpoint(call_id: str, cp_index: int, db: Session = Depends(ge
     if not script:
         raise HTTPException(400, "No script associated with this call")
 
-    script_checkpoints = json.loads(script.checkpoints)
+    # 2026-05-14 audit fix: malformed JSON in either column should 400,
+    # not 500. Both columns are user-data-shaped JSON we don't fully control.
+    try:
+        script_checkpoints = json.loads(script.checkpoints or "[]")
+    except json.JSONDecodeError:
+        raise HTTPException(400, "Script.checkpoints is not valid JSON; cannot retry")
     if cp_index < 0 or cp_index >= len(script_checkpoints):
         raise HTTPException(400, f"Invalid checkpoint index {cp_index}")
 
@@ -681,7 +703,10 @@ async def retry_checkpoint(call_id: str, cp_index: int, db: Session = Depends(ge
     result = await analyze_single_checkpoint(call.transcript, checkpoint_def, script.mode)
 
     # Update the checkpoint_results JSON array
-    results = json.loads(call.checkpoint_results)
+    try:
+        results = json.loads(call.checkpoint_results or "[]")
+    except json.JSONDecodeError:
+        raise HTTPException(400, "Call.checkpoint_results is not valid JSON; cannot retry")
     if cp_index < len(results):
         results[cp_index] = result
     call.checkpoint_results = json.dumps(results)
@@ -723,7 +748,10 @@ async def review_checkpoint_verdict(
     if not call.checkpoint_results:
         raise HTTPException(400, "Call has no checkpoint results")
 
-    results = json.loads(call.checkpoint_results)
+    try:
+        results = json.loads(call.checkpoint_results)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "Call.checkpoint_results is not valid JSON")
     if cp_index < 0 or cp_index >= len(results):
         raise HTTPException(400, f"Invalid checkpoint index {cp_index}")
 
@@ -1270,7 +1298,11 @@ def _sse(event: str, data: dict) -> str:
 # --- Cleanup stuck calls ---
 
 @router.post("/api/calls/cleanup")
-def cleanup_stuck_calls(db: Session = Depends(get_db)):
+def cleanup_stuck_calls(
+    db: Session = Depends(get_db),
+    # 2026-05-14 audit fix: bulk status mutation; was anonymous.
+    user=Depends(current_reviewer),
+):
     """Mark stuck pending_stream / pending / processing calls as failed."""
     stuck = db.query(Call).filter(Call.status.in_(["pending_stream", "pending", "processing"])).all()
     count = 0
@@ -1357,7 +1389,10 @@ def get_call_words(call_id: str, db: Session = Depends(get_db)):
     if not call.word_data:
         raise HTTPException(404, "No word data available for this call")
 
-    words = json.loads(call.word_data)
+    try:
+        words = json.loads(call.word_data)
+    except json.JSONDecodeError:
+        raise HTTPException(500, "Call.word_data is corrupt; reprocess required")
 
     # Tag each word with AGENT / CUSTOMER. Only do work if there's >1
     # speaker — otherwise everything is the agent by default.
@@ -2339,7 +2374,12 @@ async def admin_backfill_call_types(
 
 
 @router.post("/api/admin/quality-resolve", status_code=200)
-async def admin_quality_resolve(db: Session = Depends(get_db)):
+async def admin_quality_resolve(
+    db: Session = Depends(get_db),
+    # 2026-05-14 audit fix: cross-call DB mutation (merges deals, renames
+    # customers, fills suppliers); admin-only.
+    _admin=Depends(_require_admin),
+):
     """Run the Quality AI Agent across all completed calls and apply its
     canonical-identity verdict — merges duplicate Church/X customers,
     fixes agent==customer mix-ups, fills missing suppliers via cross-call
@@ -2493,7 +2533,13 @@ def _bucket_token_overlap(a: str, b: str) -> bool:
 
 
 @router.delete("/api/calls/{call_id}")
-def delete_call(call_id: str, db: Session = Depends(get_db)):
+def delete_call(
+    call_id: str,
+    db: Session = Depends(get_db),
+    # 2026-05-14 audit fix: this hard-deletes a call (cascades to 9 child
+    # tables) — must require auth. Previously anonymous.
+    user=Depends(current_reviewer),
+):
     """Delete a call and clean up orphan parents.
 
     After the 2026-05-10 migration adds ON DELETE CASCADE to the 9 child

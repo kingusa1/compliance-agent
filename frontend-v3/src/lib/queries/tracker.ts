@@ -40,24 +40,27 @@ export type TrackerRow = {
   last_action_date: string | null;
   deadline: string | null;
   outcome: string | null;
-  notes: string | null;
+  /**
+   * Reviewer free-text scratchpad (XLSX col P = "Notes"). Backed by
+   * `Rejection.outcome_narrative`. 2026-05-14: renamed from `notes` to
+   * `outcome_narrative` so the side-panel textarea reads what the
+   * aggregator actually emits.
+   */
+  outcome_narrative: string | null;
   score: string | null;
   call_id: string | null;
   rejection_id: string | null;
   deal_id: string | null;
   /**
-   * Reviewer free-text scratchpad on the side panel. Persisted to
-   * `Rejection.outcome_narrative` via PATCH /api/tracker/rows/{id}.
-   */
-  outcome_narrative?: string | null;
-  /**
    * LLM-generated free-text fix narrative. Distinct from the enum
    * `fix_required` — XLSX ops use combo phrases the enum can't capture.
+   * Only present on rejection rows; absent on compliant/awaiting_review.
    */
   fix_narrative?: string | null;
   /**
    * AI/HUMAN provenance gate. Drives the badge + Confirm-button flow.
-   * Defaults to AI_PENDING for legacy rows that pre-date the migration.
+   * Emitted on every row type post-2026-05-14 audit; legacy rows that
+   * pre-date the migration default to "AI_PENDING".
    */
   verdict_state?: "AI_PENDING" | "HUMAN_CONFIRMED" | "HUMAN_OVERRIDDEN" | null;
   confirmed_by?: string | null;

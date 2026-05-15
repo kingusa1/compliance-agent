@@ -12,7 +12,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Search, ChevronDown } from "lucide-react";
+import { Search } from "lucide-react";
 
 import { getAgentsListQuery } from "@/lib/queries/aggregator";
 import { Pill } from "@/components/design/Pill";
@@ -105,28 +105,44 @@ export default function AgentsPage() {
             margin: "0 4px",
           }}
         />
-        <div
+        <label
           style={{
             display: "inline-flex",
             alignItems: "center",
             gap: 6,
             height: 30,
-            padding: "0 10px",
+            padding: "0 4px 0 10px",
             background: "var(--bg-elev2)",
             border: "1px solid var(--border-subtle)",
             borderRadius: 6,
             fontSize: 12,
             color: "var(--text-primary)",
-            cursor: "pointer",
           }}
-          onClick={() =>
-            setFilter((f) => (f === "all" ? "ok" : f === "ok" ? "escalate" : "all"))
-          }
         >
           <span style={{ color: "var(--text-faint)" }}>Status:</span>
-          <span>{filter === "all" ? "All" : filter === "ok" ? "OK" : "ESCALATE"}</span>
-          <ChevronDown size={12} style={{ color: "var(--text-muted)" }} />
-        </div>
+          {/* 2026-05-14 audit fix: previously a fake <div> cycler — no
+              keyboard access, no aria, can't jump direct to ESCALATE.
+              Replaced with a real controlled <select> so screen readers
+              + keyboard users work. Plan §5e label parity preserved. */}
+          <select
+            value={filter}
+            onChange={(e) => setFilter(e.target.value as typeof filter)}
+            aria-label="Filter agents by status"
+            style={{
+              border: "none",
+              background: "transparent",
+              color: "inherit",
+              fontSize: 12,
+              fontFamily: "inherit",
+              cursor: "pointer",
+              padding: "0 6px",
+            }}
+          >
+            <option value="all">All</option>
+            <option value="ok">OK</option>
+            <option value="escalate">ESCALATE</option>
+          </select>
+        </label>
         <div style={{ flex: 1 }} />
         <div
           style={{

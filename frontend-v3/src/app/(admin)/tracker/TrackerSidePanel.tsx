@@ -38,7 +38,14 @@ function _initialDraft(row: TrackerRow): DraftFields {
 }
 
 export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: () => void }) {
-  const isCompliant = !row.rejection_id;
+  // 2026-05-14: a row without `rejection_id` could be one of TWO things —
+  // a fully-compliant call (green) OR an awaiting-review call the AI flagged
+  // (amber). Previously both were collapsed into a single "Compliant" branch,
+  // which mis-labelled every AI-flagged-but-not-yet-reviewed call as
+  // compliant. Distinguish via the synthetic AWAITING_REVIEW status that
+  // tracker_aggregator._awaiting_review_row stamps.
+  const isAwaitingReview = !row.rejection_id && row.status === "AWAITING_REVIEW";
+  const isCompliant = !row.rejection_id && !isAwaitingReview;
   const editNotes = useEditTrackerRow();
   const confirm = useConfirmVerdict();
   const override = useOverrideVerdict();
@@ -91,8 +98,12 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
         </button>
       </header>
 
-      {/* AI auto-categorized banner — shown only on AI_PENDING rejection rows. */}
-      {!isCompliant && isAiPending && (
+      {/* AI auto-categorized banner — shown only on AI_PENDING REJECTION rows.
+          2026-05-14 audit: previously this also rendered for awaiting-review
+          rows (rejection_id null, verdict_state="AI_PENDING") which stacked
+          two amber banners on top of each other. Gate by `!isAwaitingReview`
+          so each row type gets exactly one banner. */}
+      {!isCompliant && !isAwaitingReview && isAiPending && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-[12px] text-amber-900">
           <div className="flex items-start gap-2">
             <svg
@@ -132,6 +143,28 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
         <div className="rounded-md border border-emerald-300 bg-emerald-50 p-3 text-[12px] text-emerald-900">
           <div className="font-medium">Compliant — score {row.score ?? "—"}</div>
           <div className="mt-1 text-[11px]">No rejection. Customer-confirmation email sent.</div>
+        </div>
+      ) : isAwaitingReview ? (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-[12px] text-amber-900">
+          <div className="font-medium">Awaiting reviewer sign-off — score {row.score ?? "—"}</div>
+          {row.rejection_reason ? (
+            <div className="mt-1 text-[11px] italic">
+              AI flagged: &ldquo;{row.rejection_reason}&rdquo;
+            </div>
+          ) : null}
+          <div className="mt-1 text-[11px]">
+            Open the call analysis to commit a Pass / Needs Review / Non-Compliant verdict.
+            Until a reviewer signs off, this call doesn&apos;t roll up to the
+            Compliant or Non-Compliant totals.
+          </div>
+          {row.call_id && (
+            <Link
+              href={`/calls/${row.call_id}`}
+              className="mt-2 inline-flex items-center gap-1 rounded-md bg-amber-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-amber-700"
+            >
+              Open call analysis →
+            </Link>
+          )}
         </div>
       ) : (
         <>
@@ -204,7 +237,20 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
             <div className="mb-1 text-[11px] uppercase tracking-wide text-[var(--text-muted)]">Outcome</div>
             <select
               className="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
-              defaultValue={row.outcome ?? ""}
+              value={row.outcome ?? ""}
+              disabled={!row.rejection_id || editNotes.isPending}
+              onChange={(e) => {
+                // Commit immediately on selection — outcome is a simple
+                // enum field so the row-by-row PATCH endpoint (same flow as
+                // Notes textarea) is enough; no need to thread it through
+                // the draft / Save-changes / Override gate.
+                if (!row.rejection_id) return;
+                const v = e.target.value;
+                editNotes.mutate({
+                  rejectionId: row.rejection_id,
+                  fields: { outcome: v === "" ? null : v },
+                });
+              }}
             >
               <option value="">—</option>
               {OUTCOMES.map((k) => (<option key={k} value={k}>{k}</option>))}
@@ -217,6 +263,13 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
         <div className="mt-2">
           <label className="text-[10px] uppercase text-[var(--text-muted)]">Notes</label>
           <textarea
+            // 2026-05-14 audit: `defaultValue` makes this uncontrolled, so
+            // it never refreshes after a TanStack query invalidation. Remount
+            // on every change to the underlying field by keying on the row id
+            // + the canonical value. Editing-in-flight stays smooth because
+            // the key only changes when the SERVER value changes (after a
+            // successful PATCH), not while the user is typing.
+            key={`${row.rejection_id ?? ""}-${row.outcome_narrative ?? ""}`}
             defaultValue={row.outcome_narrative ?? ""}
             onBlur={(e) => {
               if (e.target.value !== (row.outcome_narrative ?? "")) {
@@ -231,7 +284,12 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
           />
           {row.last_action_date && (
             <p className="mt-1 text-[10px] text-[var(--text-dim)]">
-              Last edited {new Date(row.last_action_date).toLocaleString("en-GB")}
+              {/* `last_action_date` is the MAX(rejection_audit_log.created_at)
+                  — ANY audit event on this rejection, not specifically a
+                  notes edit. Renamed from "Last edited" to "Last activity"
+                  to stop reviewers thinking it stamps every keystroke in
+                  the box. */}
+              Last activity {new Date(row.last_action_date).toLocaleString("en-GB")}
             </p>
           )}
         </div>

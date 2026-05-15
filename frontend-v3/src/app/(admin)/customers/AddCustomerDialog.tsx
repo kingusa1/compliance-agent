@@ -143,7 +143,22 @@ export function AddCustomerDialog({ open, onOpenChange, onCreated }: AddCustomer
                 <FormItem>
                   <FormLabel>Business type</FormLabel>
                   <FormControl>
-                    <Input placeholder="Retail" {...field} />
+                    {/* 2026-05-14 audit fix: backend customers_routes
+                        accepts only the 4 Literal values below — a
+                        free-text "Retail" input was returning 422 on
+                        every submit. Forced to a <select> tied to the
+                        canonical enum. */}
+                    <select
+                      {...field}
+                      value={field.value ?? ""}
+                      className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
+                    >
+                      <option value="">—</option>
+                      <option value="sole_trader">Sole trader</option>
+                      <option value="limited">Limited</option>
+                      <option value="partnership">Partnership</option>
+                      <option value="charity">Charity</option>
+                    </select>
                   </FormControl>
                   <FormMessage />
                 </FormItem>

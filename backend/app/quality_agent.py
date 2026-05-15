@@ -223,6 +223,12 @@ def find_sibling_candidates(call_id: str, db) -> list:
     if not h:
         return [target]
 
+    # 2026-05-14 audit fix: deterministic ordering. Without ORDER BY,
+    # Postgres returns rows in heap order — non-deterministic across
+    # VACUUM cycles. Two concurrent uploads could iterate the candidate
+    # list in different orders and produce different "survivor" deals.
+    # Oldest first matches the "most-recent call wins the deal" rule
+    # in apply_verdict_to_db (target is iterated last → its deal wins).
     completed = (
         db.query(Call)
         .filter(
@@ -231,6 +237,7 @@ def find_sibling_candidates(call_id: str, db) -> list:
             Call.customer_name.isnot(None),
             Call.customer_name != "",
         )
+        .order_by(Call.created_at.asc().nullslast())
         .all()
     )
     bucket = [target]

@@ -89,6 +89,7 @@ export function TrackerTable({ rows, tab, selectedRowId, onSelect }: Props) {
         {tab === "fixed" && "No rejections fixed yet."}
         {tab === "dead" && "No dead rejections."}
         {tab === "compliant" && "Upload a call to get started."}
+        {tab === "awaiting_review" && "Reviewer queue is empty — every completed call has been signed off."}
       </div>
     );
   }
@@ -219,7 +220,14 @@ export function TrackerTable({ rows, tab, selectedRowId, onSelect }: Props) {
                         row.fix_required ?? "—"
                       )}
                     </td>
-                    <td className={BODY_CELL}>{row.fix_assignee_id ? row.fix_assignee_id.substring(0, 8) : "—"}</td>
+                    <td className={BODY_CELL + " text-[var(--text-muted)]"} title={row.fix_assignee_id ?? undefined}>
+                      {/* fix_assignee_id is a UUID. Showing 8 hex chars is
+                          worse than showing "—" — reviewers can't act on
+                          either, but at least "—" sets the expectation
+                          that nobody's been assigned. Real reviewer-name
+                          resolution is queued behind a reviewer picker. */}
+                      {row.fix_assignee_id ? "Assigned" : "—"}
+                    </td>
                     <td className={BODY_CELL} onClick={(e) => e.stopPropagation()}>
                       {row.rejection_id ? (
                         <InlineEditCell

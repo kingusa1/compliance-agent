@@ -67,17 +67,24 @@ function FilterDropdown({ label, value }: { label: string; value: string }) {
 }
 
 function worstActionTone(action: string | null): PillTone {
+  // 2026-05-14 audit fix: align with backend canonical action vocab
+  // (`PASS | REVIEW | REJECT | TRIAGE`) emitted by customer rollup and
+  // accepted by `customers_routes.py:251` `?action=` filter. The old
+  // labels (COACHING / FAIL / BLOCK) never appeared from the server so
+  // those rows always fell through to neutral. Legacy labels are kept
+  // as a defensive fallback so historic data still renders.
   switch ((action || "").toUpperCase()) {
     case "PASS":
       return "emerald";
     case "REVIEW":
       return "amber";
-    case "COACHING":
-      return "blue";
-    case "FAIL":
+    case "REJECT":
+    case "FAIL": // legacy
+    case "BLOCK": // legacy
       return "red";
-    case "BLOCK":
-      return "violet";
+    case "TRIAGE":
+    case "COACHING": // legacy
+      return "blue";
     default:
       return "neutral";
   }

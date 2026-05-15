@@ -9,7 +9,7 @@ export const metadata = {
 
 const QUICK_LINKS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, description: "KPI strip + navigator" },
-  { href: "/queue", label: "Review Queue", icon: Inbox, description: "Calls awaiting human sign-off" },
+  { href: "/queue", label: "Human Review Queue", icon: Inbox, description: "Calls awaiting human sign-off" },
   { href: "/guide", label: "User Guide", icon: BookOpen, description: "Step-by-step manual" },
 ];
 

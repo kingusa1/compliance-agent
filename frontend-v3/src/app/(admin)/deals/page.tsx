@@ -19,25 +19,41 @@ import { Badge } from "@/components/ui/badge";
 import { CursorPagination } from "@/components/shared/CursorPagination";
 import { DealsTable } from "./DealsTable";
 
+// 2026-05-14 audit fix: align with the 7-state taxonomy emitted by
+// backend/app/deal_lifecycle.py:derive_lifecycle_status. Previous values
+// (in_progress / closed_done / closed_lost) matched the old CustomerDeal
+// status column but the list endpoint now overwrites `lifecycle_status`
+// at response-time with the derived 7-state value — so the old filter
+// always returned zero rows. Three convenience buckets collapse the 7
+// states into the user-facing categories on the tab strip; the in-memory
+// filter at line ~88 expands them again before comparing.
 type LifecycleFilter =
   | "all"
-  | "in_progress"
-  | "closed_done"
-  | "closed_lost";
+  | "in_progress"     // open / lead_gen_done / pre_sales_done / verbal_done / loa_done
+  | "verified"        // all required phases done
+  | "rejected";       // any phase ended in rejection
 
 const FILTER_LABELS: Record<LifecycleFilter, string> = {
   all: "All",
   in_progress: "In progress",
-  closed_done: "Closed · Done",
-  closed_lost: "Closed · Lost",
+  verified: "Verified",
+  rejected: "Rejected",
 };
 
 const FILTER_KEYS: readonly LifecycleFilter[] = [
   "all",
   "in_progress",
-  "closed_done",
-  "closed_lost",
+  "verified",
+  "rejected",
 ] as const;
+
+const _IN_PROGRESS_STATES = new Set([
+  "open",
+  "lead_gen_done",
+  "pre_sales_done",
+  "verbal_done",
+  "loa_done",
+]);
 
 function parseFilter(raw: string): LifecycleFilter {
   return (FILTER_KEYS as readonly string[]).includes(raw)
@@ -85,9 +101,13 @@ function DealsPageBody() {
   const deals: DealRow[] = useMemo(() => {
     if (!query.data) return [];
     if (filter === "all") return query.data.deals;
-    return query.data.deals.filter(
-      (d) => (d.lifecycle_status || "").toLowerCase() === filter,
-    );
+    return query.data.deals.filter((d) => {
+      const s = (d.lifecycle_status || "").toLowerCase();
+      if (filter === "in_progress") return _IN_PROGRESS_STATES.has(s);
+      if (filter === "verified") return s === "verified";
+      if (filter === "rejected") return s === "rejected";
+      return false;
+    });
   }, [query.data, filter]);
 
   return (

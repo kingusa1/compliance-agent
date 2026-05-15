@@ -18,7 +18,6 @@ import {
   Search,
   AlertCircle,
   Bookmark,
-  ChevronDown,
   Play,
   Pause,
   Download,
@@ -67,10 +66,12 @@ function statusPill(status: string) {
 
 // Plan §5a: the second pill on each queue row is the AI's verdict (X/N
 // from the per-segment aggregator) plus a Coaching/Review/Block marker.
+// 2026-05-14: user removed the "AI:" prefix — the column already implies
+// "AI score" so the prefix was duplicating signal. Just score + marker.
 function aiVerdictPill(row: QueueCall) {
   const score = (row as QueueCall & { score?: string | null }).score;
   if (!score) {
-    return <Pill tone="neutral" mono>AI: …</Pill>;
+    return <Pill tone="neutral" mono>…</Pill>;
   }
   const bucket = (row.bucket || row.compliance_status || "").toLowerCase();
   let tone: "emerald" | "amber" | "red" | "neutral" = "neutral";
@@ -90,7 +91,7 @@ function aiVerdictPill(row: QueueCall) {
   }
   return (
     <Pill tone={tone} mono>
-      AI: {score} {marker}
+      {score} {marker}
     </Pill>
   );
 }
@@ -536,8 +537,22 @@ function PreviewPanel({ row }: { row: QueueCall | null }) {
         >
           Open &amp; review
         </Link>
-        <button
-          type="button"
+        {/* 2026-05-14 audit fix: was a silent no-op. Now downloads the
+            audio file via the already-loaded audioUrlQuery — same source
+            the inline player uses. Disabled until the URL resolves. */}
+        <a
+          href={audioUrlQuery.data?.url ?? "#"}
+          download={row.filename ?? "call.mp3"}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-disabled={!audioUrlQuery.data?.url}
+          onClick={(e) => {
+            if (!audioUrlQuery.data?.url) {
+              e.preventDefault();
+            }
+          }}
+          aria-label="Download audio"
+          title={audioUrlQuery.data?.url ? "Download audio" : "Audio not yet available"}
           style={{
             height: 38,
             padding: "0 12px",
@@ -547,11 +562,13 @@ function PreviewPanel({ row }: { row: QueueCall | null }) {
             border: "1px solid var(--border-subtle)",
             display: "inline-flex",
             alignItems: "center",
-            cursor: "pointer",
+            cursor: audioUrlQuery.data?.url ? "pointer" : "not-allowed",
+            opacity: audioUrlQuery.data?.url ? 1 : 0.5,
+            textDecoration: "none",
           }}
         >
           <Download size={14} />
-        </button>
+        </a>
       </div>
     </div>
   );
@@ -666,7 +683,7 @@ export default function QueuePage() {
           }}
           title="Calls flagged by the AI as needing reviewer attention. Open a call to read the AI verdict and override if needed — your decision is the audit-of-record."
         >
-          Review Queue
+          Human Review Queue
         </h1>
         <Pill tone="emerald" mono>
           {unclaimedCount} pending
@@ -731,24 +748,46 @@ export default function QueuePage() {
         </div>
         <button
           type="button"
+          disabled
+          title="Coming soon"
+          aria-disabled
           style={{
             height: 32,
             padding: "0 12px",
             fontSize: 13,
             fontWeight: 500,
             background: "var(--bg-elev2)",
-            color: "var(--text-primary)",
+            color: "var(--text-muted)",
             border: "1px solid var(--border-subtle)",
             borderRadius: 6,
             display: "inline-flex",
             alignItems: "center",
             gap: 6,
-            cursor: "pointer",
+            cursor: "not-allowed",
+            opacity: 0.6,
           }}
         >
+          {/* 2026-05-14 audit fix: was a silent no-op. Gated behind
+              "Coming soon" until the saved-views CRUD UI lands; backend
+              endpoints already exist (useSavedViewsQuery in reviewer.ts)
+              but the menu/popover hasn't been built. */}
           <Bookmark size={14} />
           Saved views
-          <ChevronDown size={14} style={{ color: "var(--text-muted)" }} />
+          <span
+            style={{
+              fontSize: 9,
+              fontWeight: 700,
+              padding: "1px 6px",
+              borderRadius: 999,
+              background: "var(--bg-elev3)",
+              color: "var(--text-faint)",
+              textTransform: "uppercase",
+              letterSpacing: "0.06em",
+              marginLeft: 4,
+            }}
+          >
+            Coming soon
+          </span>
         </button>
       </div>
 
@@ -819,7 +858,7 @@ export default function QueuePage() {
               <HeaderCell>Segments</HeaderCell>
               <HeaderCell>Score</HeaderCell>
               <HeaderCell>AI Verdict</HeaderCell>
-              <HeaderCell>Review</HeaderCell>
+              <HeaderCell>Human Review</HeaderCell>
             </div>
           )}
           <div style={{ flex: 1, overflowY: "auto" }} className="ca-scroll">

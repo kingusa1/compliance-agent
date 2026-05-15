@@ -18,7 +18,7 @@
  */
 import Link from "next/link";
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Upload,
   Inbox,
@@ -74,7 +74,7 @@ interface KPI {
 const PRIMARY_ACTIONS = [
   {
     href: "/queue",
-    label: "Review Queue",
+    label: "Human Review Queue",
     icon: Inbox,
     description:
       "Calls flagged by the AI as needing reviewer attention. Open, listen, accept or override.",
@@ -107,7 +107,7 @@ const QUICK_START_STEPS = [
       "The Tracker mirrors the Watt XLSX. Click a row to see verdict, evidence, and rejections.",
   },
   {
-    title: "Sign off or override on the Review Queue",
+    title: "Sign off or override on the Human Review Queue",
     description:
       "If the AI flagged it, open the call and either accept or override. Your decision is the audit-of-record.",
   },
@@ -155,6 +155,7 @@ export default function DashboardPage() {
   const recent = useRecentCalls();
   const queueBacklog = useQueueBacklog();
   const [uploadOpen, setUploadOpen] = useState(false);
+  const qc = useQueryClient();
   const isFreshInstall = (stats.data?.total_calls ?? 0) === 0;
   const backlog = queueBacklog.data?.metrics?.backlog ?? 0;
 
@@ -440,7 +441,19 @@ export default function DashboardPage() {
         </section>
       </div>
 
-      <UploadModal open={uploadOpen} onOpenChange={setUploadOpen} />
+      <UploadModal
+        open={uploadOpen}
+        onOpenChange={setUploadOpen}
+        // 2026-05-14 audit fix: without explicit invalidation the dashboard
+        // would lag the new call by 60s (stats staleTime) / 30s (recent +
+        // queue staleTime). Invalidate all three query keys on success so
+        // the KPI counters + Recent Calls + Queue Backlog refresh instantly.
+        onSuccess={() => {
+          qc.invalidateQueries({ queryKey: ["dashboard:stats"] });
+          qc.invalidateQueries({ queryKey: ["dashboard:recent-calls"] });
+          qc.invalidateQueries({ queryKey: ["dashboard:queue-backlog"] });
+        }}
+      />
     </div>
   );
 }

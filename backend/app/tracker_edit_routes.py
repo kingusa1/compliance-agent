@@ -29,6 +29,7 @@ ALLOWED_FIELDS = {
     "category",
     "rejection_reason",
     "fix_required",
+    "fix_narrative",
     "status",
     "outcome",
     "outcome_narrative",

@@ -23,6 +23,12 @@ export type RejectionsListParams = {
   search?: string;
   /** W4.6 — restrict the dead tab to one of DEAD_REASONS keys. */
   dead_reason?: string;
+  /**
+   * Phase 4 reviewer-initiated gate. Backend default is "all" (legacy AI
+   * rows visible); the /rejections page passes "reviewer" to hide
+   * AI-auto-generated rows that pre-dated the gate.
+   */
+  source?: "reviewer" | "ai" | "all";
   offset?: number;
   limit?: number;
 };

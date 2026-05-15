@@ -54,7 +54,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: "dashboard",     label: "Dashboard",     icon: LayoutDashboard, href: "/dashboard",  roles: ["reviewer", "lead", "admin"] },
 
   // ── Work — daily review surface ───────────────────────────────
-  { key: "queue",         label: "Review Queue",  icon: Inbox,        href: "/queue",          roles: ["reviewer", "lead", "admin"], badgeKey: "queue", section: "Work" },
+  { key: "queue",         label: "Human Review Queue",  icon: Inbox,        href: "/queue",          roles: ["reviewer", "lead", "admin"], badgeKey: "queue", section: "Work" },
   { key: "tracker",       label: "Tracker",       icon: TableIcon,    href: "/tracker",        roles: ["admin", "lead"] },
   { key: "rejections",    label: "Rejections",    icon: AlertTriangle, href: "/rejections",    roles: ["admin", "lead"] },
 

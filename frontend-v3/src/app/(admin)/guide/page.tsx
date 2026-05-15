@@ -77,7 +77,7 @@ const PAGE_DESCRIPTIONS: { href: string; label: string; icon: typeof Inbox; tagl
   },
   {
     href: "/queue",
-    label: "Review Queue",
+    label: "Human Review Queue",
     icon: Inbox,
     tagline: "Calls waiting for human sign-off.",
     usedFor: "If the AI flagged a call for human review you'll find it here. Click claim → review → accept or override the verdict.",
@@ -361,7 +361,7 @@ const LIFECYCLE_STATES: { state: string; meaning: string }[] = [
 ];
 
 const REVIEWER_STEPS: { num: number; title: string; description: string }[] = [
-  { num: 1, title: "Open the Review Queue", description: "Sidebar → Review Queue. The list shows calls awaiting sign-off, sorted by oldest first." },
+  { num: 1, title: "Open the Human Review Queue", description: "Sidebar → Human Review Queue. The list shows calls awaiting sign-off, sorted by oldest first." },
   { num: 2, title: "Claim a call", description: "Click a row → 'Claim'. The system locks it to you for 10 minutes (idle-release frees it back if you walk away)." },
   { num: 3, title: "Read the AI verdict", description: "Right pane shows the LLM verdict, score, evidence quotes, and matched rejection codes. Audio player + word-timed transcript at the top." },
   { num: 4, title: "Decide", description: "Accept the AI verdict, OR override with your own. Add a fix directive if a re-record / DocuSign / new LOA is needed." },
@@ -516,7 +516,7 @@ export default function GuidePage() {
             {[
               { title: "Upload your first call", body: "Click the green +Upload Call button on the Dashboard or Tracker. Drop an MP3/WAV. The pipeline runs automatically (~60 seconds end-to-end on a typical call)." },
               { title: "Watch it land in the Tracker", body: "Sidebar → Tracker. The new call appears with verdict, score, and any rejections. Click the row to see evidence quotes + supplier-script alignment." },
-              { title: "Review on the Queue", body: "If the AI flagged the call, sidebar → Review Queue → Claim → accept the verdict or override with your own. Done." },
+              { title: "Review on the Queue", body: "If the AI flagged the call, sidebar → Human Review Queue → Claim → accept the verdict or override with your own. Done." },
             ].map((s, i) => (
               <li key={s.title} className="flex items-start gap-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-4">
                 <span className="grid size-8 shrink-0 place-items-center rounded-full bg-emerald-500/15 text-[14px] font-semibold text-emerald-300 ring-1 ring-emerald-500/30">

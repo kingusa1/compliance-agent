@@ -34,6 +34,19 @@ export function StatusPipelinePill({ status }: { status: string | null }) {
       </span>
     );
   }
+  // Synthetic status emitted by tracker_aggregator._awaiting_review_row.
+  // Render as a distinct amber chip so reviewers don't see "1/6
+  // AWAITING_REVIEW" (the old fallback path that treated unknown statuses
+  // as step 1 of the rejection pipeline, which is wrong — the call hasn't
+  // entered the rejection flow at all).
+  if (status === "AWAITING_REVIEW") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800 border border-amber-200">
+        <span className="block h-2 w-2 rounded-full bg-amber-500" />
+        Awaiting review
+      </span>
+    );
+  }
   const idx = PIPELINE_STEPS.indexOf(status as typeof PIPELINE_STEPS[number]);
   const safeIdx = idx === -1 ? 0 : idx;
   return (

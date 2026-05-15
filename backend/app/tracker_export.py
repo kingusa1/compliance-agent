@@ -54,7 +54,9 @@ def _row_values(row: dict) -> list:
         _d(row.get("last_action_date")),
         _d(row.get("deadline")),
         row.get("outcome"),
-        row.get("notes"),
+        # XLSX col P = "Notes". Sourced from outcome_narrative
+        # post 2026-05-14 aggregator rename.
+        row.get("outcome_narrative"),
     ]
 
 

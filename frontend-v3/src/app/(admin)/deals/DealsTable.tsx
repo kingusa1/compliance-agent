@@ -83,26 +83,46 @@ export function DealsTable({ deals }: DealsTableProps) {
   );
 }
 
+// 2026-05-14 audit fix: align with the 7-state taxonomy emitted by
+// backend/app/deal_lifecycle.py:derive_lifecycle_status. Previously this
+// pill only knew about the old 3 CustomerDeal.status values; every live
+// row now ships with one of the 7 derived values and was falling through
+// to the neutral outline badge.
+const LIFECYCLE_VISUAL: Record<string, { cls: string; label: string }> = {
+  verified: {
+    cls: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+    label: "Verified",
+  },
+  loa_done: {
+    cls: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+    label: "LOA done",
+  },
+  verbal_done: {
+    cls: "border-blue-500/30 bg-blue-500/10 text-blue-400",
+    label: "Verbal done",
+  },
+  pre_sales_done: {
+    cls: "border-blue-500/30 bg-blue-500/10 text-blue-400",
+    label: "Pre-sales done",
+  },
+  lead_gen_done: {
+    cls: "border-amber-500/30 bg-amber-500/10 text-amber-400",
+    label: "Lead-gen done",
+  },
+  open: {
+    cls: "border-amber-500/30 bg-amber-500/10 text-amber-400",
+    label: "Open",
+  },
+  rejected: {
+    cls: "border-red-500/30 bg-red-500/10 text-red-400",
+    label: "Rejected",
+  },
+};
+
 export function LifecyclePill({ status }: { status: string }) {
   const s = (status || "").toLowerCase();
-  if (s === "closed_done")
-    return (
-      <Badge className="border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
-        ● closed_done
-      </Badge>
-    );
-  if (s === "closed_lost")
-    return (
-      <Badge className="border-red-500/30 bg-red-500/10 text-red-400">
-        ● closed_lost
-      </Badge>
-    );
-  if (s === "in_progress")
-    return (
-      <Badge className="border-amber-500/30 bg-amber-500/10 text-amber-400">
-        ● in_progress
-      </Badge>
-    );
+  const v = LIFECYCLE_VISUAL[s];
+  if (v) return <Badge className={v.cls}>● {v.label}</Badge>;
   return <Badge variant="outline">{status || "—"}</Badge>;
 }
 

@@ -310,8 +310,21 @@ export default function CustomerDetailPage({
   const callCount = customer?.call_count ?? timelineRows.length;
   const supplier = (customer?.suppliers ?? [])[0] ?? "—";
   const worst = customer?.worst_action ?? null;
-  const openDirs = (rollupData.open_directives as number | undefined) ?? customer?.open_directives ?? 0;
-  const valueGbp = (rollupData.total_value_gbp as number | undefined) ?? null;
+  // 2026-05-14 audit fix: align with what `customers_routes.py:378+` actually
+  // emits (`total_open_directives`, `total_deal_value_gbp_annual_sum`,
+  // `dead_rejections_count`). The old keys (`open_directives`, `total_value_gbp`,
+  // `open_rejections`) were undefined on the response so all 3 KPI cards
+  // showed 0/—. Keep the legacy keys as `??` fallbacks so re-deploy ordering
+  // never breaks the page.
+  const openDirs =
+    (rollupData.total_open_directives as number | undefined) ??
+    (rollupData.open_directives as number | undefined) ??
+    customer?.open_directives ??
+    0;
+  const valueGbp =
+    (rollupData.total_deal_value_gbp_annual_sum as number | undefined) ??
+    (rollupData.total_value_gbp as number | undefined) ??
+    null;
   // W1.1 (v3-watt-coverage): Watt portal deep-link chip (top-right of hero).
   const wattSiteId =
     (customer as { external_watt_site_id?: number | null } | undefined)?.external_watt_site_id ??
@@ -504,7 +517,15 @@ export default function CustomerDetailPage({
           />
           <StatCard
             label="Open Rejections"
-            value={(rollupData.open_rejections as number | undefined) ?? 0}
+            // 2026-05-14 audit fix: backend emits `dead_rejections_count`,
+            // not `open_rejections`. The label was always wrong-named but
+            // the value never matched it either — kept the old fallback so
+            // re-deploy order is safe.
+            value={
+              (rollupData.dead_rejections_count as number | undefined) ??
+              (rollupData.open_rejections as number | undefined) ??
+              0
+            }
           />
         </div>
 
@@ -681,9 +702,28 @@ export default function CustomerDetailPage({
                 No calls yet.
               </div>
             ) : (
-              timelineRows.map((row, i) => (
+              timelineRows.map((row, i) => {
+                // 2026-05-14 audit fix: backend emits `call_id` / `completed_at`
+                // / `rejection_category` (see customers_routes.py:512+) but
+                // the row was being read as `id` / `created_at` / `rejection`.
+                // Map both names so the page renders correctly without
+                // breaking on a re-deploy cycle.
+                const rowAny = row as Record<string, unknown>;
+                const rowId =
+                  (rowAny.call_id as string | undefined) ??
+                  (rowAny.id as string | undefined) ??
+                  null;
+                const rowWhen =
+                  (rowAny.completed_at as string | undefined) ??
+                  (rowAny.created_at as string | undefined) ??
+                  null;
+                const rowRejection =
+                  (rowAny.rejection_category as string | undefined) ??
+                  (rowAny.rejection as string | undefined) ??
+                  null;
+                return (
                 <div
-                  key={row.id ?? i}
+                  key={rowId ?? i}
                   style={{
                     display: "grid",
                     gridTemplateColumns: "100px 130px 130px 130px 90px 110px 1fr",
@@ -700,8 +740,8 @@ export default function CustomerDetailPage({
                       fontVariantNumeric: "tabular-nums",
                     }}
                   >
-                    {row.created_at
-                      ? new Date(row.created_at).toLocaleDateString()
+                    {rowWhen
+                      ? new Date(rowWhen).toLocaleDateString()
                       : "—"}
                   </div>
                   <div
@@ -738,10 +778,11 @@ export default function CustomerDetailPage({
                     </Pill>
                   </div>
                   <div style={{ color: "var(--text-faint)" }}>
-                    {row.rejection ?? "—"}
+                    {rowRejection ?? "—"}
                   </div>
                 </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
