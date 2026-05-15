@@ -82,6 +82,41 @@ Cross-cuts the 3 query branches (awaiting_review / compliant / rejection rows) v
 - **Assignee** dropdown sourced from `/api/reviewers/active` via `useActiveReviewersQuery`
 - All editors fire `useEditTrackerRow` on blur/change or `useSetAssignee`; tan-stack invalidates `["admin","tracker"]` so the row + table refresh
 
+### Part G — Save button + rejection-tab human-only contract + deep-links + Notes col + assignee names (commit `bb6fe3f` + `ab6e577`)
+
+User feedback after the awaiting-review side-panel fix: "I want the tab to have a save button please" + "rejection tab needs to be wired in other pages" + "any records only go to the rejection tab by a human, not by an AI agent".
+
+Five fixes shipped as one cohesive block:
+
+1. **P0 — Killed Inngest AI auto-create of Rejection rows**
+   ([`backend/app/workflows/process_call.py:_do_score`](../backend/app/workflows/process_call.py)). The asyncio pipeline dropped this in the 2026-05-12 taxonomy rebuild; the Inngest path was overlooked. Both pipelines now leave the AI verdict as a hint on the awaiting-review row and only `submit_verdict` → `auto_create_rejection_for_verdict` produces a Rejection. The /rejections tab's `source=reviewer` filter is now a defense-in-depth gate, not the primary protection.
+
+2. **/rejections deep-linkable via `?id=<uuid>`** ([`page.tsx`](../frontend-v3/src/app/(admin)/rejections/page.tsx)). Hydrates `selectedId` from the URL on mount; mirrors row clicks back to the URL so reviewers can share/bookmark a specific rejection's detail view.
+
+3. **Tracker side panel — single Save button refactor**
+   ([`TrackerSidePanel.tsx`](../frontend-v3/src/app/(admin)/tracker/TrackerSidePanel.tsx)). Every editable field (17 total, was 4) now lives in a single `draft` state. Save diffs draft-vs-original and routes per-field:
+   - Reviewer-overrideable fields (reason / fix_narrative / category / fix_required) → POST `/api/rejections/{id}/override` so verdict_state flips to HUMAN_OVERRIDDEN.
+   - Other rejection-level fields (status / outcome / deadline / outcome_narrative) → PATCH `/api/tracker/rows/{id}`.
+   - Deal-level fields → PATCH `/api/tracker/rows/{id}` (rejection rows) OR PATCH `/api/tracker/calls/{id}/meta` (awaiting-review rows).
+   - Assignee → POST `/api/tracker/rows/{id}/assignee`.
+   Save button shows the dirty-field count ("Save (3)"). A new "Discard" button reverts the draft to the original.
+
+4. **Side-panel "Open in Rejections" deep-link** — appears whenever `row.rejection_id` is set; points at `/rejections?id=<uuid>`.
+
+5. **Notes column added to /tracker table** + **fix_assignee_id resolved to reviewer name** via `/api/reviewers/active`. Was rendering "Assigned" / "—" with the UUID stuffed in the title attribute; now shows "Jane Doe (reviewer)" with "Assigned" fallback.
+
+**One follow-up fix** in commit `ab6e577`: `page.tsx` now re-syncs `selectedRow` to the fresh row reference after TanStack refetch, so the side panel's `draft` resets to clean state after Save (otherwise the Save button stays "Save (1)" forever even though the server accepted the change).
+
+**Playwright-validated** end-to-end on live prod:
+- /tracker headers now include Notes (16 columns, full XLSX parity).
+- Open awaiting-review row → edit Agent → Save (1) button appears with Discard → click Save → server accepts → buttons reset to just close (×).
+- /queue h1 "Human Review Queue", AI verdict pills "23/37 ⚠ / 9/11 ⚠ / 20/26 ✗ / 22/26 ✗".
+- /rejections page renders with empty state (no human-created rejections in prod DB yet, which CONFIRMS the human-only contract is working).
+- /rejections?id=<uuid> deep-link is read on mount; detail panel attempts to load the specified id.
+
+**BRAIN updated**:
+- [Rejection-create contract: HUMAN-ONLY](../05_State/Known_Issues.md) section pinned at the top of Known_Issues so any future change to the pipeline knows it can't introduce a Rejection write path without breaking the contract.
+
 ### Part F — CI red for 5 commits (caught at the end of the session)
 
 The GitHub Actions `coverage` + `test` workflows kept failing on the 5 commits between `89d59d4` and `6327268`. Two pre-existing test families inherited from the 2026-05-14/15 audit sweeps had never been re-asserted after their target columns were renamed:
