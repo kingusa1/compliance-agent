@@ -6,6 +6,23 @@ tags: [state, issues, gotchas]
 
 # Known issues / gotchas
 
+## 🚨 field_sources value vocabulary invariant (2026-05-15)
+
+When backend code stamps `Rejection.field_sources[<field>] = <source>` or `CustomerDeal.field_sources[<field>] = <source>`, the value MUST be one of the strings listed in the frontend's `TrackerFieldSource` union (`frontend-v3/src/lib/queries/tracker.ts`). Otherwise `SourceBadge` (and any other consumer that does a strict-keyed lookup) crashes the whole React tree with `Cannot read properties of undefined (reading 'bg')` and the user sees **"This page couldn't load"** on /tracker.
+
+Real incident — 2026-05-15: `tracker_edit_routes.patch_call_meta` started stamping `"reviewer_edit"` on deal-level edits without that value existing in the frontend type / STYLES map. Page broke immediately on the next reload. Two changes shipped to prevent recurrence:
+
+1. **Source-of-truth coupling**: the union now explicitly includes `reviewer_edit`. Any future addition needs to land in:
+   - `frontend-v3/src/lib/queries/tracker.ts` → `TrackerFieldSource` union
+   - `frontend-v3/src/app/(admin)/tracker/SourceBadge.tsx` → `STYLES` map (label + bg + fg)
+2. **Defensive guard**: `SourceBadge` now returns `null` on unknown sources instead of dereferencing `undefined`. Backend can add new tags without bringing the page down.
+
+**Rule of thumb**: BEFORE adding any new string to `field_sources` server-side, grep the frontend:
+```bash
+grep -rn "TrackerFieldSource\b" frontend-v3/src
+```
+and verify the consumer renders the new value defensively.
+
 ## 🚨 CI parity guardrail (2026-05-15)
 
 GitHub Actions `coverage` workflow runs the full `pytest` suite on every push to `main`. Two recurring failure modes silently broke CI for 5 commits in a row this session:

@@ -62,6 +62,20 @@ run in isolated context windows; serial chaining triples wall time for no benefi
 - **Confirm before** destructive ops (`git reset --hard`, force-push, dropping tables, `--no-verify`).
 - **Default git identity is wrong** for this repo — see "GitHub" above. Earlier sessions pushed under the right identity; the credential helper can revert mid-session, leading to "Repository not found" errors. If push fails with that error, that's the cause.
 
+## field_sources value vocabulary invariant
+
+Before adding any new string to `Rejection.field_sources` or `CustomerDeal.field_sources` server-side, also add it to:
+
+- `frontend-v3/src/lib/queries/tracker.ts` → `TrackerFieldSource` union
+- `frontend-v3/src/app/(admin)/tracker/SourceBadge.tsx` → `STYLES` map
+
+Otherwise `SourceBadge` crashes with `Cannot read properties of undefined (reading 'bg')` and the **entire /tracker page** errors out with "This page couldn't load". `SourceBadge` now has a defensive `if (!s) return null;` guard, but defence-in-depth: the union is the contract — keep both sides in sync.
+
+Grep before pushing any backend change that stamps a new source tag:
+```bash
+grep -rn "TrackerFieldSource\b" frontend-v3/src
+```
+
 ## CI parity guardrail — run touched tests BEFORE every push
 
 **MUST run touched + impacted tests locally before `git push`.** The GitHub Actions `coverage` workflow runs the full `pytest` suite — and it FAILS on stale tests just as fast as on new bugs. Recent regressions that slipped through:
