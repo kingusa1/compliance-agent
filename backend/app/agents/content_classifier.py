@@ -55,15 +55,36 @@ class Segment:
 
 CONTENT_CLASSIFIER_PROMPT = """You are reading a UK energy-broker compliance call transcript and identifying which compliance-relevant SEGMENTS are inside.
 
+The recordings come from Watt Utilities agents calling UK businesses about gas/electricity contracts on behalf of suppliers (E.ON Next, British Gas, EDF, Scottish Power, Drax, SmartestEnergy, Pozitive, Octopus, TotalEnergies, etc).
+
+A "Passover" file = closer recording where the lead-gen agent introduces a SECOND closer agent. The closer then runs pre_sales + verbal (and LOA for E.ON only).
+
 The four canonical segment types and their distinguishing signals:
 
-1. **lead_gen** — FIRST contact taken by the lead-generation agent. Cold/warm intro, qualification, decision-maker capture. Signals: "is that [name]?", "I'm calling from Watt Utilities", "are you the decision maker", "your current energy contract", "shall I send across prices", "I'll pass you to my colleague".
+1. **lead_gen** — FIRST contact by the lead-generation agent. Cold/warm intro, qualification, decision-maker capture, contract-end-date capture, opt-in to receive prices. Signals (any wording variation counts):
+   * Self-intro from Watt: "calling from Watt Utilities", "this is [name] from Watt", "I'm with Watt"
+   * Decision-maker check: "are you the decision maker", "are you the bill payer", "who handles the energy"
+   * Contract context: "your current energy contract", "when does your contract end", "who do you use for gas/electricity"
+   * Renewal framing: "BG renewal", "[supplier] renewal with Watt Utilities", "how have you found everything with [supplier]"
+   * Handover signal at END: "I'll pass you to my colleague", "let me put you through to [name]"
 
-2. **pre_sales** — Warm-up at the START of the closer call. A SECOND closer agent re-introduces themselves after the lead-gen handover, re-confirms identity/authority, and prepares for the verbal contract. Signals: "thanks for taking my colleague's call", "let me re-confirm a few details before we start the recording", "are you still the decision maker", "before we begin the legally binding contract".
+2. **pre_sales** — Warm-up at the START of the closer call AFTER the lead-gen handover. A SECOND agent re-introduces themselves and prepares for the verbal contract. Signals:
+   * Re-intro after handover: "thanks for taking my colleague's call", "hi [customer], it's [name] from Watt", "I'm taking over from [colleague]"
+   * Re-confirm identity / authority: "let me re-confirm a few details", "you're still the decision maker right", "before we begin the legally binding contract"
+   * Pricing presentation BEFORE the verbal script reading: "the prices we're looking at are…", "if you go two years it's [rate]"
+   * Pre-recording acknowledgement: "I'm just going to read a quick verification script", "this will take about two minutes"
 
-3. **verbal** — The LEGALLY BINDING verbal-contract reading. Closer reads supplier-mandated verbatim script: contract length, unit rate p/kWh, standing charge, VAT/CCL, cooling-off, Ombudsman. Explicit customer "yes/I agree" responses. Signals: explicit rate + standing charge, "this is a legally binding contract", "do you agree to be bound by these terms", "is that correct" with customer "yes".
+3. **verbal** — The LEGALLY BINDING verbal-contract reading. Closer reads supplier-mandated verbatim script. Signals:
+   * Recording / regulatory disclosure: "calls are recorded for monitoring", "this is a legally binding contract"
+   * Explicit rate + standing charge + contract length: "standing charge of X p/day", "unit rate Y p/kWh", "24-month fixed business plan"
+   * Estimated total cost: "estimated total cost of contract is £X"
+   * Customer "yes/I agree/I confirm" responses to recorded questions
+   * VAT, CCL, Green Deal exclusions; T&Cs delivery; Direct Debit Guarantee offer
 
-4. **loa** — E.ON ONLY. Letter of Authority wording bundled inside the closer recording for E.ON Next. Customer authorises Watt to act on their behalf. Signals: "do you authorise Watt to act on your behalf", "letter of authority", "this gives us 12 months", "to obtain information about your account from [supplier]", "to negotiate with [supplier]". For every other supplier the LOA is a DocuSign paper document — NEVER emit a loa segment unless the supplier is E.ON (or E.ON Next / EON).
+4. **loa** — Letter of Authority wording. PRIMARILY E.ON (where the LOA is read verbally inside the closer recording). For non-E.ON suppliers the LOA is normally a DocuSign paper document — DO NOT emit `loa` for non-E.ON unless the audio CLEARLY reads an LOA aloud. Signals:
+   * "Letter of Authority", "this LOA is valid for 12 months", "to authorise Watt to act on your behalf"
+   * "Permission to obtain information about your account from [supplier]"
+   * Read-aloud date/duration of the authority itself
 
 The transcript is shown below with WORD INDICES on the left of each block of 10 words. Use those indices to mark segment boundaries.
 
@@ -93,7 +114,7 @@ RULES
 - end_word_idx of segment N must be < start_word_idx of segment N+1.
 - If you cannot identify ANY compliance-relevant segment (e.g. transcript is too short, foreign language, test tone, music), return [].
 - Use double quotes (JSON). No code fences. No prose outside the array.
-- Be conservative: only emit a segment if confidence >= 0.5 in your own judgement.
+- Be CONFIDENT, not conservative: emit a segment if you can reasonably justify it from signals above. Most multi-stage recordings (Passover, full closer) clearly contain 2-3 segments. Returning [] means "I see no compliance-relevant content at all" — not "I'm unsure". When in doubt prefer emitting a low-confidence segment over returning [].
 
 TRANSCRIPT (with word indices):
 {indexed_transcript}
@@ -169,7 +190,7 @@ async def classify_content(
     *,
     supplier: str | None = None,
     timeout: float = 60.0,
-    min_confidence: float = 0.5,
+    min_confidence: float = 0.35,
 ) -> list[Segment]:
     """Read a transcript + per-word data and return 1-4 detected segments.
 

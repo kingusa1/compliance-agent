@@ -500,9 +500,18 @@ _AGENT_INTRO_TRIGGERS = re.compile(
     r"|come\s+through\s+to"
     r"|you'?re\s+speaking\s+(?:to|with)"
     r"|speaking\s+(?:to|with)"
-    r"|it'?s"
-    r"|it\s+is"
     r")\s+([A-Za-z][A-Za-z\-']{1,25})(?:\s+([A-Za-z][A-Za-z\-']{1,25}))?",
+    re.IGNORECASE,
+)
+
+# Reserved for "it's/it is X" — too noisy on its own ("it's bounced back",
+# "it is going fine") so we only accept it when followed by a name-confirming
+# pivot word ("here", "from", "speaking", "calling"). Caught the bogus
+# agent_name="Bounced" extraction on 2026-05-15.
+_IT_IS_AGENT_INTRO = re.compile(
+    r"\b(?:it'?s|it\s+is)\s+"
+    r"([A-Za-z][A-Za-z\-']{1,25})(?:\s+([A-Za-z][A-Za-z\-']{1,25}))?\s+"
+    r"(?:here|from|speaking|calling|on\s+the\s+line)\b",
     re.IGNORECASE,
 )
 
@@ -532,6 +541,18 @@ _NAME_STOPWORDS = frozenset(
         "utilities", "energy", "gas", "electric", "electricity",
         "british", "scottish", "next", "eon", "totalenergies", "edf",
         "drax", "smartest", "octopus", "pozitive", "watt",
+        # Words mis-captured as names when the previous regex was greedy
+        # on "it's X" / "it is X" — kept defensively even though the
+        # trigger is now gated. Found 2026-05-15.
+        "bounced", "fine", "alright", "almost", "absolutely", "anyway",
+        "definitely", "exactly", "literally", "probably", "basically",
+        "honestly", "frankly", "still", "already", "always", "never",
+        "pricing", "verification", "compliance", "account", "renewal",
+        "deemed", "contract", "voicemail", "answering",
+        "team", "department", "colleague", "buddy", "boss", "guys",
+        "mate", "love", "darling", "pal", "bro", "dude",
+        # Common UK supplier/customer noise after "this is" / "it's"
+        "an", "a", "another", "one", "two", "three", "four", "five",
     }
 )
 
@@ -554,20 +575,22 @@ def _extract_agent_name_regex(transcript: str) -> str | None:
     surname when the second captured token is also name-shaped.
     """
     head = transcript[:1500].replace("\n", " ")
-    for m in _AGENT_INTRO_TRIGGERS.finditer(head):
-        first = (m.group(1) or "").strip("'\"-,.;: ")
-        second = (m.group(2) or "").strip("'\"-,.;: ") if m.group(2) else ""
-        if not first:
-            continue
-        if first.lower() in _NAME_STOPWORDS:
-            continue
-        if not (2 <= len(first) <= 25):
-            continue
-        # Accept the surname only when it looks like a name (not a stopword,
-        # alphabetic, plausible length).
-        if second and 2 <= len(second) <= 25 and second.lower() not in _NAME_STOPWORDS:
-            return _title_case_name(f"{first} {second}")
-        return _title_case_name(first)
+    # Try the strict triggers first, then the gated "it's X here/from/…" pattern.
+    for regex in (_AGENT_INTRO_TRIGGERS, _IT_IS_AGENT_INTRO):
+        for m in regex.finditer(head):
+            first = (m.group(1) or "").strip("'\"-,.;: ")
+            second = (m.group(2) or "").strip("'\"-,.;: ") if m.group(2) else ""
+            if not first:
+                continue
+            if first.lower() in _NAME_STOPWORDS:
+                continue
+            if not (2 <= len(first) <= 25):
+                continue
+            # Accept the surname only when it looks like a name (not a stopword,
+            # alphabetic, plausible length).
+            if second and 2 <= len(second) <= 25 and second.lower() not in _NAME_STOPWORDS:
+                return _title_case_name(f"{first} {second}")
+            return _title_case_name(first)
     return None
 
 

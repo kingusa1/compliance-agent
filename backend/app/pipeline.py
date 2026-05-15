@@ -1836,24 +1836,20 @@ def _step_finalize(call_id: str, db: Session) -> dict:
 
 
 def _write_extraction_outputs(call: Call, db: Session) -> None:
-    """Idempotent extraction writer (L2). Deletes prior rows for this call_id
-    then inserts fresh segments + flags + entities. Async LLM extraction is
-    invoked synchronously via asyncio.run since this is called from a sync
-    workflow step."""
+    """Idempotent extraction writer (L2). Refreshes Flag + ExtractedEntity
+    rows for this call. The segment rows are owned by `_step_classify_content`
+    (the 4-stage AI classifier) and are NOT touched here — the legacy
+    `extraction/segments.detect_segments` emits the obsolete 6-stage taxonomy
+    (intro/qualification/pitch/transfer/verbal/close) which fails the
+    `ck_call_segments_stage` CHECK constraint and crashed the whole
+    finalize step until 2026-05-15.
+    """
     import asyncio
     import json as _json
-    from app.extraction.segments import detect_segments
     from app.extraction.entities import extract_entities
     from app.extraction.flags import derive_flags
     from app.extraction.vulnerability import detect_vulnerability
     from app.models import CallSegment, Flag, ExtractedEntity, Script
-
-    word_data = []
-    if call.word_data:
-        try:
-            word_data = _json.loads(call.word_data)
-        except Exception:
-            word_data = []
 
     checkpoint_results = []
     if call.checkpoint_results:
@@ -1866,16 +1862,22 @@ def _write_extraction_outputs(call: Call, db: Session) -> None:
         db.query(Script).filter_by(id=call.script_id).first() if call.script_id else None
     )
 
-    # Idempotent — delete prior rows; FK ON DELETE CASCADE clears segments first.
+    # Idempotent — delete prior Flag + ExtractedEntity rows only. Do NOT delete
+    # CallSegment rows; those belong to the classifier step (4-stage taxonomy).
     db.query(Flag).filter_by(call_id=call.id).delete(synchronize_session=False)
     db.query(ExtractedEntity).filter_by(call_id=call.id).delete(synchronize_session=False)
-    db.query(CallSegment).filter_by(call_id=call.id).delete(synchronize_session=False)
     db.flush()
 
-    segments = detect_segments(call.id, call.transcript or "", word_data, script)
-    for seg in segments:
-        db.add(seg)
-    db.flush()  # need PKs for flag.segment_id FK
+    # Pull the authoritative segments the classifier wrote so downstream
+    # flag/pricing-mismatch detectors keep working unchanged. They only
+    # read shape attributes (stage, start_word_idx, end_word_idx); the
+    # 4-stage names work fine for those callers.
+    segments = (
+        db.query(CallSegment)
+        .filter_by(call_id=call.id)
+        .order_by(CallSegment.start_word_idx)
+        .all()
+    )
 
     # Run async extract_entities in a dedicated thread+loop. Always works
     # whether finalize is called from sync (legacy pipeline) or async (Inngest
