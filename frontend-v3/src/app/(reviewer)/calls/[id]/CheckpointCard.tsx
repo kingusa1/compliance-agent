@@ -914,6 +914,14 @@ function ReviewerSection({
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           onClick={stop}
+          onKeyDown={(e) => {
+            // Defensive: stop spacebar/Enter from bubbling so global UI
+            // shortcuts (audio play/pause, button activation) don't fire
+            // while the reviewer is typing a comment.
+            if (e.key === " " || e.key === "Enter" || e.code === "Space") {
+              e.stopPropagation();
+            }
+          }}
           placeholder={
             pending === "pass"
               ? "Anything worth noting? (optional)"

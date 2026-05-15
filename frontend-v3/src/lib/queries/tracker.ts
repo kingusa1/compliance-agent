@@ -161,12 +161,12 @@ export function useTrackerRowsQuery(filters: TrackerFilters) {
       if (filters.deadline_state) qs.set("deadline_state", filters.deadline_state);
       return apiFetch<TrackerResponse>(`/api/tracker/rows?${qs.toString()}`);
     },
-    // /tracker is the operational dashboard — must reflect every new
-    // upload / verdict / rejection within 3 s. Inherits global defaults
-    // (refetchOnWindowFocus, refetchOnReconnect) from QueryProvider.
-    staleTime: 0,
+    // /tracker — fresh on window focus + reconnect (inherits QueryProvider
+    // defaults). No background polling: the user reported aggressive
+    // refetch caused visible re-render flashes elsewhere. Tracker
+    // updates land when the reviewer clicks back into the tab.
+    staleTime: 15_000,
     gcTime: 5 * 60 * 1000,
-    refetchInterval: 3_000,
   });
 }
 

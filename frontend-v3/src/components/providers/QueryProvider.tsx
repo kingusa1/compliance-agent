@@ -4,25 +4,17 @@ import { useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 /**
- * TanStack Query provider. Defaults are tuned for a REAL-TIME compliance-
- * review console: the queue + tracker + rejections + call-detail pages
- * MUST never show stale state — what's in the DB right now is what
- * renders. Defaults below feed every useQuery unless the caller
- * overrides per-query.
+ * TanStack Query provider.
  *
- * - `staleTime: 0`         — every fetch is treated as immediately
- *                             stale so window-focus + interval refetches
- *                             always go to network.
- * - `refetchOnWindowFocus: true` — clicking back into the tab refreshes.
- * - `refetchOnReconnect: true`   — Wi-Fi flicker no longer means stale.
- * - `refetchOnMount: "always"`   — every navigation hits the network.
- * - `refetchInterval: 5_000`     — global 5 s polling floor; pages that
- *                                   need tighter live updates (call detail
- *                                   while processing) override to 2 s.
- *                                   Heavy pages (dashboard intelligence
- *                                   aggregates) override upward.
- * - `refetchIntervalInBackground: false` — pause polling when tab is
- *                                   hidden to keep Railway invoice sane.
+ * 2026-05-16 — REMOVED the global ``refetchInterval`` floor. Wholesale
+ * polling re-renders the call-detail page every few seconds, which
+ * re-mounts the <audio> element and resets playback to 0 — the bug
+ * Mohamed reported tonight. We now refresh on window focus + reconnect
+ * only; specific pages that genuinely need live append-on-upload
+ * behaviour (queue) still override per-query. True real-time push
+ * (SSE/WebSocket) is a follow-up — for now this restores stable
+ * playback and avoids the visible "refresh flash" the user called
+ * out.
  */
 export function QueryProvider({ children }: { children: React.ReactNode }) {
   const [client] = useState(
@@ -30,13 +22,13 @@ export function QueryProvider({ children }: { children: React.ReactNode }) {
       new QueryClient({
         defaultOptions: {
           queries: {
-            staleTime: 0,
+            staleTime: 30 * 1000,
             retry: 1,
+            // Click-back-to-tab refresh: cheap and feels live without
+            // re-rendering while the user is actively interacting.
             refetchOnWindowFocus: true,
             refetchOnReconnect: true,
-            refetchOnMount: "always",
-            refetchInterval: 5_000,
-            refetchIntervalInBackground: false,
+            refetchOnMount: false,
           },
           mutations: {
             retry: 0,

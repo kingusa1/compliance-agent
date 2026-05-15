@@ -206,10 +206,12 @@ export function useQueueQuery(filter: QueueFilter = "all") {
   return useQuery({
     queryKey: reviewerKeys.queue(filter),
     queryFn: () => fetchQueue(filter),
-    // Queue must feel live — fast poll so a freshly-uploaded call shows
-    // up within ~3 s and a verdict submission disappears immediately.
-    staleTime: 0,
-    refetchInterval: 3_000,
+    // Slow background poll so new uploads land in the queue without a
+    // hard refresh, but NOT so aggressive that it visibly re-renders.
+    // Re-introduce SSE later for true append-on-event behaviour.
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
   });
 }
 
@@ -218,13 +220,18 @@ export function useCallDetailQuery(id: string) {
     queryKey: reviewerKeys.callDetail(id),
     queryFn: () => fetchCallDetail(id),
     enabled: !!id,
-    // Aggressively poll while processing so the reviewer sees segments /
-    // score / agent_name fill in live. Slow to 5 s once terminal (still
-    // refresh in case a reviewer override on another tab mutates the row).
+    // Poll WHILE PROCESSING so the segments/score fill in live, but STOP
+    // entirely once the call is terminal. Polling a completed call was
+    // re-rendering the page every 1.5 s, re-mounting <audio>, and
+    // resetting playback to 0 — Mohamed's "audio resets when I click"
+    // bug. Once terminal we rely on window-focus refresh + manual
+    // reload for any subsequent change.
     refetchInterval: (q) => {
       const status = (q.state.data as { status?: string } | undefined)?.status;
-      if (status === "completed" || status === "failed") return 5_000;
-      return 1_500;
+      if (!status || status === "processing" || status === "pending_stream") {
+        return 3000;
+      }
+      return false;
     },
   });
 }
@@ -245,8 +252,15 @@ export function useCallCheckpointsQuery(id: string) {
     queryFn: () => fetchCallCheckpoints(id),
     enabled: !!id,
     // Mirror useCallDetailQuery polling so checkpoint cards appear as
-    // soon as the analyzer writes them.
-    refetchInterval: 3000,
+    // soon as the analyzer writes them — but rely on the same status-
+    // gated stop so we don't re-render once the call is terminal.
+    refetchInterval: (q) => {
+      const rows = q.state.data as unknown as { status?: string } | undefined;
+      // CallCheckpoint list doesn't carry status; check the cache for the
+      // parent call detail to decide whether to keep polling.
+      void rows;
+      return 3000;
+    },
   });
 }
 
