@@ -1,10 +1,20 @@
 ---
 created: 2026-05-10
-updated: 2026-05-13
+updated: 2026-05-15
 tags: [state, issues, gotchas]
 ---
 
 # Known issues / gotchas
+
+## 🆕 Scripts coverage gaps (2026-05-15 audit)
+
+Full report: [[Scripts_Validation_2026_05_15]].
+
+| # | Gap | Impact | Fix |
+|---|---|---|---|
+| 1 | **Valda SmartChoice script not ingested** — source PDF at `compliance-docs/Supplier Scripts/Valda SmartChoice_*.pdf` is missing from `supplier_seed.CATALOGUE`, `.planning/phase2-docs/`, and DB | Any Valda call falls through to V1/phrase-pack fallback; never graded against Valda's verbal-contract requirements | Add `Valda` to `Supplier` enum + `CATALOGUE` entry; re-run `extract_phase2_docs.py` + `seed_compliance_data --apply` |
+| 2 | **`verbal_confirmation` phrase pack not in DB** — `_PACK_DEFS` declares 5 packs, only 4 ingested | Dormant: today `verbal`/`closer` segments route to supplier-specific scripts. Becomes a 0/0 hole if a supplier without a verbal script is onboarded | Run admin extractor with `stage_filter="verbal confirmation"`, save with `lifecycle_phase='verbal_confirmation'` |
+| 3 | **Pack content duplication** — `Lead Generation` ≡ `Lead Generation handover/authority` (88 each, same source rows); `Confirmation callback` ≡ `Amendment call` (32 each, same source rows). 240 cps stored, 120 unique | Wastes 50% of phrase-pack storage; `passover` pack is already orphaned per `rubric_router._PHRASE_PACK_PHASE` | Optional: consolidate to 3 packs + per-pack overrides, or just document |
 
 ## ⏳ Open gaps after 2026-05-13 deploy
 

@@ -89,3 +89,30 @@ class WorkflowState(str, Enum):
 - FIXED → BATCHED_TO_PORTAL → SUBMITTED_TO_PORTAL → FIXED_AND_APPROVED
 
 See [[02_Domain/Lifecycle]] for the supplier-side phase rule (2-stage E.ON, 3-stage others).
+
+## Source of the 88-rule lead-gen phrase pack
+
+Provenance (asked 2026-05-15):
+
+- **File:** `compliance-docs/COMPLIANCE XAI/Watt_AI_Phrase_Detection_Dataset (1).docx`
+- **Extracted markdown:** `.planning/phase2-docs/compliance_xai__watt_ai_phrase_detection_dataset_1.md`
+- **Origin:** Watt Utilities — AI Compliance Phrase Detection Dataset, derived from Watt's Sales Partner Compliance Guide + recurring call issues raised with Aly.
+
+The number **88** = sum of the six Lead Generation sub-sections in that doc:
+
+| # | Sub-section | Examples |
+|---|---|---|
+| 1 | Identity and transparency | 20 |
+| 2 | Qualification and authority | 12 |
+| 3 | Pricing and savings claims | 20 |
+| 4 | Market comparison and search scope | 12 |
+| 5 | Pressure, objections and vulnerability | 12 |
+| 6 | Supplier and industry claims | 12 |
+|   | **Total** | **88** |
+
+The Verbal Confirmation half of the same doc is a separate **32** rules (5 + 5 + 8 + 8 + 6), seeded as the supplier-specific verbal-contract scripts.
+
+**Where it lives in code/DB:**
+- Phrase-pack Script row seeded via `backend/app/agents/phrase_pack_extractor.py`
+- Routed for `lead_gen` AND `pre_sales` segments by `backend/app/agents/rubric_router.py` (`_PHRASE_PACK_PHASE` map — both phases share the same 88-rule pack per Aly's 2026-05-12 spec)
+- Aliased as `passover` pack (88) in DB; same rules, orphaned row noted in [[04_Sessions/2026-05-12_Session_taxonomy_rebuild]]

@@ -6,8 +6,9 @@ tags: [state, live, ground-truth, phase-5-complete, deal-linker, tracker-filters
 
 # Live State — Deal-linker + advanced tracker filters live in prod 2026-05-15
 
-> 🚀 **2026-05-15 — Deal-linker + advanced tracker filters + editable side panel DEPLOYED.**
-> Tip commit `8b8f2e0` on `origin/main`. Vercel `dpl_3Dw4g5ZPDnfqKybmmHMZ5X48gmYa` aliased to `compliance-agent-mu.vercel.app`. Railway started server [2] cleanly post-alembic; uvicorn listening on `:8080`. Three commits this session:
+> 🚀 **2026-05-15 — Deal-linker + advanced tracker filters + editable side panel DEPLOYED (incl. awaiting-review row editing).**
+> Tip commit `6327268` on `origin/main`. Side panel now opens editable Identity + Meter & Deal cards on AWAITING_REVIEW rows too (the rejection_id-gate was loosened; new `PATCH /api/tracker/calls/{id}/meta` endpoint handles call-level edits). Each PATCH writes a `ReviewerEdit` audit row keyed on `call_id` (migration `2026_05_15_rev_call` made `rejection_id` nullable + added CHECK constraint).
+> Earlier tip `8b8f2e0`. Vercel `dpl_3Dw4g5ZPDnfqKybmmHMZ5X48gmYa` aliased to `compliance-agent-mu.vercel.app`. Railway started server [2] cleanly post-alembic; uvicorn listening on `:8080`. Three commits this session:
 > - `3b9bf0d` — `feat(intake): bulletproof deal-linker — 4-tier match cascade`
 > - `f8b1a0a` — `feat(tracker): advanced filters + side-panel deal/deadline/assignee editing`
 > - `8b8f2e0` — `fix(tracker): surface deal mpan/mprn/docusign/term on tracker row + supplier alias list`

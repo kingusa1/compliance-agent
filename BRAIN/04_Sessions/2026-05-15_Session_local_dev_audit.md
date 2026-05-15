@@ -205,3 +205,16 @@ See [[2026-05-14_Session_reviewer_polish]] for the smaller polish sweep
 that landed earlier today (LOA router, real speaker names, CheckpointCard
 2-row header, drag-scrub, Chat coming-soon, agent-name regex extraction).
 That session's 5 commits are on `origin/main` already (tip `8eb9763`).
+
+---
+
+## Late addition — "Where do the 88 rules come from?" (provenance lookup)
+
+User asked 2026-05-15 PM where the 88-rule pack originates. Answered:
+
+- **Source file:** `compliance-docs/COMPLIANCE XAI/Watt_AI_Phrase_Detection_Dataset (1).docx`
+- **Extracted markdown for ingestion:** `.planning/phase2-docs/compliance_xai__watt_ai_phrase_detection_dataset_1.md`
+- The number 88 = the six **Lead Generation** sub-sections of that doc: 20 + 12 + 20 + 12 + 12 + 12 = 88. (Verbal Confirmation half = 32, separate.)
+- Cross-references: [[../02_Domain/Watt_Compliance#source-of-the-88-rule-lead-gen-phrase-pack]] (new section added this session), [[../02_Domain/Stage_Terminology]], `backend/app/agents/rubric_router.py::_PHRASE_PACK_PHASE`, `backend/app/agents/phrase_pack_extractor.py`.
+
+No code changes — documentation-only brain update.
