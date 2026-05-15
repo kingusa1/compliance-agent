@@ -1041,6 +1041,15 @@ def auto_create_rejection_for_verdict(
         rejected_at=rejected_at,
         deadline=_compute_deadline(rejected_at),
         created_at=datetime.utcnow(),
+        # 2026-05-15: stamp reviewer provenance ON CREATE. This entire
+        # helper is invoked only from human-triggered routes (submit_verdict
+        # / override / POST /api/rejections) — never the pipeline — so the
+        # row is reviewer-confirmed by construction. Without these the
+        # /rejections page's ``source=reviewer`` filter (which checks
+        # ``confirmed_by IS NOT NULL``) silently hides the row even though
+        # a human just created it.
+        confirmed_by=actor_id,
+        confirmed_at=datetime.utcnow(),
     )
     db.add(r)
     db.flush()
