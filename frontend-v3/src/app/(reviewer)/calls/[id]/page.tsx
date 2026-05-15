@@ -51,6 +51,7 @@ import { formatScorePercent } from "@/lib/score";
 import { Pill } from "@/components/design/Pill";
 import { WorkflowTypePill } from "@/components/design/WorkflowTypePill";
 import { Waveform } from "@/components/design/Waveform";
+import { useCallEvents } from "@/lib/hooks/useCallEvents";
 import { CheckpointCard, parseCheckpointResults, type CheckpointVerdict } from "./CheckpointCard";
 import { TranscriptPlayer, type WordData } from "./TranscriptPlayer";
 import { PricingMismatchBanner } from "./PricingMismatchBanner";
@@ -586,6 +587,11 @@ export default function CallDetailPage({
 }) {
   const router = useRouter();
   const { id } = use(params);
+
+  // 2026-05-16 — subscribe to per-call SSE feed. Replaces the 3s in-flight
+  // refetchInterval on useCallDetailQuery / useCallCheckpointsQuery so audio
+  // stays mounted across pipeline-step transitions (no re-mount, no reset).
+  useCallEvents(id);
 
   const detail = useCallDetailQuery(id);
   const wordsQuery = useCallWordsQuery(id);

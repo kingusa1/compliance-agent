@@ -72,6 +72,16 @@ from app.transcription import transcribe_audio_full, transcribe_audio_gemini
 from app.verification import _escape_ilike
 
 
+_STEP_DONE_EVENTS = {
+    "transcribe": "transcribe_done",
+    "detect_metadata": "detect_metadata_done",
+    "classify_content": "segments_detected",
+    "analyze_checkpoints": "checkpoints_scored",
+    "score": "score_ready",
+    "finalize": "finalized",
+}
+
+
 async def _trace_step(call_id: str, step_name: str, fn, *args, **kwargs):
     """Wrap a _step_* call to write a pipeline_step_log row at start +
     finish, mirroring what app.workflows.process_call._logged_step does
@@ -79,21 +89,41 @@ async def _trace_step(call_id: str, step_name: str, fn, *args, **kwargs):
     terminal feed even when DISABLE_INNGEST_EMIT=1 routes to this legacy
     pipeline. Failures here never break the verdict — same swallow-and-log
     policy as agent_traces.
+
+    2026-05-16 — also fans out an event to app.realtime so SSE subscribers
+    on /api/calls/events (+ /api/calls/{id}/events) get push notifications
+    at every step boundary. Frontend uses these to invalidate React Query
+    keys instead of polling.
     """
     import inspect, time as _time
     from app.workflows.process_call import _persist_step_running, _persist_step_done
+    from app import realtime
 
     started = _time.time()
     row_id = _persist_step_running(call_id, step_name, args, kwargs)
+    realtime.publish(call_id, "step_started", {"step": step_name})
     try:
         raw = fn(*args, **kwargs)
         result = await raw if inspect.isawaitable(raw) else raw
         elapsed_ms = int((_time.time() - started) * 1000)
         _persist_step_done(row_id, step_name, "ok", result, None, elapsed_ms)
+        realtime.publish(
+            call_id,
+            "step_ok",
+            {"step": step_name, "duration_ms": elapsed_ms},
+        )
+        named = _STEP_DONE_EVENTS.get(step_name)
+        if named:
+            realtime.publish(call_id, named, {"step": step_name, "duration_ms": elapsed_ms})
         return result
     except Exception as e:
         elapsed_ms = int((_time.time() - started) * 1000)
         _persist_step_done(row_id, step_name, "err", None, repr(e), elapsed_ms)
+        realtime.publish(
+            call_id,
+            "step_err",
+            {"step": step_name, "duration_ms": elapsed_ms, "error": repr(e)[:300]},
+        )
         raise
 
 

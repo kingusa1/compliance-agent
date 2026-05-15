@@ -473,6 +473,25 @@ async def upload_call(
     # Re-query with joinedload so checkpoints relationship is loaded
     call = db.query(Call).options(joinedload(Call.checkpoints)).filter_by(id=call_id).first()
 
+    # 2026-05-16 — push a "queued" SSE event the moment the row is committed
+    # so list pages (queue / tracker / calls) light up within a frame of the
+    # POST returning. The frontend useCallEvents("*") subscriber invalidates
+    # the calls list query keys on this event.
+    try:
+        from app import realtime
+        realtime.publish(
+            call_id,
+            "queued",
+            {
+                "filename": call.filename,
+                "deal_id": str(call.deal_id) if call.deal_id else None,
+                "customer_name": call.customer_name,
+                "status": call.status,
+            },
+        )
+    except Exception as e:  # noqa: BLE001 — realtime is best-effort
+        log.warning(f"realtime publish(queued) failed call_id={call_id} err={e}")
+
     # When the Inngest pipeline is on, the durable workflow is the SOLE
     # writer for this call — skip the legacy asyncio task to avoid double
     # writes (D02 idempotency contract). When the flag is off, fall through

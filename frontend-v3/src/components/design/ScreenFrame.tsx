@@ -7,8 +7,15 @@
 import { type ReactNode } from "react";
 
 import { Sidebar } from "@/components/Sidebar";
+import { useCallEvents } from "@/lib/hooks/useCallEvents";
 
 export function ScreenFrame({ children }: { children: ReactNode }) {
+  // 2026-05-16: subscribe to the global SSE feed once at the layout level
+  // so every list page (queue / tracker / calls / dashboard / customers /
+  // deals / intelligence) refreshes within a frame of a backend event,
+  // without per-page polling. Single EventSource per browser session.
+  useCallEvents("*");
+
   return (
     <div
       style={{

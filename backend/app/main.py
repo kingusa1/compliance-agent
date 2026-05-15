@@ -249,6 +249,10 @@ app.include_router(import_xlsx_router)
 # Plan §5f: dashboard intelligence panel (read-only aggregations).
 from app.intelligence_routes import intelligence_router
 app.include_router(intelligence_router)
+# 2026-05-16: SSE pub/sub fan-out for live call events (replaces aggressive
+# refetchInterval polling that was reverted in commit e1c8d3b).
+from app.realtime_routes import realtime_router
+app.include_router(realtime_router)
 
 # L6: rag_ingest fires on `call/finalized` and `script/changed`. Adding the
 # two new functions next to the L1 watchdog so Inngest discovers them.
