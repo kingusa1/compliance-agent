@@ -256,3 +256,150 @@ def list_active_reviewers(
         }
         for p in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Call-level meta PATCH — used by the tracker side panel on awaiting-review
+# rows (which have no Rejection yet) and any other surface that needs to
+# correct identity / meter / deal fields on a Call before it's rejected.
+# ---------------------------------------------------------------------------
+
+
+# Call-level whitelisted columns (live on the Call row itself).
+CALL_META_FIELDS = {
+    "customer_name",
+    "agent_name",
+    "detected_supplier",
+}
+
+
+@tracker_edit_router.patch("/api/calls/{call_id}/meta")
+def patch_call_meta(
+    call_id: str,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    user=Depends(current_reviewer),
+):
+    """Inline-edit Call-level identity (agent / customer / supplier) and the
+    linked deal's meter / value / term / DocuSign fields. Mirrors the
+    rejection PATCH shape so the frontend can reuse the same payload keys.
+
+    Routing:
+        * ``customer_name`` / ``agent_name`` / ``detected_supplier`` →
+          ``Call`` row.
+        * Any DEAL_FIELDS key → the linked ``CustomerDeal`` (404 if the
+          call has no deal).
+        * ``supplier`` (alias) → ``Call.detected_supplier`` AND
+          ``deal.supplier`` so the row reflects on every surface.
+
+    Reviewer audit: each accepted edit appends a ``ReviewerEdit`` row with
+    ``rejection_id=None`` and ``field`` prefixed by ``call.`` / ``deal.``
+    so the audit log makes provenance obvious.
+    """
+    call = db.query(Call).filter(Call.id == call_id).first()
+    if call is None:
+        raise HTTPException(404, "call not found")
+
+    # Defensively reject obvious garbage shapes.
+    if not isinstance(body, dict):
+        raise HTTPException(400, "body must be a JSON object")
+
+    accepted: dict[str, str] = {}  # field → "call" | "deal" | "both"
+    for k in body:
+        if k in CALL_META_FIELDS:
+            accepted[k] = "call"
+        elif k in DEAL_FIELDS:
+            accepted[k] = "deal"
+        elif k == "supplier":
+            accepted[k] = "both"
+        else:
+            raise HTTPException(400, f"field not editable: {k!r}")
+
+    deal: CustomerDeal | None = None
+    if any(loc in ("deal", "both") for loc in accepted.values()):
+        if not call.deal_id:
+            raise HTTPException(
+                400, "deal-level edits unavailable — call has no linked deal"
+            )
+        deal = (
+            db.query(CustomerDeal).filter(CustomerDeal.id == call.deal_id).first()
+        )
+        if deal is None:
+            raise HTTPException(
+                400, "deal-level edits unavailable — linked deal missing"
+            )
+
+    reviewer_id = str(user.get("id")) if isinstance(user, dict) else None
+
+    for k, raw_v in body.items():
+        loc = accepted[k]
+        if k == "supplier":
+            # Dual write: Call.detected_supplier (keeps row.supplier display
+            # honest) + Deal.supplier (canonical truth for /customers).
+            v = raw_v or None
+            old_call = call.detected_supplier
+            if old_call != v:
+                db.add(ReviewerEdit(
+                    rejection_id=None,
+                    field="call.detected_supplier",
+                    old_value=old_call,
+                    new_value=v,
+                    reviewer_id=reviewer_id,
+                ))
+                call.detected_supplier = v
+            if deal is not None:
+                old_deal = deal.supplier
+                if old_deal != v:
+                    db.add(ReviewerEdit(
+                        rejection_id=None,
+                        field="deal.supplier",
+                        old_value=old_deal,
+                        new_value=v,
+                        reviewer_id=reviewer_id,
+                    ))
+                    deal.supplier = v
+                    if hasattr(deal, "field_sources"):
+                        fs = dict(deal.field_sources or {})
+                        fs["supplier"] = "reviewer_edit"
+                        deal.field_sources = fs
+            continue
+
+        if loc == "call":
+            v = raw_v or None
+            old = getattr(call, k, None)
+            if old != v:
+                db.add(ReviewerEdit(
+                    rejection_id=None,
+                    field=f"call.{k}",
+                    old_value=str(old) if old is not None else None,
+                    new_value=str(v) if v is not None else None,
+                    reviewer_id=reviewer_id,
+                ))
+                setattr(call, k, v)
+            continue
+
+        # loc == "deal"
+        v = _coerce_value(k, raw_v)
+        old = getattr(deal, k, None) if deal is not None else None
+        if deal is not None and old != v:
+            db.add(ReviewerEdit(
+                rejection_id=None,
+                field=f"deal.{k}",
+                old_value=str(old) if old is not None else None,
+                new_value=str(v) if v is not None else None,
+                reviewer_id=reviewer_id,
+            ))
+            setattr(deal, k, v)
+            if hasattr(deal, "field_sources"):
+                fs = dict(deal.field_sources or {})
+                fs[k] = "reviewer_edit"
+                deal.field_sources = fs
+
+    db.commit()
+    db.refresh(call)
+    return {
+        "call_id": str(call.id),
+        "deal_id": str(deal.id) if deal else None,
+        "deal_field_sources": dict(deal.field_sources or {}) if deal else None,
+        "applied_keys": list(accepted.keys()),
+    }

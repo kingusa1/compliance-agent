@@ -8,6 +8,7 @@ import {
   useConfirmVerdict,
   useOverrideVerdict,
   useEditTrackerRow,
+  useEditCallMeta,
   useSetAssignee,
 } from "@/lib/mutations/tracker";
 import { useActiveReviewersQuery } from "@/lib/queries/reviewers";
@@ -80,22 +81,37 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
   const isAwaitingReview = !row.rejection_id && row.status === "AWAITING_REVIEW";
   const isCompliant = !row.rejection_id && !isAwaitingReview;
   const editNotes = useEditTrackerRow();
+  const editCallMeta = useEditCallMeta();
   const confirm = useConfirmVerdict();
   const override = useOverrideVerdict();
   const setAssignee = useSetAssignee();
   const reviewersQ = useActiveReviewersQuery();
 
-  // Helper — patch a single editable field via the tracker PATCH endpoint.
-  // Used by the new Identity / Meter+Deal / Status cards so each blur or
-  // dropdown change persists immediately. We never block on the mutation
-  // (background invalidation refreshes the row) so the UI stays snappy.
+  // Helper — patch a single editable field. Routes to the rejection PATCH
+  // endpoint when a rejection_id exists (the existing reviewer flow), or
+  // to the call-level PATCH endpoint otherwise (awaiting-review + compliant
+  // rows where the reviewer still needs to correct supplier/agent/meter
+  // before formalising a Rejection). Both endpoints normalise the same
+  // payload shape on the server so we don't need divergent field keys.
   const patchField = (field: string, value: string | number | null) => {
-    if (!row.rejection_id) return;
-    editNotes.mutate({
-      rejectionId: row.rejection_id,
-      fields: { [field]: value },
-    });
+    if (row.rejection_id) {
+      editNotes.mutate({
+        rejectionId: row.rejection_id,
+        fields: { [field]: value },
+      });
+    } else if (row.call_id) {
+      editCallMeta.mutate({
+        callId: row.call_id,
+        fields: { [field]: value },
+      });
+    }
   };
+
+  // Editability gate — we let reviewers edit Identity + Meter+Deal cards on
+  // any row that has a backing call or deal. Compliant rows (no rejection,
+  // no AWAITING_REVIEW status) are read-only because their AI verdict is
+  // already locked in.
+  const editable = Boolean(row.rejection_id || (isAwaitingReview && row.call_id));
 
   // Local draft + dirty tracking. When reviewer edits any of the 4
   // override-eligible fields, dirty becomes true → Save replaces the
@@ -180,10 +196,10 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
         </div>
       )}
 
-      {/* Identity card — every field editable when a rejection_id exists;
-          compliant/awaiting-review rows fall back to the read-only summary
-          so the reviewer can still see the values. */}
-      {row.rejection_id ? (
+      {/* Identity card — editable on any row that backs a call OR rejection.
+          Compliant rows fall back to the read-only summary because the AI
+          verdict is locked in once the call is signed off as compliant. */}
+      {editable ? (
         <section className="space-y-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-3 text-[12px]">
           <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
             Identity
@@ -196,7 +212,7 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
               <select
                 className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
                 value={row.supplier ?? ""}
-                disabled={editNotes.isPending}
+                disabled={editNotes.isPending || editCallMeta.isPending}
                 onChange={(e) => patchField("supplier", e.target.value || null)}
               >
                 <option value="">—</option>
@@ -243,13 +259,13 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
         </dl>
       )}
 
-      {/* Meter + Deal card — only renders on rows that resolved to a deal.
-          The PATCH endpoint will 400 if the underlying call has no deal,
-          so we hide this section entirely rather than show fields that
-          would explode on save. ``deal_id`` is set on every row whose
-          parent call has a deal — true for any reviewer-initiated row
-          and the auto-detect path post-2026-05-15 matcher landing. */}
-      {row.rejection_id && row.deal_id && (
+      {/* Meter + Deal card — renders on any editable row that resolved to
+          a deal. The PATCH endpoint will 400 if the underlying call has
+          no deal, so we hide this section entirely rather than show
+          fields that would explode on save. ``deal_id`` is set on every
+          row whose parent call has a deal — true for any reviewer-initiated
+          row and the auto-detect path post-2026-05-15 matcher landing. */}
+      {editable && row.deal_id && (
         <section className="space-y-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-3 text-[12px]">
           <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
             Meter &amp; deal

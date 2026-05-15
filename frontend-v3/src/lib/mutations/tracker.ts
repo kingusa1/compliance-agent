@@ -119,3 +119,46 @@ export function useSetAssignee() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "tracker"] }),
   });
 }
+
+
+// ── Call-level meta PATCH (2026-05-15) ──────────────────────────────────
+// PATCH /api/calls/{call_id}/meta — used by the tracker side panel on
+// AWAITING_REVIEW rows that don't yet have a Rejection. Accepts the same
+// field keys as the rejection-row PATCH plus call-level keys (agent_name,
+// customer_name, detected_supplier). Routing happens server-side.
+
+export type EditCallMetaVars = {
+  callId: string;
+  fields: Record<string, string | number | null>;
+};
+
+async function patchCallMeta({ callId, fields }: EditCallMetaVars): Promise<{
+  call_id: string;
+  deal_id: string | null;
+  deal_field_sources: Record<string, string> | null;
+  applied_keys: string[];
+}> {
+  return apiFetch(`/api/calls/${encodeURIComponent(callId)}/meta`, {
+    method: "PATCH",
+    body: JSON.stringify(fields),
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function useEditCallMeta() {
+  const qc = useQueryClient();
+  return useMutation<
+    Awaited<ReturnType<typeof patchCallMeta>>,
+    Error,
+    EditCallMetaVars
+  >({
+    mutationFn: patchCallMeta,
+    onSuccess: () => {
+      // Invalidate both the tracker (so the awaiting-review row refreshes)
+      // and the underlying calls view, since the same edits surface on
+      // /calls/[id] header chips.
+      qc.invalidateQueries({ queryKey: ["admin", "tracker"] });
+      qc.invalidateQueries({ queryKey: ["calls"] });
+    },
+  });
+}
