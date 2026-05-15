@@ -4,6 +4,35 @@ updated: 2026-05-15
 tags: [state, live, ground-truth, phase-5-complete, deal-linker, tracker-filters, vercel-unblocked]
 ---
 
+# Live State — Polling rollback + deal-merge second-pass + vulnerability fix 2026-05-16
+
+> 🚀 **2026-05-16 (early morning) — POLLING REVERTED + DEAL-LINKER IMPROVED + L2 PIPELINE CRASH FIXED.**
+> Tip backend + frontend both `e1c8d3b`. Vercel deploy `dpl_442GtuqphZTp78XiiM3WiLNEvHh9` aliased to `compliance-agent-mu.vercel.app`. Railway production live.
+>
+> **Why this matters:** the `eb5566d` aggressive-polling commit caused `<audio>` to re-mount every 1.5 s and reset playback. Plus the vulnerability detector was writing `risk_tag="Vulnerable"` which violated `ck_flags_risk_tag` and crashed every call's L2 step with PendingRollbackError (manifested as `Failed: ReadError('')` on every CP in the UI). Both fixed in `e1c8d3b`.
+>
+> **Commits this session:**
+> - `0c2408e` — classifier prompt + L2 segment crash + agent-name "Bounced" regression
+> - `eb5566d` — aggressive polling (later reverted)
+> - `87bba52` — Sonnet/Opus mixed routing + supplier + business + deal-merge fuzzy 0.85
+> - `52790a1` — second-pass deal merge using business_name + threshold 0.80
+> - `e1c8d3b` — polling rollback + vulnerability risk_tag=None + spacebar guard
+>
+> **Awais 4-call upload test:**
+> - Pre-fix: 4 calls → 4 deals
+> - After `52790a1`: 4 calls → 3 deals (one pair merged)
+> - 2 of 4 multi-segment correctly detected
+> - All agent names real (no `Bounced` regression)
+>
+> **Verified live (`https://compliance-agent-mu.vercel.app`):**
+> - 12-page sweep returns 200 OK on every reviewer + admin page
+> - Andrew call segments render correctly (`0% · 0/11 · Needs Review` for LOA, `85% · 22/26 · Coaching` for verbal, CP09/CP24 `NON-COMPLIANT · HUMAN`)
+> - Rejection-pipeline contract test from earlier in the day still passes
+>
+> **Pending verification:** the polling rollback + L2 crash fix needs a fresh upload to confirm the `ReadError('')` cascade is gone. Open call-detail page after upload completes and verify audio doesn't reset.
+
+---
+
 # Live State — Vercel unblocked + pipeline re-validated on LIVE build 2026-05-15
 
 > 🚀 **2026-05-15 (late evening) — FRONTEND LIVE WITH ALL 7 FIXES + REJECTION PIPELINE RE-VALIDATED.**
