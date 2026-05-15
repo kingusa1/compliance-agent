@@ -11,14 +11,19 @@ import { apiFetch } from "@/lib/api";
  * Per-field provenance source. Surfaced by `/api/tracker/rows` (B6) so the UI
  * can render AI/Human badges on each cell.
  *
- * - `human`: a reviewer typed/selected this value.
+ * - `human`: a reviewer typed/selected this value via inline edit.
  * - `xlsx_import`: imported from Watt's tracker XLSX (back-fill).
  * - `integration`: came from an external system (CRM, supplier feed).
  * - `ai`: pipeline detection / LLM stamped this value.
  * - `placeholder`: stub value (e.g. "(missing)") — needs human attention.
+ * - `reviewer_edit`: deal-level inline edit via the tracker side panel
+ *   (2026-05-15). Conceptually identical to ``human`` but stamped on the
+ *   deal row's field_sources rather than the rejection row's. Kept as a
+ *   distinct value so /customers + /deals can show "edited" vs "AI" badges.
  */
 export type TrackerFieldSource =
   | "human"
+  | "reviewer_edit"
   | "xlsx_import"
   | "integration"
   | "ai"
