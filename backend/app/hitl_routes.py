@@ -549,7 +549,14 @@ async def submit_verdict(
     # bad checkpoint can't block the rest. The outer try/except guards the
     # branch entirely so the verdict commit itself is never blocked.
     auto_rejection_ids: list[str] = []
-    if payload.verdict in ("FAIL", "REVIEW"):
+    # 2026-05-15: case-insensitive verdict check. Frontend sends lowercase
+    # ("fail" / "review") while this branch was matching UPPERCASE only,
+    # so the entire rejection-create side effect was being silently
+    # skipped — a Playwright contract test caught it. Verdict normalisation
+    # also lets the downstream ``auto_create_rejection_for_verdict`` see
+    # the canonical uppercase form it expects internally.
+    verdict_action_norm = (payload.verdict or "").strip().upper()
+    if verdict_action_norm in ("FAIL", "REVIEW"):
         try:
             from app.rejections_routes import auto_create_rejection_for_verdict
             from app.models import CallCheckpoint
@@ -571,7 +578,7 @@ async def submit_verdict(
                         db,
                         call=call,
                         actor_id=reviewer["id"],
-                        verdict_action=payload.verdict,
+                        verdict_action=verdict_action_norm,
                         reason=fcp.ai_rejection_reason or payload.reasoning,
                         rule_id=(
                             fcp.rule_text.upper().replace(" ", "_")
