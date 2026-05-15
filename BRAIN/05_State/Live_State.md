@@ -1,7 +1,29 @@
 ---
 created: 2026-05-10
-updated: 2026-05-14
-tags: [state, live, ground-truth, phase-5-complete]
+updated: 2026-05-15
+tags: [state, live, ground-truth, phase-5-complete, deal-linker, tracker-filters]
+---
+
+# Live State — Deal-linker + advanced tracker filters live in prod 2026-05-15
+
+> 🚀 **2026-05-15 — Deal-linker + advanced tracker filters + editable side panel DEPLOYED.**
+> Tip commit `8b8f2e0` on `origin/main`. Vercel `dpl_3Dw4g5ZPDnfqKybmmHMZ5X48gmYa` aliased to `compliance-agent-mu.vercel.app`. Railway started server [2] cleanly post-alembic; uvicorn listening on `:8080`. Three commits this session:
+> - `3b9bf0d` — `feat(intake): bulletproof deal-linker — 4-tier match cascade`
+> - `f8b1a0a` — `feat(tracker): advanced filters + side-panel deal/deadline/assignee editing`
+> - `8b8f2e0` — `fix(tracker): surface deal mpan/mprn/docusign/term on tracker row + supplier alias list`
+>
+> **Validated via Playwright on live prod** (https://compliance-agent-mu.vercel.app + https://compliance-agent-production-690e.up.railway.app):
+> - Filter bar renders Day / Range / Supplier(multi) / Agent(multi) / Status(multi) / Verdict(multi) / Deadline-state / Annual-value-range. Quick-pick "Today" wires `?date_on=2026-05-15` correctly.
+> - PATCH `/api/tracker/rows/{id}` accepts `mpan_electricity`, `mprn_gas`, `deal_value_gbp`, `expected_live_date`, `term_months`, `docusign_reference`, `deadline` — all 6 deal fields routed to CustomerDeal, deadline to Rejection, with `reviewer_edit` / `human` provenance stamps.
+> - POST `/api/tracker/rows/{id}/assignee` validates against profiles + flips field_sources.
+> - GET `/api/reviewers/active` returns active reviewer/lead/admin profiles.
+> - Side panel renders all 10 editable fields (Identity / Meter & deal / Deadline / Assignee) with patched values round-tripping correctly. Supplier dropdown drops from "E.ON Next" → "Pozitive" and persists via the `human` provenance gate.
+> - /queue page intact: h1 "Human Review Queue", AI verdict pills "9/11 ⚠" / "20/26 ✗" / "22/26 ✗" without "AI:" prefix.
+>
+> **DB state on prod (Supabase `zcmdsblqbgatsrofptsq`):** 6 awaiting-review calls (Christopher Neil Banks · St. Peter's Benfleet Church · 4× pending-audio-upload), 0 active rejections (1 playwright-test rejection created + moved to DEAD as part of validation), no customer wipe needed for this session.
+>
+> **Two unrelated previous sessions also live** (already pushed earlier): commit `39f3c4e` (system-wide audit BRAIN log) + `147dcd5` ahead of that.
+
 ---
 
 # Live State — Local dev + system-wide audit fixes 2026-05-15

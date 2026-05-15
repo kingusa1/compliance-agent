@@ -18,10 +18,11 @@ tags: [index, brain]
 
 ## 🚨 Read FIRST when resuming a session
 
-**As of 2026-05-15: SYSTEM-WIDE AUDIT SWEEP + LOCAL DEV STACK + CLI RE-AUTH.**
+**As of 2026-05-15: BULLETPROOF DEAL-LINKER + ADVANCED TRACKER FILTERS + EDITABLE SIDE PANEL.**
 Read in order:
 
-1. [[04_Sessions/2026-05-15_Session_local_dev_audit]] — **MOST RECENT.** Five parallel reviewers found 25 bugs across tracker / deals / customers / rejections / queue / dashboard / agents / pipeline / Quality Agent / auth surface; 17 P0/P1 fixed locally. Local stack stood up (backend `:8001`, frontend `:3000`) on the DEV Supabase `fgkzmldgpfezyqzjuqfq` (549 calls, 152 rejections) because prod Railway returned HTTP 000 from this shell. Mid-session logout + relogin of GitHub/Vercel/Railway; new auth state recorded in [[../06_Operations/Credentials]]. **Four unpushed commits** (`becb958` · `1b55dec` · `30fa836` · `147dcd5`) waiting for user go-ahead.
+1. [[04_Sessions/2026-05-15_Session_deal_linker_tracker_filters]] — **MOST RECENT.** Shipped 4-tier match cascade at intake (MPAN/MPRN/DocuSign/Companies-House hard keys + cleanco+rapidfuzz+jellyfish probabilistic composite, calibrated thresholds 0.99 auto / 0.85 review), advanced tracker filter bar (date range, day, multi-supplier, multi-agent, status, verdict, deadline state, value range, MPAN search), and side-panel editable Identity + Meter&Deal + Deadline + Assignee cards. Backend `tracker_edit_routes.ALLOWED_FIELDS` split into REJECTION_FIELDS + DEAL_FIELDS so PATCH writes to the right table; new `POST /api/tracker/rows/{id}/assignee` and `GET /api/reviewers/active` endpoints. 17 new matcher unit tests pass. 3 commits pushed (`3b9bf0d` · `f8b1a0a` · `8b8f2e0`) and validated live via Playwright. Splink/F-S deferred — current weighted-sum gives the same calibrated band gates without DuckDB.
+2. [[04_Sessions/2026-05-15_Session_local_dev_audit]] — Earlier today: Five parallel reviewers found 25 bugs across tracker / deals / customers / rejections / queue / dashboard / agents / pipeline / Quality Agent / auth surface; 17 P0/P1 fixed locally. Local stack stood up (backend `:8001`, frontend `:3000`) on the DEV Supabase `fgkzmldgpfezyqzjuqfq` (549 calls, 152 rejections). Mid-session logout + relogin of GitHub/Vercel/Railway; new auth state recorded in [[../06_Operations/Credentials]]. Four commits (`becb958` · `1b55dec` · `30fa836` · `147dcd5`) all pushed.
 2. [[04_Sessions/2026-05-14_Session_reviewer_polish]] — Yesterday: eight reviewer-facing bugs shipped — real speaker names in transcript (`Afak / AGENT / 0:00`); LOA router resilient fallback against `script_name~'LOA'` when `lifecycle_phase` is NULL; CheckpointCard 2-row header; `/api/calls/{id}/script-checkpoints` returns UNION of every segment's script; drag-to-scrub on the audio bar; Chat tab gated behind "Coming soon"; deterministic regex layer in `detect_names` catches unusual transliterated names. Tip `8eb9763` (already on origin/main).
 2. [[04_Sessions/2026-05-14_Session_phase5_complete]] — earlier today: shipped all 9 Phase 5 sub-tasks (a-i) + 4 intelligence endpoints + per-segment cards on call detail. Found+fixed the 7th CI-red test (non_compliant_v2 — same severity-weighted fix pattern as partial_v2). Fixed a runtime SQLAlchemy bug in intelligence_routes (`func.cast` → `case-when`). All CI green. Vercel + Railway both deployed.
 2. [[04_Sessions/2026-05-13_Session_deploy_and_19of19]] — Yesterday's deploy of the taxonomy rebuild, the silent alembic-chain failure since 2026-05-06 that we unblocked, the 4-pass extractor that filled the last 3 prose-heavy scripts, and the /scripts UI upload rewire.
@@ -77,6 +78,7 @@ Read in order:
 - [[05_State/Live_State]] — what's deployed and verified working RIGHT NOW
 - [[05_State/Test_Calls]] — every test call uploaded + its current verdict
 - [[05_State/Known_Issues]] — open gaps + their workarounds
+- [[05_State/Scripts_Validation_2026_05_15]] — /scripts page audit vs source docs: 15/16 supplier scripts + 4/5 phrase packs ingested; Valda + verbal_confirmation pack missing
 
 ### 06 Operations
 - [[06_Operations/Deploy_Commands]] — copy/paste deploy cheat sheet
