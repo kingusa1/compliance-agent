@@ -408,25 +408,36 @@ async def _step_transcribe(call_id: str, audio_path: str, db: Session) -> dict:
     return {"transcript": transcript, "source": source}
 
 
-def _maybe_merge_into_existing_deal(call: Call, db: Session) -> None:
+def _maybe_merge_into_existing_deal(
+    call: Call,
+    db: Session,
+    *,
+    override_customer_name: str | None = None,
+) -> None:
     """After detect_metadata writes detected_supplier + customer_name,
     look for an existing open Deal under the same customer with the same
     supplier. If found, re-attach the call and delete the stub Deal that
     upload-time auto-created (only if the stub has no other calls).
 
+    ``override_customer_name`` lets the post-business-detect pass invoke
+    this with the BUSINESS name rather than the person name on
+    ``call.customer_name``. The 2026-05-16 upload test showed that the
+    first pass (matching person name against deal's business name) never
+    fires; this second pass with the business name catches sibling
+    deals like "Awais Mustafa Ta Shah's Palace" vs "Shah's Palace".
+
     2026-05-16: loosened the customer-name predicate from exact match to
     fuzzy match (case-insensitive, dedups Ltd/Limited variations, accepts
-    >= 0.85 SequenceMatcher ratio). Catches the common case where the
-    same business gets slightly different names extracted per call
-    (e.g. "Awais Mustafa Ta Shah's Palace" vs "Shah's Palace" vs "Shah
-    Palace"). Without this, every same-customer upload created its own
-    deal, defeating the lifecycle workflow.
+    >= 0.80 SequenceMatcher ratio + substring containment). Lowered
+    threshold from 0.85 to 0.80 because real transcription drift on
+    business names can wobble more than that ("Trading As" vs "Ta",
+    apostrophes dropped, etc.).
     """
     from app.models import CustomerDeal
     from difflib import SequenceMatcher
 
     detected_supplier = (call.detected_supplier or "").strip()
-    detected_customer = (call.customer_name or "").strip()
+    detected_customer = (override_customer_name or call.customer_name or "").strip()
     if not detected_supplier or not detected_customer:
         return
     if not call.deal_id:
@@ -476,7 +487,7 @@ def _maybe_merge_into_existing_deal(call: Call, db: Session) -> None:
             score = 0.95
         else:
             score = SequenceMatcher(None, target_norm, cand_norm).ratio()
-        if score >= 0.85 and score > best_score:
+        if score >= 0.80 and score > best_score:
             best = cand
             best_score = score
 
@@ -790,6 +801,28 @@ async def _step_detect_metadata(
             # the detected customer's name so we never leave the stub label.
             if not business_name and call.customer_name and call.customer_name.strip():
                 business_name = call.customer_name.strip()
+
+            # 2026-05-16 second-pass deal merge using the BUSINESS name
+            # (the first pass at line ~724 only had the person name on
+            # call.customer_name, which never matches deal.customer_name
+            # because the latter is the business name). This is what
+            # actually collapses Awais's 4 sequential uploads into one
+            # deal when business detection agrees within 0.80 fuzzy
+            # ratio across transcripts.
+            if business_name and call.deal_id:
+                try:
+                    _maybe_merge_into_existing_deal(
+                        call, db, override_customer_name=business_name
+                    )
+                    # Re-load the (possibly relocated) deal so the rename
+                    # branch below targets the right row.
+                    current_deal = db.query(_Deal).filter_by(id=call.deal_id).first()
+                    is_stub = bool(
+                        current_deal
+                        and (current_deal.customer_name or "").startswith("(auto-detect pending")
+                    )
+                except Exception as _e:
+                    log.warning(f"second-pass deal merge skipped: {_e}")
 
             if business_name:
                 matched = fuzzy_match_customer(business_name, db, threshold=0.6)
