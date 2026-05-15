@@ -57,7 +57,7 @@ All 5 commits on `origin/main`, all five deployed.
 * Both return `text/event-stream`, emit `: connected` immediately on
   open + `: keep-alive` every 5s; close cleanly on client disconnect.
 * Headers: `Cache-Control: no-cache`, `Connection: keep-alive`,
-  `X-Accel-Buffering: no` (so nginx / Cloudflare don't buffer).
+  `X-Accel-Buffering: no` (so nginx / the railway-edge proxy don't buffer).
 
 **Wiring in pipeline + upload**:
 
@@ -105,7 +105,7 @@ All 5 commits on `origin/main`, all five deployed.
 * SSE endpoint live on Railway (`compliance-agent-production-690e.up.railway.app/api/calls/events` → 200, raw stream emits `: connected` immediately + `: keep-alive` after 5s).
 * On `/calls` (admin) with row-count instrumented at 150ms, uploaded a 4th file → row count went 3 → 4 without manual refresh, **without polling-driven refetch** (60s baseline poll was nowhere near firing).
 * Network log shows the burst of `/api/calls?limit=200` fetches clustered immediately after upload — that's SSE invalidation, not polling.
-* Lag from upload-end to row-render: ~8s end-to-end. **Mission target was 1s.** Most of that 8s is the FastAPI POST returning + Cloudflare TCP buffering of the SSE event + the Railway round-trip for the `/api/calls` refetch. The SSE pipe itself fires in <100ms server-side. Treat as a meaningful improvement over polling but not as low-latency as the spec required.
+* Lag from upload-end to row-render: ~8s end-to-end. **Mission target was 1s.** Most of that 8s is the FastAPI POST returning + the railway-edge proxy TCP buffering of the SSE event + the Railway round-trip for the `/api/calls` refetch. The SSE pipe itself fires in <100ms server-side. Treat as a meaningful improvement over polling but not as low-latency as the spec required.
 
 ## Phase 3 — deal-linker accuracy (acceptance: PARTIAL)
 
@@ -182,7 +182,7 @@ bug surfaced. One-line report per page:
 
 | Severity | Bug | Reproduction | Commit that holds it |
 |---|---|---|---|
-| **P1** | SSE end-to-end lag is ~8s on /calls (admin), not the <1s the spec called for. | On `/calls`, open DevTools and instrument `setInterval(()=>document.querySelectorAll('tbody tr').length, 150)`. Upload via curl. Watch first count change. | `7390b33` design; the 8s is dominated by Cloudflare SSE buffering + Railway `/api/calls` RTT, not the publish path itself. |
+| **P1** | SSE end-to-end lag is ~8s on /calls (admin), not the <1s the spec called for. | On `/calls`, open DevTools and instrument `setInterval(()=>document.querySelectorAll('tbody tr').length, 150)`. Upload via curl. Watch first count change. | `7390b33` design; the 8s is dominated by the railway-edge proxy SSE buffering + Railway `/api/calls` RTT, not the publish path itself. |
 | **P1** | Awais 4-call → 4-deal: deal-linker still can't collapse. | Wipe DB, sequentially upload `/tmp/a1..a4.mp3` (Awais Mustafa fixtures from `compliance-docs/AI Data/Non-EON/Compliant/`). Final state: `/deals` shows 4 distinct deals instead of 1. | `ca76e2e` shipped the Metaphone + Opus 4.7 routing; the underlying limit is transcription drift, not the matcher. |
 | **P2** | Business name detection silently returns None on some non-EON transcripts. | Same 4-call upload. Railway logs show `🏢 BUSINESS_DETECT failed:` (empty string after `failed:`) on one call. | Looks like the LLM returned None / empty. `business_detect.py` correctly swallows but pipeline then can't run the second-pass merge with a business name. |
 | **P2** | One call landed on `needs_manual_review` status (a3 Verbal). | Same 4-call upload. Watch call `0c9b4df3-9fe5-4db0-b7dd-5ce3bf6ff9b4`. | Score-step decided `needs_manual_review` — investigate the bucket gate logic for this specific recording. |
@@ -202,5 +202,5 @@ bug surfaced. One-line report per page:
 * **Phase 3 deeper attack**: audio-fingerprint clustering. See `BUSINESS_DETECT failed` lines in Railway logs around `2026-05-15T21:42–21:46` for the empty-name path.
 * **Phase 2 latency**: investigate whether Railway is buffering SSE
   responses upstream of `X-Accel-Buffering: no` (`curl -N` to Railway
-  origin direct, no Cloudflare, and time the first `: connected` — if
-  that's <50ms server-side, Cloudflare proxy is the buffer).
+  origin direct, no the railway-edge proxy, and time the first `: connected` — if
+  that's <50ms server-side, the railway-edge proxy proxy is the buffer).

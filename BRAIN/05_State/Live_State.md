@@ -26,7 +26,7 @@ tags: [state, live, ground-truth, sse-push, metaphone-deal-linker, sidebar-audit
 > - `GET /api/calls/events` (global) + `GET /api/calls/{id}/events` (per-call) return `text/event-stream` from Railway. Raw `curl -N` shows `: connected` immediately + `: keep-alive` every 5s.
 > - Frontend `useCallEvents("*")` mounted at ScreenFrame; per-call mounted on call detail page.
 > - 3s in-flight refetchInterval REMOVED from `useCallDetailQuery`, `useCallCheckpointsQuery`, `useAdminCallsQuery`. Queue/admin keep 60s safety-net poll.
-> - Validated: upload triggers row-count change on /calls without manual refresh and without poll-driven refetch. Lag ~8s (Cloudflare buffering + RTT) — better than poll, slower than mission's <1s target.
+> - Validated: upload triggers row-count change on /calls without manual refresh and without poll-driven refetch. Lag ~8s (railway-edge buffering + Vercel→Railway RTT on the refetch + React Query invalidation batching — Cloudflare is NOT in this stack, Server: railway-edge) — better than poll, slower than mission's <1s target.
 >
 > **Phase 3 — Metaphone uplift + Opus 4.7 non-EON shipped but Awais 4-call → still 4 deals.**
 > Root cause: transcription drift produces wildly different business names per recording ("Charles Palace" vs empty vs "Awais" vs "Frank"); Opus 4.7 can't recover the same name from a transcript that says something else. Fix lives in `ca76e2e` and WILL help cases with moderate drift (catches "Mustafa" ↔ "Master"); the Awais fixture is past fuzzy 0.60.
