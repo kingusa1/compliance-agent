@@ -218,6 +218,11 @@ if settings.prometheus_enabled:
         excluded_handlers=["/metrics", "/healthz", "/readyz"],
     ).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
+# 2026-05-16: realtime_router MUST register before the generic call detail
+# router below; otherwise /api/calls/events matches @router.get("/api/calls/{call_id}")
+# in routes.py and FastAPI returns a 404 "Call not found".
+from app.realtime_routes import realtime_router as _realtime_router_early
+app.include_router(_realtime_router_early)
 app.include_router(router)
 app.include_router(script_router)
 app.include_router(hitl_router)
@@ -249,10 +254,10 @@ app.include_router(import_xlsx_router)
 # Plan §5f: dashboard intelligence panel (read-only aggregations).
 from app.intelligence_routes import intelligence_router
 app.include_router(intelligence_router)
-# 2026-05-16: SSE pub/sub fan-out for live call events (replaces aggressive
-# refetchInterval polling that was reverted in commit e1c8d3b).
-from app.realtime_routes import realtime_router
-app.include_router(realtime_router)
+# 2026-05-16: SSE pub/sub fan-out for live call events is registered at the
+# top of the include_router block above so `/api/calls/events` resolves to
+# the realtime endpoint instead of being shadowed by the generic call
+# detail route `/api/calls/{call_id}`.
 
 # L6: rag_ingest fires on `call/finalized` and `script/changed`. Adding the
 # two new functions next to the L1 watchdog so Inngest discovers them.
