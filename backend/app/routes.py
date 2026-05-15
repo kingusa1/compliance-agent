@@ -2199,6 +2199,105 @@ def admin_backfill_agent_names(
     }
 
 
+@router.post("/api/admin/normalize-checkpoint-results", status_code=200)
+def admin_normalize_checkpoint_results(
+    call_id: str | None = None,
+    apply: bool = False,
+    db: Session = Depends(get_db),
+    _auth=Depends(_require_admin),
+):
+    """Reconcile existing ``Call.checkpoint_results`` against the script
+    templates used by the call's segments, without re-running the LLM.
+
+    Useful for calls analyzed BEFORE the pipeline's per-CP coverage
+    guarantee landed (commit 0f56394) — those calls have:
+      * silent duplicate result entries for rules covered by two segments
+      * silent gaps for rules whose anchor phrases didn't appear in any
+        single segment slice
+
+    Both cases get fixed in-place by replaying ``_normalize_checkpoint_results``
+    against the live data. Synthetic ``status="not_scored"`` rows fill
+    the gaps so the UI renders every template CP with a clear muted
+    "Not Scored" label instead of falling through to the placeholder
+    "Not yet scored" hard-coded in CheckpointCard.
+
+    ``call_id`` — optional. When omitted, iterates every completed call.
+    ``apply`` — when False, returns the diff in dry-run mode.
+    """
+    from app.models import CallSegment, Script
+    from app.pipeline import _normalize_checkpoint_results
+
+    q = db.query(Call).filter(Call.status == "completed")
+    if call_id:
+        q = q.filter(Call.id == call_id)
+    calls = q.all()
+
+    diffs: list[dict] = []
+    updated = 0
+    for c in calls:
+        if not c.checkpoint_results:
+            continue
+        try:
+            existing = json.loads(c.checkpoint_results) or []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        # Build template_index from every script referenced by this call's
+        # segments. Falls back to dataset.script_id when segments aren't
+        # populated (legacy single-rubric calls).
+        segments = (
+            db.query(CallSegment)
+            .filter(CallSegment.call_id == c.id)
+            .all()
+        )
+        script_ids = {s.script_id for s in segments if s.script_id}
+        if not script_ids and c.script_id:
+            script_ids = {c.script_id}
+        template_index: dict[tuple, dict] = {}
+        for sid in script_ids:
+            script = db.query(Script).filter(Script.id == sid).first()
+            if not script:
+                continue
+            try:
+                tcps = json.loads(script.checkpoints or "[]") or []
+            except (TypeError, ValueError, json.JSONDecodeError):
+                tcps = []
+            for tcp in tcps:
+                sec = tcp.get("section") or tcp.get("line_number") or 0
+                name = (tcp.get("name") or "").strip()
+                if name:
+                    template_index[(sec, name)] = tcp
+
+        if not template_index:
+            # Nothing to reconcile against — leave the row alone.
+            continue
+
+        normalized = _normalize_checkpoint_results(existing, template_index)
+        before = len(existing)
+        after = len(normalized)
+        added = max(0, after - before)
+        # Count net new "not_scored" rows for clearer reporting.
+        existing_names = {((r.get("name") or "").strip().lower()) for r in existing}
+        filled = sum(
+            1
+            for r in normalized
+            if (r.get("name") or "").strip().lower() not in existing_names
+        )
+        diff = {"call_id": c.id, "before": before, "after": after, "filled_not_scored": filled, "duplicates_collapsed": max(0, before - (after - added))}
+        diffs.append(diff)
+        if apply and (filled or after != before):
+            c.checkpoint_results = json.dumps(normalized)
+            updated += 1
+    if apply:
+        db.commit()
+    return {
+        "scanned": len(calls),
+        "candidates": len([d for d in diffs if d["filled_not_scored"] or d["before"] != d["after"]]),
+        "updated": updated if apply else 0,
+        "applied": apply,
+        "diffs": diffs[:50],
+    }
+
+
 @router.post("/api/admin/ingest-script-checkpoints", status_code=200)
 async def admin_ingest_script_checkpoints(
     apply: bool = False,
