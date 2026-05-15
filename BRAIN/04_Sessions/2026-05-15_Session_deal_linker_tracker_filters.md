@@ -82,6 +82,26 @@ Cross-cuts the 3 query branches (awaiting_review / compliant / rejection rows) v
 - **Assignee** dropdown sourced from `/api/reviewers/active` via `useActiveReviewersQuery`
 - All editors fire `useEditTrackerRow` on blur/change or `useSetAssignee`; tan-stack invalidates `["admin","tracker"]` so the row + table refresh
 
+### Part F — CI red for 5 commits (caught at the end of the session)
+
+The GitHub Actions `coverage` + `test` workflows kept failing on the 5 commits between `89d59d4` and `6327268`. Two pre-existing test families inherited from the 2026-05-14/15 audit sweeps had never been re-asserted after their target columns were renamed:
+
+1. `tests/test_ai_rejection_reason.py::test_ai_rejection_reason_propagates_to_rejection_row`
+   - Asserted `Rejection.outcome_narrative == ai_narrative_notes`.
+   - The 2026-05-15 audit moved the AI narrative write to `Rejection.fix_narrative` (keeps the reviewer's `outcome_narrative` slot clean).
+   - Fix: update assertion to `rej.fix_narrative == ai_narrative_notes`; also assert `rej.outcome_narrative is None`.
+
+2. `tests/test_routes.py::test_retry_call_{not_found,processing_recent_blocked,resets_state_and_clears_checkpoints,with_error_status}`
+   - All 4 returned 401 instead of 404/400/200.
+   - Cause: the audit added `Depends(current_reviewer)` to `/api/calls/{id}/retry`. The test module's `TestClient` doesn't send a Bearer token.
+   - Fix: `app.dependency_overrides[current_reviewer] = lambda: {"id":"test-reviewer","role":"admin"}` in the module-level setup so the gate is bypassed and the route's real response surfaces.
+
+**Fixed in commit `3a669ef`**; verified both test families pass locally before the push and confirmed `coverage` workflow GREEN on the new commit.
+
+**Guardrail added** in two places to prevent the same trap next session:
+- [`CLAUDE.md` → "CI parity guardrail"](../../CLAUDE.md) — explicit instruction to run touched tests via `./venv/Scripts/python.exe -m pytest tests/test_<area>.py` before every push.
+- [`BRAIN/05_State/Known_Issues.md`](../05_State/Known_Issues.md) — cross-session pointer with the trigger matrix.
+
 ### Part E — Awaiting-review side panel + 500-CORS chain (commits `056e017` → `89d59d4` → `8cb06c6` → `00736f7` → `6327268`)
 
 User screenshot showed an awaiting-review row's side panel still rendering the **read-only `<dl>`** (Supplier / Agent / MPAN/MPRN as plain definition list) instead of the new editable Identity + Meter & Deal cards. Root cause: my Part B editable-cards block was gated on `row.rejection_id`, but awaiting-review rows haven't entered the rejection flow yet.
