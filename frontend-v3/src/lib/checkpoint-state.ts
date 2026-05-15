@@ -15,7 +15,8 @@ export type DisplayState =
   | "partial"
   | "said_wrong"
   | "not_said"
-  | "unverified";
+  | "unverified"
+  | "not_scored";
 
 export interface CheckpointStateInput {
   status: string;
@@ -28,6 +29,12 @@ export function deriveDisplayState(cp: CheckpointStateInput): DisplayState {
   // non-compliant. The yellow "needs_review" tile was confusing reviewers
   // ("review what?"). needs_review checkpoints are folded into "partial" so
   // they're surfaced as amber but inside the canonical 3-state model.
+  //
+  // 2026-05-15: ``not_scored`` is a synthetic backend status emitted by
+  // pipeline._normalize_checkpoint_results when the analyzer's per-segment
+  // slice missed a rule. The reviewer needs to see it as a muted grey
+  // placeholder (not "Partial"), so it's its own display state.
+  if (cp.status === "not_scored") return "not_scored";
   if (cp.needs_review) return "partial";
   if (cp.status === "unverified") return "partial";
   if (cp.status === "pass") return "passed";
@@ -45,6 +52,7 @@ export function displayStateLabel(s: DisplayState): string {
     case "said_wrong": return "Non-Compliant";
     case "not_said": return "Non-Compliant";
     case "unverified": return "Partial";
+    case "not_scored": return "Not Scored";
   }
 }
 
@@ -55,5 +63,6 @@ export function displayStateAccent(s: DisplayState): string {
     case "said_wrong": return "#ef4444"; // red
     case "not_said": return "#ef4444";   // red
     case "unverified": return "#f59e0b"; // amber (fallback only)
+    case "not_scored": return "#94a3b8"; // slate — muted, not alarming
   }
 }

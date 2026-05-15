@@ -518,13 +518,19 @@ def build_tracker_rows(
         q = _apply_call_advanced(q)
         # Newest first so freshly-processed calls land at the top.
         calls = q.order_by(Call.created_at.desc()).limit(limit).all()
+        # 2026-05-15 N+1 fix: bulk-load all CustomerDeals referenced by the
+        # in-page calls in ONE query. Was: 1 + N per-row .first() calls,
+        # giving 101 round-trips for a 100-row page on Supabase pooler
+        # (~10ms RTT each → 1s+ before any compute). Now: 2 round-trips
+        # total regardless of page size.
+        deal_ids = {c.deal_id for c in calls if c.deal_id}
+        deals_by_id: dict = {}
+        if deal_ids:
+            for d in db.query(CustomerDeal).filter(CustomerDeal.id.in_(deal_ids)).all():
+                deals_by_id[d.id] = d
         rows: list[TrackerRow] = []
         for call in calls:
-            deal = (
-                db.query(CustomerDeal).filter(CustomerDeal.id == call.deal_id).first()
-                if call.deal_id
-                else None
-            )
+            deal = deals_by_id.get(call.deal_id) if call.deal_id else None
             rows.append(_awaiting_review_row(call, deal, db))
         return rows
 
@@ -543,13 +549,15 @@ def build_tracker_rows(
             ))
         q = _apply_call_advanced(q)
         calls = q.order_by(Call.created_at.desc()).limit(limit).all()
+        # 2026-05-15 N+1 fix — see awaiting_review branch above for rationale.
+        deal_ids = {c.deal_id for c in calls if c.deal_id}
+        deals_by_id: dict = {}
+        if deal_ids:
+            for d in db.query(CustomerDeal).filter(CustomerDeal.id.in_(deal_ids)).all():
+                deals_by_id[d.id] = d
         rows: list[TrackerRow] = []
         for call in calls:
-            deal = (
-                db.query(CustomerDeal).filter(CustomerDeal.id == call.deal_id).first()
-                if call.deal_id
-                else None
-            )
+            deal = deals_by_id.get(call.deal_id) if call.deal_id else None
             rows.append(_compliant_row(call, deal))
         return rows
 
@@ -593,12 +601,22 @@ def build_tracker_rows(
         Rejection.created_at.desc().nullslast(),
         Rejection.rejected_at.desc().nullslast(),
     ).limit(limit).all()
+    # 2026-05-15 N+1 fix: bulk-load all Calls + their CustomerDeals via two
+    # IN(...) queries instead of per-rejection .first() calls. Removes the
+    # 2N round-trip cost on the rejection-row tabs (active / fixed / dead).
+    call_ids = {r.call_id for r in rejections if r.call_id}
+    calls_by_id: dict = {}
+    if call_ids:
+        for c in db.query(Call).filter(Call.id.in_(call_ids)).all():
+            calls_by_id[c.id] = c
+    deal_ids = {c.deal_id for c in calls_by_id.values() if c.deal_id}
+    deals_by_id: dict = {}
+    if deal_ids:
+        for d in db.query(CustomerDeal).filter(CustomerDeal.id.in_(deal_ids)).all():
+            deals_by_id[d.id] = d
     rows = []
     for rej in rejections:
-        call = db.query(Call).filter(Call.id == rej.call_id).first() if rej.call_id else None
-        deal = (
-            db.query(CustomerDeal).filter(CustomerDeal.id == call.deal_id).first()
-            if call and call.deal_id else None
-        )
+        call = calls_by_id.get(rej.call_id) if rej.call_id else None
+        deal = deals_by_id.get(call.deal_id) if (call and call.deal_id) else None
         rows.append(_rejection_row(rej, deal, call, db))
     return rows

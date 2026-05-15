@@ -1054,6 +1054,90 @@ async def _step_classify_content(
     return {"halted": False, "segments": len(segments)}
 
 
+# ── Step 4 helper: checkpoint-result reconciliation ──────────────────────
+
+
+def _normalize_checkpoint_results(
+    all_results: list[dict],
+    template_index: dict[tuple, dict],
+) -> list[dict]:
+    """Reconcile per-segment analyzer outputs against the union of script
+    templates so ``Call.checkpoint_results`` ends up with exactly ONE row
+    per template CP.
+
+    Why this exists: the per-segment analyzer occasionally either:
+    * emits the same CP twice (when two segments use the same script and
+      both manage to score the same rule against their slice), OR
+    * silently omits a CP (when the segment slice was too short to hit
+      the rule's anchor phrases — the analyzer's name-keyed map drops it).
+
+    Both bugs surface as user-visible "Not yet scored" labels in the UI
+    plus a wrong score denominator. The fix happens here, at the merge
+    step, so we never trust the per-segment list to be complete.
+
+    Algorithm:
+      1. Dedupe ``all_results`` by case-insensitive ``name``; first entry
+         with a non-null ``status`` wins.
+      2. For every template entry missing from the dedupe, append a
+         synthetic ``status="not_scored"`` row.
+      3. Sort by ``section`` asc so the UI ordering matches the script.
+
+    The synthetic row's shape mirrors what the analyzer would have emitted
+    so downstream consumers (CheckpointCard, rejection_factory) don't have
+    to special-case missing data — they just see ``status="not_scored"``.
+    """
+    norm = lambda s: (s or "").strip().lower()
+    deduped: dict[str, dict] = {}
+    for r in all_results or []:
+        name = (r.get("name") or "").strip()
+        if not name:
+            continue
+        key = norm(name)
+        existing = deduped.get(key)
+        if existing is None:
+            deduped[key] = r
+            continue
+        # Prefer the entry with a real status over a missing/blank one.
+        existing_status = (existing.get("status") or "").strip().lower()
+        new_status = (r.get("status") or "").strip().lower()
+        if (not existing_status or existing_status == "not_scored") and new_status:
+            deduped[key] = r
+
+    # Append synthetic rows for any template CP the analyzer didn't cover.
+    for (section, name), tcp in template_index.items():
+        if norm(name) in deduped:
+            continue
+        deduped[norm(name)] = {
+            "section": section,
+            "name": name,
+            "status": "not_scored",
+            "evidence": None,
+            "notes": (
+                "Checkpoint not evaluated by the AI — likely outside the "
+                "detected segment boundary. A reviewer can re-run analysis "
+                "on this segment to surface a verdict."
+            ),
+            "confidence": "n/a",
+            "needs_review": True,
+            "script_line_number": tcp.get("line_number") or tcp.get("section"),
+            "similar_rejection_id": None,
+            "suggested_category": None,
+            "suggested_fix_required": None,
+            "category_confidence": None,
+            "ai_rejection_reason": None,
+            "ai_narrative_notes": None,
+            "severity": tcp.get("severity") or "medium",
+            "category": tcp.get("category"),
+        }
+
+    out = list(deduped.values())
+    out.sort(key=lambda r: (
+        # Sort by section asc; rows with no section land at the end.
+        r.get("section") if isinstance(r.get("section"), int) else 99999
+    ))
+    return out
+
+
 # ── Step 4: analyze_checkpoints ──────────────────────────────────────────
 async def _step_analyze_checkpoints(
     call_id: str,
@@ -1107,6 +1191,12 @@ async def _step_analyze_checkpoints(
 
     segment_summaries: list[dict] = []
     all_results: list[dict] = []
+    # 2026-05-15: collect every script checkpoint template encountered across
+    # all segments so the merge step can guarantee one result row per template
+    # CP. Indexed by (section, name) so we keep duplicates from the same script
+    # collapsed but preserve different script entries that happen to share a
+    # section number. Used by _normalize_checkpoint_results below.
+    template_index: dict[tuple, dict] = {}
 
     for seg in segments_rows:
         rubric = route_for_segment(seg.stage, call, db)
@@ -1134,6 +1224,19 @@ async def _step_analyze_checkpoints(
                 checkpoints_def = json.loads(script.checkpoints or "[]") or []
             except Exception:
                 checkpoints_def = []
+        # 2026-05-15: index every template CP we encounter so the merge
+        # step can backfill any rule the analyzer silently dropped (e.g.
+        # because the segment transcript was too short / the rule's
+        # key_phrases didn't appear in the slice). Keys on (section, name)
+        # so multiple segments using the same script don't duplicate; the
+        # union across segments is the canonical "every rule that should
+        # have produced a result for this call".
+        for tcp in checkpoints_def:
+            sec = tcp.get("section") or tcp.get("line_number") or 0
+            name = (tcp.get("name") or "").strip()
+            if not name:
+                continue
+            template_index[(sec, name)] = tcp
 
         if not (script and checkpoints_def):
             # No supplier-specific rubric matched (or empty checkpoints).
@@ -1348,11 +1451,23 @@ async def _step_analyze_checkpoints(
         )
         all_results.extend(verified)
 
-    # Mirror the flat per-rule verdict list onto the Call row so the legacy
-    # HITL / rejection-advisor / compliance.derive_compliance helpers (which
-    # read ``call.checkpoint_results``) keep working under the new per-segment
-    # pipeline. Segment-level results remain authoritative on each CallSegment row.
-    call.checkpoint_results = json.dumps(all_results) if all_results else None
+    # 2026-05-15 — Normalize ``all_results`` against the script templates
+    # before persisting so every rule that COULD have been scored shows up
+    # exactly once in ``call.checkpoint_results``. Real incident: Andrew
+    # call (2652a095) — script had 37 CPs, analyzer emitted 37 entries
+    # but with duplicates of sections 1-11 and a gap on sections 20 + 27-37.
+    # CP20 "Confirm Microbusiness/Small Business status" rendered with
+    # "Not yet scored" because the analyzer's per-segment slicing dropped it.
+    #
+    # Algorithm:
+    #   1. Dedupe ``all_results`` by case-insensitive name — keep the
+    #      first entry with a non-null status (analyzer truth wins).
+    #   2. For every template CP missing from the dedupe, append a
+    #      synthetic ``status="not_scored"`` row so the UI renders the
+    #      rule with a clear placeholder instead of silently omitting it.
+    #   3. Sort by section asc so the UI ordering matches the script.
+    normalized: list[dict] = _normalize_checkpoint_results(all_results, template_index)
+    call.checkpoint_results = json.dumps(normalized) if normalized else None
 
     db.commit()
     return {
