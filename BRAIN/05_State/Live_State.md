@@ -4,6 +4,44 @@ updated: 2026-05-14
 tags: [state, live, ground-truth, phase-5-complete]
 ---
 
+# Live State — Local dev + system-wide audit fixes 2026-05-15
+
+> 🔌 **2026-05-15 — Local stack stood up after prod Railway dropped offline from this shell.**
+> Backend uvicorn running on `127.0.0.1:8001`, Next.js dev server on
+> `:3000`, both pointing at Supabase project `fgkzmldgpfezyqzjuqfq`
+> (the DEV DB — distinct from prod `zcmdsblqbgatsrofptsq`). Dev DB
+> contains 549 calls, 152 rejections (incl. fresh manually-inserted
+> `ffa72170` for Christopher / Afaq / E.ON Next), 197 customers, 447
+> deals, 50 scripts.
+>
+> User explicitly asked NOT to push the 4 local commits yet
+> (`becb958` · `1b55dec` · `30fa836` · `147dcd5`). All 4 carry the
+> system-wide audit sweep: tracker awaiting-review now surfaces
+> AI-suggested Category / Fix / Deadline from CallCheckpoint
+> aggregation; side panel branches into rejection / awaiting-review /
+> compliant (no more wrong "Compliant — score X" banner on flagged
+> calls); 'Review Queue' renamed to 'Human Review Queue' across
+> sidebar, dashboard, guide, 404, queue header + verdict pill; AI
+> verdict pill drops the 'AI:' prefix; /deals filter aligned with
+> 7-state lifecycle taxonomy; /customers/[slug] rollup field names
+> fixed (total_open_directives, total_deal_value_gbp_annual_sum,
+> dead_rejections_count); /rejections passes source=reviewer (Phase 4
+> gate); /queue Download wired + Saved views gated 'Coming soon';
+> Vercel deploy doesn't lag dashboard KPIs; AddCustomerDialog
+> business_type as `<select>`; /agents status filter controlled;
+> pipeline V1 fallback try/except + last-segment-wins guard; Quality
+> Agent ORDER BY; AI narrative writes to fix_narrative not
+> outcome_narrative; Groq/Cohere try/except; admin gate hard-fails
+> when ADMIN_KEY empty; 4 mutation endpoints gain auth dep; 3 json.loads
+> wrapped in try/except.
+>
+> CLI auth state (post mid-session relogin): gh = kingusa1, vercel =
+> mohamedhisham735-1861, railway = mohamed hisham ismail. See
+> [[../06_Operations/Credentials]] for the full state + the workaround
+> for TLS / TTY issues in this Bash tool.
+>
+> Resume guide: [[../04_Sessions/2026-05-15_Session_local_dev_audit]].
+
 # Live State — Reviewer polish sweep + bulletproof agent-name 2026-05-14 (late)
 
 > ✅ **2026-05-14 (late) — 8 reviewer-facing bugs shipped + Playwright-verified live.**
