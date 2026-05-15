@@ -110,6 +110,26 @@ def _last_action_date(db: Session, rejection_id) -> Optional[datetime]:
         return None
 
 
+def _compose_mpan_mprn(deal: Optional[CustomerDeal]) -> Optional[str]:
+    """Combined MPAN/MPRN display string for the tracker row.
+
+    Prefers the new split columns ``mpan_electricity`` / ``mprn_gas`` so
+    reviewer edits via the side-panel PATCH endpoint surface immediately
+    (the legacy ``mpan_or_mprn`` is only filled by XLSX import). When
+    both split columns are blank, falls back to the legacy column.
+    """
+    if not deal:
+        return None
+    parts: list[str] = []
+    if deal.mpan_electricity:
+        parts.append(str(deal.mpan_electricity))
+    if deal.mprn_gas:
+        parts.append(str(deal.mprn_gas))
+    if parts:
+        return " / ".join(parts)
+    return deal.mpan_or_mprn
+
+
 def _rejection_row(
     rej: Rejection,
     deal: Optional[CustomerDeal],
@@ -121,7 +141,11 @@ def _rejection_row(
     )
     return {
         "customer_name": cust_name,
-        "mpan_mprn": deal.mpan_or_mprn if deal else None,
+        "mpan_mprn": _compose_mpan_mprn(deal),
+        "mpan_electricity": deal.mpan_electricity if deal else None,
+        "mprn_gas": deal.mprn_gas if deal else None,
+        "docusign_reference": deal.docusign_reference if deal else None,
+        "term_months": deal.term_months if deal else None,
         "expected_live_date": deal.expected_live_date if deal else None,
         "deal_value_gbp": float(deal.deal_value_gbp)
         if deal and deal.deal_value_gbp is not None
@@ -244,7 +268,11 @@ def _awaiting_review_row(
 
     return {
         "customer_name": cust_name,
-        "mpan_mprn": deal.mpan_or_mprn if deal else None,
+        "mpan_mprn": _compose_mpan_mprn(deal),
+        "mpan_electricity": deal.mpan_electricity if deal else None,
+        "mprn_gas": deal.mprn_gas if deal else None,
+        "docusign_reference": deal.docusign_reference if deal else None,
+        "term_months": deal.term_months if deal else None,
         "expected_live_date": deal.expected_live_date if deal else None,
         "deal_value_gbp": float(deal.deal_value_gbp)
         if deal and deal.deal_value_gbp is not None
@@ -279,7 +307,11 @@ def _compliant_row(call: Call, deal: Optional[CustomerDeal]) -> TrackerRow:
     cust_name = (deal.customer_name if deal else None) or call.customer_name
     return {
         "customer_name": cust_name,
-        "mpan_mprn": deal.mpan_or_mprn if deal else None,
+        "mpan_mprn": _compose_mpan_mprn(deal),
+        "mpan_electricity": deal.mpan_electricity if deal else None,
+        "mprn_gas": deal.mprn_gas if deal else None,
+        "docusign_reference": deal.docusign_reference if deal else None,
+        "term_months": deal.term_months if deal else None,
         "expected_live_date": deal.expected_live_date if deal else None,
         "deal_value_gbp": float(deal.deal_value_gbp)
         if deal and deal.deal_value_gbp is not None

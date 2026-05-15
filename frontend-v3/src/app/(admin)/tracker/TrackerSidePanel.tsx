@@ -12,23 +12,32 @@ import {
 } from "@/lib/mutations/tracker";
 import { useActiveReviewersQuery } from "@/lib/queries/reviewers";
 
-// Canonical supplier list (mirrors backend SupplierEnum in payload_schema.py).
-// Side-panel uses it as the source of truth for the supplier dropdown so a
-// reviewer can correct a misdetected supplier on any rejection row.
+// Canonical supplier list (mirrors backend SupplierEnum in payload_schema.py)
+// plus the legacy short-form aliases that the pipeline's auto-detector emits
+// on older rows (``E.ON Next`` vs canonical ``E.ON Next Energy``). Side-panel
+// uses it as the source of truth for the supplier dropdown so a reviewer can
+// correct a misdetected supplier on any rejection row. If we don't include
+// the legacy aliases the dropdown shows an empty value for current rows.
 const SUPPLIER_OPTIONS = [
   "E.ON",
+  "E.ON Next",          // legacy alias for E.ON Next Energy
   "E.ON Next Energy",
+  "British Gas",        // legacy generic
   "British Gas Core",
   "British Gas Lite",
   "British Gas Business",
   "British Gas Trading",
+  "BGL",                // legacy abbrev (British Gas Lite)
   "Pozitive",
+  "Pozitive Energy",    // legacy alias
   "Yu Energy",
   "Smartest Energy",
   "Affect Energy",
   "Britannia Gas",
   "United Gas & Power",
   "TotalEnergies (out-of-matrix)",
+  "EDF",                // historical pipeline value
+  "Scottish Power",
   "Other",
 ];
 
@@ -252,8 +261,8 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
               </span>
               <input
                 type="text"
-                key={`mpan-${row.deal_id ?? ""}`}
-                defaultValue={row.mpan_mprn?.split("/")[0]?.trim() ?? ""}
+                key={`mpan-${row.deal_id ?? ""}-${row.mpan_electricity ?? ""}`}
+                defaultValue={row.mpan_electricity ?? ""}
                 onBlur={(e) =>
                   patchField("mpan_electricity", e.target.value || null)
                 }
@@ -268,8 +277,8 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
               </span>
               <input
                 type="text"
-                key={`mprn-${row.deal_id ?? ""}`}
-                defaultValue={row.mpan_mprn?.split("/")[1]?.trim() ?? ""}
+                key={`mprn-${row.deal_id ?? ""}-${row.mprn_gas ?? ""}`}
+                defaultValue={row.mprn_gas ?? ""}
                 onBlur={(e) =>
                   patchField("mprn_gas", e.target.value || null)
                 }
@@ -318,7 +327,7 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
               </span>
               <select
                 className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
-                defaultValue=""
+                value={row.term_months?.toString() ?? ""}
                 onChange={(e) =>
                   patchField(
                     "term_months",
@@ -340,8 +349,8 @@ export function TrackerSidePanel({ row, onClose }: { row: TrackerRow; onClose: (
               </span>
               <input
                 type="text"
-                key={`ds-${row.deal_id ?? ""}`}
-                defaultValue=""
+                key={`ds-${row.deal_id ?? ""}-${row.docusign_reference ?? ""}`}
+                defaultValue={row.docusign_reference ?? ""}
                 onBlur={(e) =>
                   patchField("docusign_reference", e.target.value || null)
                 }

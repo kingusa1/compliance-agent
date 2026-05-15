@@ -27,6 +27,13 @@ export type TrackerFieldSource =
 export type TrackerRow = {
   customer_name: string | null;
   mpan_mprn: string | null;
+  // 2026-05-15: separate columns also surfaced so the side-panel meter
+  // inputs render the value the reviewer last saved (combined `mpan_mprn`
+  // is for display only).
+  mpan_electricity: string | null;
+  mprn_gas: string | null;
+  docusign_reference: string | null;
+  term_months: number | null;
   expected_live_date: string | null;
   deal_value_gbp: number | null;
   supplier: string | null;
