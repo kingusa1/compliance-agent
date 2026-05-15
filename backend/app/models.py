@@ -644,6 +644,16 @@ class CustomerDeal(Base):
     # ``c0d3a1b2c3d4`` adds the DB column with NOT NULL + server_default '{}'.
     # JSONBCompat keeps SQLite tests working.
     field_sources = Column(JSONBCompat, nullable=False, server_default="{}", default=dict)
+    # 2026-05-15 deal-linker provenance — set when intake.matcher attaches
+    # a new call to an existing deal. ``match_method`` is one of:
+    #   hard_key:mpan | hard_key:mprn | hard_key:docusign |
+    #   hard_key:company_number | hard_key:charity_number |
+    #   composite_auto | composite_review | reviewer_picked | legacy
+    # ``match_confidence`` is 0.0-1.0 (1.0 for hard keys, calibrated
+    # posterior for composite). NULL on rows created before this column
+    # landed or via the legacy upsert path.
+    match_method = Column(String, nullable=True)
+    match_confidence = Column(Numeric, nullable=True)
 
 
 class FixDirective(Base):

@@ -45,3 +45,8 @@ sentry-sdk[fastapi]==2.18.0
 # Wave 3 durability — S3/MinIO storage portability
 boto3==1.34.144
 moto[s3]==5.0.18
+
+# Deal-linker matcher (intake.matcher) — fuzzy name + phonetic + legal-suffix
+rapidfuzz>=3.6
+jellyfish>=1.0
+cleanco>=2.3

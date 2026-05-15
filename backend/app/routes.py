@@ -291,28 +291,89 @@ async def upload_call(
             f"slug={customer_row.slug!r}"
         )
     elif intake_payload is not None and intake_payload.customer.legal_name:
-        from app.intake.upsert import upsert_customer, upsert_deal
-
-        try:
-            customer_row = upsert_customer(intake_payload.customer, db)
-            deal_row = upsert_deal(
-                intake_payload.deal,
-                customer_id=customer_row.id,
-                customer_name=customer_row.legal_name,
-                db=db,
-            )
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-        resolved_deal_id = deal_row.id
-        # Keep customer_name in sync with the canonical Customer row so the
-        # Call.customer_name column (still queried by legacy list views)
-        # never disagrees with the new customers table.
-        customer_name = customer_row.legal_name
-        log.info(
-            f"\U0001f4c4 INTAKE_UPSERT customer_id={customer_row.id} "
-            f"deal_id={deal_row.id} supplier={deal_row.supplier!r} "
-            f"slug={customer_row.slug!r}"
+        from app.intake.matcher import (
+            AUTO_MERGE_THRESHOLD,
+            REVIEW_QUEUE_THRESHOLD,
+            find_existing_deal,
         )
+        from app.intake.upsert import upsert_customer, upsert_deal
+        from app.models import Customer
+
+        # 2026-05-15 deal-linker — try multi-tier match BEFORE creating a
+        # fresh customer/deal. Hard-key hit (MPAN/MPRN/DocuSign/Companies
+        # House/Charity) returns confidence=1.0 and ALWAYS overrides the
+        # legacy slug-only upsert. Composite hit at >= AUTO_MERGE silently
+        # attaches; [REVIEW_QUEUE, AUTO_MERGE) attaches AND marks for
+        # reviewer confirmation in the candidate-merge queue. Below the
+        # REVIEW threshold → fall through to the legacy upsert path.
+        try:
+            matcher_hit = find_existing_deal(
+                intake_payload.customer, intake_payload.deal, db
+            )
+        except Exception as e:
+            log.warning(f"matcher exception (ignored): {e}")
+            matcher_hit = None
+
+        if matcher_hit is not None and matcher_hit.confidence >= REVIEW_QUEUE_THRESHOLD:
+            deal_row = (
+                db.query(CustomerDeal)
+                .filter(CustomerDeal.id == matcher_hit.deal_id)
+                .first()
+            )
+            if deal_row is not None:
+                if hasattr(deal_row, "match_method"):
+                    deal_row.match_method = matcher_hit.method
+                    deal_row.match_confidence = float(matcher_hit.confidence)
+                db.flush()
+                resolved_deal_id = deal_row.id
+                # Pull canonical name from the linked Customer row when present
+                # so legacy list views never disagree with /customers.
+                customer_row = (
+                    db.query(Customer)
+                    .filter(Customer.id == matcher_hit.customer_id)
+                    .first()
+                    if matcher_hit.customer_id
+                    else None
+                )
+                customer_name = (
+                    customer_row.legal_name
+                    if customer_row and customer_row.legal_name
+                    else (deal_row.customer_name or intake_payload.customer.legal_name)
+                )
+                band = (
+                    "MATCHED"
+                    if matcher_hit.confidence >= AUTO_MERGE_THRESHOLD
+                    else "REVIEW_QUEUE"
+                )
+                log.info(
+                    f"\U0001f517 {band} deal_id={deal_row.id} "
+                    f"method={matcher_hit.method} "
+                    f"conf={matcher_hit.confidence:.3f} "
+                    f"reason={matcher_hit.reason!r}"
+                )
+
+        if resolved_deal_id is None:
+            # Legacy path — slug-based upsert. Stamp method=legacy so audit
+            # can distinguish "created via matcher" vs "created via slug".
+            try:
+                customer_row = upsert_customer(intake_payload.customer, db)
+                deal_row = upsert_deal(
+                    intake_payload.deal,
+                    customer_id=customer_row.id,
+                    customer_name=customer_row.legal_name,
+                    db=db,
+                )
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            if hasattr(deal_row, "match_method") and deal_row.match_method is None:
+                deal_row.match_method = "legacy"
+            resolved_deal_id = deal_row.id
+            customer_name = customer_row.legal_name
+            log.info(
+                f"\U0001f4c4 INTAKE_UPSERT customer_id={customer_row.id} "
+                f"deal_id={deal_row.id} supplier={deal_row.supplier!r} "
+                f"slug={customer_row.slug!r}"
+            )
     elif deal_id:
         try:
             resolved_deal_id = uuid.UUID(deal_id)
