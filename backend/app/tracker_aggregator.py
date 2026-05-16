@@ -77,17 +77,13 @@ _DEAD_STATUSES = ("DEAD",)
 
 
 def _last_action_date(db: Session, rejection_id) -> Optional[datetime]:
-    """Most recent audit-log timestamp for a rejection.
+    """Single-rejection convenience lookup — used only by code paths that
+    aggregate over a single Rejection. The tracker page uses the batched
+    ``_bulk_last_action_dates`` below to avoid an N+1 on the rejections list.
 
     Wrapped in narrow try/except so a missing ``rejection_audit_log`` table
     (freshly-cloned env that hasn't run the audit-log migration yet) does
-    NOT take down the whole tracker page. Surfaces as "—" in the Last-
-    activity column.
-
-    Narrow to ``OperationalError`` / ``ProgrammingError`` per the security
-    review: a broad ``except Exception`` would also swallow OOM, KeyboardInterrupt-
-    descended runtime issues, etc. — operational DB errors are the only
-    family we want to silence. Anything else still propagates.
+    NOT take down the page.
     """
     from sqlalchemy.exc import OperationalError, ProgrammingError
 
@@ -108,6 +104,47 @@ def _last_action_date(db: Session, rejection_id) -> Optional[datetime]:
             f"failed (rid={rejection_id}); returning None: {type(e).__name__}: {e}"
         )
         return None
+
+
+def _bulk_last_action_dates(
+    db: Session, rejection_ids: list
+) -> dict:
+    """Batched audit-log MAX(created_at) for many rejections at once.
+
+    Replaces the previous N+1 where ``_rejection_row`` called
+    ``_last_action_date`` once per rejection — on a 100-row /rejections
+    tab that meant 100 extra round-trips per render. Single GROUP BY
+    query, backed by ``ix_rejection_audit_rejection_created`` (alembic
+    ``2026_05_16_hot_indexes``).
+
+    Returns ``{rejection_id: last_action_date}`` with rejections that have
+    no audit rows omitted. Caller does ``.get(rid)`` so missing keys
+    surface as ``None`` in the UI.
+    """
+    if not rejection_ids:
+        return {}
+    from sqlalchemy.exc import OperationalError, ProgrammingError
+
+    from app.logger import log as _log
+
+    try:
+        rows = db.execute(
+            _sql_text(
+                "SELECT rejection_id, MAX(created_at) "
+                "FROM rejection_audit_log "
+                "WHERE rejection_id = ANY(:rids) "
+                "GROUP BY rejection_id"
+            ),
+            {"rids": [str(r) for r in rejection_ids]},
+        ).all()
+        return {row[0]: row[1] for row in rows if row[1] is not None}
+    except (OperationalError, ProgrammingError) as e:
+        _log.warning(
+            f"⚠️ tracker._bulk_last_action_dates: rejection_audit_log batch "
+            f"query failed (n={len(rejection_ids)}); returning empty dict: "
+            f"{type(e).__name__}: {e}"
+        )
+        return {}
 
 
 def _compose_mpan_mprn(deal: Optional[CustomerDeal]) -> Optional[str]:
@@ -134,8 +171,14 @@ def _rejection_row(
     rej: Rejection,
     deal: Optional[CustomerDeal],
     call: Optional[Call],
-    db: Session,
+    last_action_date: Optional[datetime],
 ) -> TrackerRow:
+    """Build one TrackerRow from a Rejection + its associated deal/call.
+
+    ``last_action_date`` is injected by the caller from
+    ``_bulk_last_action_dates`` so a 100-row page issues one batched audit-log
+    GROUP BY instead of 100 separate MAX queries (P1-2 N+1 fix).
+    """
     cust_name = (deal.customer_name if deal else None) or (
         call.customer_name if call else None
     )
@@ -158,7 +201,7 @@ def _rejection_row(
         "fix_required": rej.fix_required,
         "fix_assignee_id": rej.fix_assignee_id,
         "status": rej.status,
-        "last_action_date": _last_action_date(db, rej.id),
+        "last_action_date": last_action_date,
         "deadline": rej.deadline,
         "outcome": rej.outcome,
         "outcome_narrative": rej.outcome_narrative,
@@ -609,9 +652,10 @@ def build_tracker_rows(
         Rejection.created_at.desc().nullslast(),
         Rejection.rejected_at.desc().nullslast(),
     ).limit(limit).all()
-    # 2026-05-15 N+1 fix: bulk-load all Calls + their CustomerDeals via two
-    # IN(...) queries instead of per-rejection .first() calls. Removes the
-    # 2N round-trip cost on the rejection-row tabs (active / fixed / dead).
+    # 2026-05-15 N+1 fix #1: bulk-load all Calls + their CustomerDeals via
+    # two IN(...) queries instead of per-rejection .first() calls.
+    # 2026-05-16 N+1 fix #2 (P1-2): bulk-load last_action_date for every
+    # rejection in ONE GROUP BY query (was N queries inside _rejection_row).
     call_ids = {r.call_id for r in rejections if r.call_id}
     calls_by_id: dict = {}
     if call_ids:
@@ -622,9 +666,10 @@ def build_tracker_rows(
     if deal_ids:
         for d in db.query(CustomerDeal).filter(CustomerDeal.id.in_(deal_ids)).all():
             deals_by_id[d.id] = d
+    last_action_by_rid = _bulk_last_action_dates(db, [r.id for r in rejections])
     rows = []
     for rej in rejections:
         call = calls_by_id.get(rej.call_id) if rej.call_id else None
         deal = deals_by_id.get(call.deal_id) if (call and call.deal_id) else None
-        rows.append(_rejection_row(rej, deal, call, db))
+        rows.append(_rejection_row(rej, deal, call, last_action_by_rid.get(rej.id)))
     return rows

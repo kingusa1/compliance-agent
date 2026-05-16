@@ -25,6 +25,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timedelta
+from app._clock import utcnow
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -126,14 +127,30 @@ def claim_call(
     - The lock is past its TTL → auto-release (mark session inactive with reason "idle_timeout"), then fall through to the first-time claim path.
     - Call id unknown → 404.
     """
-    call = db.query(Call).filter_by(id=call_id).first()
+    # TOCTOU fix (audit 2026-05-16 P1-4): take a row-level lock on the
+    # target Call BEFORE checking the existing ClaimLock + writing a new
+    # one. Without this lock, two concurrent claim requests from different
+    # reviewers can both read existing=None (no live lock), both proceed
+    # to step 3, and both create a ClaimLock — leaving the call held by
+    # whichever request commits second while the audit row claims it for
+    # the first. SELECT ... FOR UPDATE serializes the critical section.
+    #
+    # On Postgres this acquires a row-level lock that releases on commit.
+    # On SQLite (tests) with_for_update is silently no-op; the test suite
+    # uses a single connection so the race is moot there.
+    call = (
+        db.query(Call)
+        .filter_by(id=call_id)
+        .with_for_update()
+        .first()
+    )
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
 
     # Optimistic lock gate (Task 33) — raises 409 if caller's If-Match is stale.
     _check_if_match(request, call)
 
-    now = datetime.utcnow()
+    now = utcnow()
 
     # Step 1 — sweep an expired lock if any. Treat TTL reached as idle_timeout
     # so the audit trail on ReviewSession explains why the reviewer lost it.
@@ -281,7 +298,7 @@ def release_session(
         _check_if_match(request, call)
 
     rs.is_active = False
-    rs.released_at = datetime.utcnow()
+    rs.released_at = utcnow()
     rs.release_reason = "abandoned" if is_owner else "lead_reopen"
 
     lock = db.query(ClaimLock).filter_by(review_session_id=session_id).first()
@@ -534,7 +551,7 @@ async def submit_verdict(
         call.checkpoint_results = json.dumps(cps)
 
     if rs:
-        rs.last_activity_at = datetime.utcnow()
+        rs.last_activity_at = utcnow()
 
     # Task 33: bump revision since checkpoint_results mutated.
     call.revision = (call.revision or 1) + 1
@@ -1006,7 +1023,7 @@ async def edit_word(
                         ))
 
     if rs:
-        rs.last_activity_at = datetime.utcnow()
+        rs.last_activity_at = utcnow()
 
     # Task 33: bump revision — word_data (and possibly checkpoint_results)
     # mutated, so cached callers must refetch.
@@ -1096,7 +1113,7 @@ def submit_compliance(
             ),
         )
 
-    now = datetime.utcnow()
+    now = utcnow()
 
     # Demote prior is_current row (flip first so we never transiently have
     # two is_current=True rows for the same call).
@@ -1308,7 +1325,7 @@ def get_queue(
     Metrics are computed over the whole table regardless of the filter, so
     the header doesn't lie when you narrow the view.
     """
-    now = datetime.utcnow()
+    now = utcnow()
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     day_ago = now - timedelta(hours=24)
 
@@ -1564,7 +1581,7 @@ def save_draft(
                 detail="Another reviewer holds this call",
             )
 
-    now = datetime.utcnow()
+    now = utcnow()
     call.draft_snapshot = json.dumps(payload.model_dump())
     call.draft_saved_at = now
 
@@ -1614,7 +1631,7 @@ def _release_idle_claims_core(db: Session) -> int:
     HTTP handler. Commits once at the end so a DB error leaves everything
     untouched.
     """
-    now = datetime.utcnow()
+    now = utcnow()
     expired = db.query(ClaimLock).filter(ClaimLock.expires_at <= now).all()
     released = 0
     for lock in expired:
