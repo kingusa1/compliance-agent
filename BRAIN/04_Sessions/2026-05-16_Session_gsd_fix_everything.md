@@ -255,6 +255,117 @@ autonomous wave:
 
 ---
 
+## P0 follow-up — release-on-unmount, RE-OPENED then CLOSED
+
+After the BRAIN session log was first written, the background
+`e2e-runner` finished and surfaced a real P0 regression in T2:
+
+```
+T2: claimRequests=1, releaseRequests=0, readOnlyBanner=false, tabBCanClaim=false
+```
+
+Translation: when Tab A navigated to /queue, the cleanup function in
+`(reviewer)/calls/[id]/page.tsx` ran but the release POST never reached
+Railway. Every reviewer who opens a call and walks away without
+submitting a verdict was leaking a 30-min ClaimLock.
+
+### Investigation arc
+
+Initial hypothesis (wrong): TanStack Query's `mutate(...)` from inside
+a cleanup function gets torn down before the fetch queues. Plausible —
+mutation observers ARE removed on unmount. Fixed in `0c69e95` by
+replacing `releaseCall.mutate(...)` with a direct `fetch(url,
+{ keepalive: true, credentials: "include" })` plus a `pagehide`
+listener. Pushed to prod.
+
+**Re-ran T2 against the new deploy** — still `releaseRequests=0`.
+
+Real root cause (the e2e-runner found it after deeper instrumentation):
+**`ClaimResponse` TypeScript type field-name mismatch.**
+
+- Backend handler at `backend/app/hitl_routes.py:201-237` returns
+  `{ "review_session_id": "...", "call_id": "..." }`.
+- Frontend `ClaimResponse` type at `frontend-v3/src/lib/mutations/reviewer.ts:41-45`
+  declared `{ session_id: string; expires_at?; status? }`.
+- In `page.tsx` `claimCall.mutate(...).onSuccess`,
+  `claimSessionRef.current = data.session_id ?? null` was ALWAYS null
+  because `data.session_id` was `undefined`. The wire shape and the type
+  shape never matched.
+- Cleanup read `claimSessionRef.current` → null → `if (sid)` guard
+  short-circuited → no release fired.
+
+The TypeScript type checker didn't catch this because the type was
+declared as the source-of-truth without ever being validated against
+the runtime response shape. A `zod` schema or `try { ClaimResponseSchema.parse(data) }`
+would have failed loud at runtime. Without that, the type is fiction.
+
+### Fix in `699e972`
+
+Rename `ClaimResponse.session_id` → `review_session_id` to match the
+wire shape. Update the page.tsx `onSuccess` to read `data.review_session_id`.
+Both sites changed in one commit.
+
+### Build-side side-effects
+
+While wiring the e2e smoke against production, the agent also found
+that 4 SSR pre-render crashes (Vercel `next build` failing with
+"supabaseUrl is required") had been preventing fresh deploys from
+landing cleanly. Fixed in:
+
+- `d31e096` — guard supabase client against missing env at SSR
+- `142ec02` — `"use client"` on admin + reviewer layouts
+- `953208a` — lazy supabase Proxy via getSupabaseClient()
+- `90c39f5` — SSR window guard inside getSupabaseClient()
+
+### Smoke spec rewrite (`9ef9209`)
+
+The original `loginAs()` filled the email/password inputs and clicked
+Sign In. The Next.js login page uses react-hook-form which doesn't
+register `onSubmit` until React hydrates — on a cold Vercel edge the
+form submitted natively as GET, putting credentials in the URL instead
+of calling Supabase. The smoke was effectively running
+unauthenticated, which is why T1/T4/T5/T6 fell back to the
+unauthenticated /login page screenshots.
+
+New `loginAs()`:
+1. POST `/auth/v1/token` directly to the production Supabase project
+   from the Node test runner.
+2. Inject the session into `localStorage[sb-zcmdsblqbgatsrofptsq-auth-token]`.
+3. Navigate to `/dashboard` and wait for the AuthGuard to redirect to
+   a role-appropriate route.
+
+Also added `frontend-v3/playwright.prod.config.ts` — a production-only
+config that omits the `webServer` block so the smoke can run against
+Vercel without spinning a local dev server.
+
+### Verified close
+
+Re-ran T2 + T7 on `dpl_356vjYNmTCXmja6itboSwi4aS2nv` (sha `90c39f5`):
+
+```
+T2: claimRequests=1, releaseRequests=1   ✅ P0 CLOSED
+T7: dashboard + agents both Retry visible on API block ✅
+```
+
+### Smoke status
+
+| Test | Result | Notes |
+|---|---|---|
+| T2 claim/release | PASS | C1 + C2 both verified working end-to-end on prod |
+| T7 error UI | PASS | IntelligencePanel + AgentsPage ErrorState |
+| T1 realtime <200ms | INCONCLUSIVE | Queue drained by T2; needs seed fixture |
+| T3 verdict POST exactly-once | INCONCLUSIVE | Same drain |
+| T4 edit-metadata clear-field | INCONCLUSIVE | Same drain |
+| T5 N/A pill math | INCONCLUSIVE | Same drain |
+| T6 unauth GET → 401 | INCONCLUSIVE | CORS blocks browser fetch; needs server-side curl |
+
+**Next-session smoke fix:** add a `backend/tests/fixtures/seed-prod-smoke.py`
+script that uploads a known audio file + waits for processing →
+returns a known PENDING_REVIEW call_id. Wire as `globalSetup` in
+`playwright.prod.config.ts` so T2 consuming a call doesn't drain T3-T6.
+
+---
+
 ## Doctrine notes
 
 This was the first full multi-commit session under the new

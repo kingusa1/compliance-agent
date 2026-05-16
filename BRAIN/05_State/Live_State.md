@@ -4,6 +4,40 @@ updated: 2026-05-16
 tags: [state, live, ground-truth, audit-shipped, verdict-wired, system-prompt-installed]
 ---
 
+# Live State — P0 claim-release closed + Playwright smoke green 2026-05-16 (late late night)
+
+> 🚀 **2026-05-16 (late late night) — Tip `9ef9209` on origin/main. Vercel `dpl_356vjYNmTCXmja6itboSwi4aS2nv` (at `90c39f5`) READY + aliased. Two-tab Playwright smoke T2 + T7 PASS on production.**
+>
+> **P0 closed (verified on prod):** Claim/release lifecycle no longer leaks 30-min orphan locks. The 2026-05-16 smoke caught `releaseRequests=0` on Tab A nav-away; root-cause turned out to be a **field-name mismatch** that no human reviewer or code-reviewer subagent spotted:
+>
+> - Backend `POST /api/calls/{id}/claim` returns `{ "review_session_id": "...", "call_id": "..." }`
+> - Frontend `ClaimResponse` type declared `{ session_id: string; ... }`
+> - `data.session_id` was `undefined` → `claimSessionRef.current = null` always → cleanup's `releaseClaim(sid)` short-circuited on the null check.
+>
+> Two fixes layered:
+> 1. `0c69e95` — Replace `releaseCall.mutate(...)` with `fetch({ keepalive: true })` + `pagehide` listener so the POST survives router.push and hard tab close. **(necessary but insufficient)**
+> 2. `699e972` — Rename `ClaimResponse.session_id` → `review_session_id` (matching the wire shape) so the ref actually populates. **(the actual root cause)**
+>
+> Plus 4 build-side fixes the e2e-runner found while wiring the smoke:
+> - `d31e096` — Guard Supabase client against missing `NEXT_PUBLIC_*` at SSR pre-render
+> - `142ec02` — Add `"use client"` to admin + reviewer layouts (SSR crash prevention)
+> - `953208a` — Lazy Supabase Proxy on SSR build
+> - `90c39f5` — `getSupabaseClient()` window guard
+>
+> And the smoke spec rewrite + new prod config:
+> - `9ef9209` — `loginAs()` now bypasses the react-hook-form hydration race by hitting Supabase Auth REST directly + injecting the session into localStorage. Adds `playwright.prod.config.ts` (no `webServer`, target = `compliance-agent-mu.vercel.app`).
+>
+> **Smoke results on `dpl_356vjYNmTCXmja6itboSwi4aS2nv`:**
+> - T2 (claim/release): `claimRequests=1`, `releaseRequests=1` ✅
+> - T7 (error UI): Dashboard + Agents both show Retry on API failure ✅
+> - T1/T3/T4/T5/T6 still inconclusive — queue-drain + DB-seeding issue; queued for next session with per-test DB seed fixture.
+>
+> **What's still flaky:** the smoke depends on at least one PENDING_REVIEW call existing in prod DB. After T2 consumes the claim, T3-T6 hit a drained queue. Next session needs `backend/tests/fixtures` upload + a seed script the smoke runs in `beforeAll`.
+>
+> Resume guide: [[../04_Sessions/2026-05-16_Session_gsd_fix_everything]] + this entry.
+
+---
+
 # Live State — `/gsd fix everything` autonomous run shipped 2026-05-16 (late night)
 
 > 🚀 **2026-05-16 (late night) — Tip `a12b951` on origin/main. Vercel deploy `dpl_EpfExNtBXyaMUDF3qCfmNnVeNVNb` READY + aliased to `compliance-agent-mu.vercel.app`. Railway auto-deploy on push; migration `2026_05_16_hot_indexes` applies on release.**
