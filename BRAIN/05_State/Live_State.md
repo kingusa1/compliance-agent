@@ -4,6 +4,35 @@ updated: 2026-05-16
 tags: [state, live, ground-truth, audit-shipped, verdict-wired, system-prompt-installed, path3-handoff]
 ---
 
+# Live State — Realtime PROVEN end-to-end + upload-redirect fixed 2026-05-17
+
+> 🟢 **2026-05-17 — End-to-end realtime proven on prod. UPDATE on `calls` reached the browser WebSocket as a `postgres_changes` event. Sync from HTTP-200 (write commit) → event arrival: ~800ms. Sync from write-fire to event: 3228ms (includes 2.4s Railway→Supabase round-trip on the write; will collapse to <500ms after Railway moves to Singapore via Pro plan or comparable region change).**
+>
+> **The actual user-visible bug shipped this session:** `/dashboard` UploadModal `onSuccess` only invalidated query keys and never `router.push()`'d — provided `onSuccess` suppresses the modal's default redirect, so the user stayed on `/dashboard` after upload instead of landing on `/calls/{id}` ("the process screen"). Fixed in commit `13dde9a` (also fixed the same `__BATCH_TO_CALLS_DASHBOARD__` sentinel handling on `/tracker`).
+>
+> **Page audit summary** (via Playwright MCP on prod):
+>
+> | Page | Status | Notes |
+> |---|---|---|
+> | `/dashboard` | OK | KPI strip, intelligence panel, recent calls all render. Upload now redirects ✓ |
+> | `/queue` | OK | Tabs render. Pending · 5, Reviewed · 1 ✓ |
+> | `/tracker` | OK | 6 awaiting-review rows. Filters render. Upload now redirects ✓ |
+> | `/rejections` | OK | "No rejections in Active tab" empty-state ✓ |
+> | `/customers` | OK | 4 customers shown, Awais grouped to 3 calls (deal merge working) |
+> | `/deals` | OK | 4 deals total, Awais shows "Verbal done" stage |
+> | `/calls` | OK | 6-call list, all render |
+> | `/calls/{id}` | OK | Detail loads with score, agent name, flags, transcript controls |
+>
+> **Same-deal grouping evidence (Bug 5 fix from `df38f54` working):** Awais customer has 3 calls collapsed into 1 deal on the live system. Bug 5's supplier-required guard at `pipeline.py:472` was relaxed in the prior session and is functioning.
+>
+> **Realtime end-to-end ground truth** (captured 2026-05-17):
+> - Subscribed via WebSocket: `phx_reply ok` + `system: Subscribed to PostgreSQL` ✓
+> - Fired `POST /api/admin/force-release-all-claims` ✓
+> - Received `postgres_changes UPDATE` on table=calls with the released call's record + old_record diff ✓
+> - WebSocket connection healthy, JWT-auth accepted, RLS-policies allow active reviewer to subscribe ✓
+>
+> ---
+
 # Live State — Path 3 FULLY ACTIVE 2026-05-17 (autonomous closeout)
 
 > 🚀 **2026-05-17 — Realtime publication LIVE. Webhook LIVE. Claims drained. 2 migration bugs found and fixed.**

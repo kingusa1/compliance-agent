@@ -24,9 +24,9 @@ tags: [index, brain]
 
 ## 🚨 Read FIRST when resuming a session
 
-**As of 2026-05-17 (autonomous closeout): Path 3 is FULLY ACTIVE on prod. Realtime publication populated, AssemblyAI webhook live, claims drained. Two migration bugs were found and fixed during the run (`%I` paramstyle escape + `is_active`→`active` schema match). See [[04_Sessions/2026-05-17_Session_path3_closeout]] for the full play-by-play including 5 continuous-learning rules.**
+**As of 2026-05-17 (full system fix + realtime e2e proof): Realtime is **PROVEN end-to-end** — `postgres_changes UPDATE` events on `calls` reach the browser WebSocket. Sync from HTTP commit → event arrival ~800ms. The user-reported "upload doesn't go to process screen" bug is FIXED: `/dashboard` UploadModal `onSuccess` was suppressing the default redirect. Full audit of all 8 admin pages passes — zero error pages. See [[04_Sessions/2026-05-17_Session_upload_redirect_and_realtime_proof]].**
 
-**Previous handoff (now obsolete — items closed):** [[04_Sessions/2026-05-16_Session_path3_handoff]]
+**Previous (closed):** [[04_Sessions/2026-05-17_Session_path3_closeout]] · [[04_Sessions/2026-05-16_Session_path3_handoff]]
 
 **Prior wave (still ground-truth on deploy):** tip `7ca50ec` on origin/main. Path 3 Realtime ACTIVATED (`NEXT_PUBLIC_USE_REALTIME=1` baked into Vercel `dpl_4dBUomuW65qCn4N5Dom5AG4GbMVs`). 6-item perf wave shipped autonomously. ONE BLOCKER: Supabase Realtime publication may not have applied yet — see action 1 below.
 
