@@ -363,6 +363,63 @@ async def analyze_single_checkpoint(
         }
 
 
+_CP_SENTINEL = "__GRADER_CP_SENTINEL__"
+
+
+def _split_for_cache(
+    prompt_template: str,
+    *,
+    transcript: str,
+    cp_text: str,
+    addendum: str,
+) -> tuple[str, str]:
+    """Split a fully-rendered grading prompt into (system, user) so the
+    static portion is cacheable across the 6-21 batches of one upload.
+
+    The legacy template orders the prompt as:
+        ``RULES → CHECKPOINTS: <cp_text> → TRANSCRIPT: <transcript> →
+        JSON format → <addendum>``
+
+    For prompt-caching to fire across batches, the cacheable block must
+    contain the bits that DON'T vary (rules + transcript + format +
+    addendum) and exclude the bit that does (cp_text). The template's
+    legacy ordering puts cp_text BEFORE transcript, so this split MUST
+    reorder: the transcript-and-rest moves into the system block and
+    the cp_text becomes the user message. The model sees a different
+    relative order than today.
+
+    This is NOT byte-identical to the legacy prompt — it's a structural
+    reorder. The A/B harness at backend/scripts/cache_ab_harness.py is
+    the load-bearing accuracy check before the operator flips the flag
+    on in production. At temperature=0 with the same model (Opus 4.7)
+    the canonical Anthropic system-vs-user split is empirically robust,
+    but "empirically" is not "guaranteed" — that's the operator's
+    explicit risk to evaluate.
+
+    See plan: ``C:\\Users\\kingu\\.claude\\plans\\nifty-questing-yeti.md``
+    section "Change 2".
+    """
+    import re
+
+    rendered = prompt_template.format(
+        checkpoints_text=_CP_SENTINEL, transcript=transcript
+    )
+    if _CP_SENTINEL not in rendered:
+        raise RuntimeError(
+            "prompts.py template missing {checkpoints_text} placeholder — "
+            "cannot apply cache-split refactor. Disable "
+            "settings.grader_prompt_caching_enabled."
+        )
+    prefix, suffix = rendered.split(_CP_SENTINEL, 1)
+    # Strip the trailing "CHECKPOINTS:" header (and any blank lines leading
+    # to the sentinel) from the prefix — the system block no longer needs
+    # that header since the checkpoint list lives in the user message.
+    prefix = re.sub(r"\n+CHECKPOINTS:\s*\n*$", "\n\n", prefix)
+    system_block = (prefix + suffix + addendum).strip()
+    user_block = f"CHECKPOINTS TO EVALUATE:\n\n{cp_text.lstrip()}"
+    return system_block, user_block
+
+
 def _format_checkpoints_with_line_numbers(batch: list[dict]) -> str:
     """W4.4 — augment ``format_checkpoints_for_prompt`` with the per-checkpoint
     line_number (W1.6 backfill) so Claude can answer the
@@ -405,15 +462,38 @@ async def _analyze_batch(
     """
     prompt_template = get_prompt(supplier, strictness)
     cp_text = _format_checkpoints_with_line_numbers(batch)
-    prompt = prompt_template.format(checkpoints_text=cp_text, transcript=transcript)
-    prompt += _build_w4_addendum(similar_rejections)
+    addendum = _build_w4_addendum(similar_rejections)
 
     import time as _time, uuid as _uuid
     started = _time.perf_counter()
 
+    # 2026-05-16 — Anthropic prompt-cache adoption (Plan: zero-degradation
+    # OpenRouter cost reduction). When the flag is ON, the supplier rules
+    # + transcript + JSON instructions + W4 addendum land in a `system=`
+    # block so the 6-21 concurrent batches per upload share a single
+    # ephemeral cache entry (cached reads bill at ~10% of input rate for
+    # 5 minutes). The 6-checkpoint list — the only batch-variant content
+    # — becomes the user message. The TOTAL bytes sent to the model are
+    # identical to the legacy path; only the message-shape changes.
+    # Flag default is OFF; flipped on per env var after the A/B harness
+    # at backend/scripts/cache_ab_harness.py confirms zero verdict drift.
+    if settings.grader_prompt_caching_enabled:
+        system_block, user_block = _split_for_cache(
+            prompt_template, transcript=transcript, cp_text=cp_text, addendum=addendum
+        )
+        llm_call = _call_llm(user_block, timeout=BATCH_TIMEOUT, system=system_block)
+        # Reconstruct the full prompt for tracing parity so the
+        # /observability feed and agent_traces rows match the legacy
+        # shape (single string per checkpoint slice).
+        prompt = system_block + "\n\n" + user_block
+    else:
+        prompt = prompt_template.format(checkpoints_text=cp_text, transcript=transcript)
+        prompt += addendum
+        llm_call = _call_llm(prompt, timeout=BATCH_TIMEOUT)
+
     try:
         content = await asyncio.wait_for(
-            _call_llm(prompt, timeout=BATCH_TIMEOUT),
+            llm_call,
             timeout=BATCH_TIMEOUT + 5,
         )
         if content.startswith("```"):

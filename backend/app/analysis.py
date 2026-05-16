@@ -307,23 +307,23 @@ async def _call_llm(
                   Sonnet and Opus next to each other to weigh the price."
     """
     provider = settings.active_provider
-    dispatch = {
-        "openrouter": _call_openrouter,
-        "gemini": _call_gemini,
-        "anthropic": _call_anthropic,
-        "openai": _call_openai,
-    }
-    fn = dispatch.get(provider, _call_openrouter)
     if provider == "anthropic":
         # Anthropic direct API path doesn't route by `cheap` today — it
         # always uses settings.anthropic_model. Most prod traffic flows
         # through OpenRouter so this is fine.
-        return await fn(prompt, timeout, system=system)
+        return await _call_anthropic(prompt, timeout, system=system)
+    if provider == "openrouter":
+        # 2026-05-16 — OpenRouter forwards Anthropic-style `cache_control`
+        # markers on Claude models. `_call_openrouter` decides at runtime
+        # whether to use the cacheable-prefix payload shape (Claude model
+        # + system >=3500 chars) or fall back to the legacy concatenation.
+        return await _call_openrouter(prompt, timeout, cheap=cheap, system=system)
+    # Gemini / OpenAI paths — no native Anthropic cache; fold system into prompt.
     if system:
         prompt = f"{system}\n\n{prompt}"
-    if provider == "openrouter":
-        return await fn(prompt, timeout, cheap=cheap)
-    return await fn(prompt, timeout)
+    if provider == "gemini":
+        return await _call_gemini(prompt, timeout)
+    return await _call_openai(prompt, timeout)
 
 
 def _strip_code_fences(content: str) -> str:
@@ -359,14 +359,112 @@ async def _call_openai_compat(url: str, api_key: str, model: str, prompt: str, t
     return content
 
 
-async def _call_openrouter(prompt: str, timeout: float, *, cheap: bool = False) -> str:
+async def _call_openrouter(
+    prompt: str,
+    timeout: float,
+    *,
+    cheap: bool = False,
+    system: str | None = None,
+) -> str:
+    """OpenRouter transport with optional Anthropic-style prompt caching.
+
+    When ``system`` is provided, the target model is a Claude model, and
+    the system block is >= 3500 chars (~1024 tokens — Anthropic's caching
+    minimum), we send the request in OpenRouter's Anthropic-flavoured
+    shape with ``cache_control: ephemeral`` on the system content block.
+    OpenRouter forwards the flag to Anthropic; cached reads bill at ~10%
+    of input rate for 5 minutes after the first call.
+
+    Falls back to the legacy ``system + "\\n\\n" + prompt`` concatenation
+    when caching is not eligible (non-Claude model, sub-threshold system,
+    or no system block at all).
+    """
     model = settings.openrouter_cheap_model if cheap else settings.openrouter_model
     label = "OpenRouter/cheap" if cheap else "OpenRouter"
+    is_claude = "anthropic/claude" in (model or "").lower()
+    cache_eligible = (
+        system is not None and is_claude and len(system) >= 3500
+    )
+    if cache_eligible:
+        return await _call_openrouter_cached(
+            prompt=prompt,
+            system=system,  # type: ignore[arg-type]  # narrowed by cache_eligible
+            model=model,
+            timeout=timeout,
+            label=f"{label}+cache",
+        )
+    # Legacy non-cached path — fold system into prompt for parity with
+    # OpenAI / non-Anthropic providers.
+    if system:
+        prompt = f"{system}\n\n{prompt}"
     return await _call_openai_compat(
         "https://openrouter.ai/api/v1/chat/completions",
         settings.openrouter_api_key, model,
         prompt, timeout, label,
     )
+
+
+async def _call_openrouter_cached(
+    *,
+    prompt: str,
+    system: str,
+    model: str,
+    timeout: float,
+    label: str,
+) -> str:
+    """OpenRouter request with an Anthropic-style cacheable system block.
+
+    Mirrors the payload shape of ``_call_anthropic`` but routes through
+    OpenRouter (so existing OPENROUTER_API_KEY + model id keep working).
+    OpenRouter requires the system content to be an array with explicit
+    ``type: text`` content blocks for ``cache_control`` to take effect.
+    """
+    log.info(f"\U0001f916 LLM [{label}] calling {model} (timeout={timeout}s)")
+    payload: dict = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "system": [
+            {
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        "temperature": 0,
+        "max_tokens": 4096,
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.openrouter_api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+    data = response.json()
+    content = data["choices"][0]["message"]["content"].strip()
+    content = _strip_code_fences(content)
+    # OpenRouter forwards Anthropic's prompt-cache usage counters when
+    # they're present; missing keys mean the cache flag wasn't honoured
+    # (older Claude models, or OpenRouter dropping the flag).
+    usage = data.get("usage") or {}
+    cache_read = (
+        usage.get("cache_read_input_tokens")
+        or usage.get("prompt_tokens_details", {}).get("cached_tokens")
+        or 0
+    )
+    cache_write = (
+        usage.get("cache_creation_input_tokens")
+        or 0
+    )
+    log.info(
+        f"\U0001f916 LLM [{label}] response → {len(content)} chars "
+        f"(cache_read={cache_read}, cache_write={cache_write})"
+    )
+    return content
 
 
 async def _call_openai(prompt: str, timeout: float) -> str:

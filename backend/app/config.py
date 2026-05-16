@@ -110,6 +110,19 @@ class Settings(BaseSettings):
     embedding_prefilter_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
     # Note: use_agent_analyzer default flipped True in T7 after A/B passes.
 
+    # 2026-05-16 — Anthropic prompt-cache adoption on the grader +
+    # OpenRouter cache-header forwarding. When True, _analyze_batch splits
+    # the static rubric+transcript prefix into a `system=` block so the
+    # 6-21 batches per upload share Anthropic's 5-min ephemeral cache
+    # (cached reads bill at ~10% of input rate). The OpenRouter transport
+    # in analysis._call_openrouter is upgraded in parallel to pass the
+    # `cache_control: ephemeral` flag through to Anthropic when the model
+    # is a Claude model — without that, OpenRouter would silently drop
+    # the cache marker. Default OFF; operator runs the A/B harness at
+    # backend/scripts/cache_ab_harness.py and flips this to True on
+    # Railway only after a clean diff against the baseline path.
+    grader_prompt_caching_enabled: bool = False
+
     # ─── Dev convenience ──────────────────────────────────────────────
     # When True, every authenticated user is treated as `admin` so engineers
     # can exercise admin/lead/reviewer-gated UI without seeding multiple
