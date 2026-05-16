@@ -16,9 +16,15 @@ tags: [index, brain]
 
 ---
 
+## 📜 Operating doctrine (read once, applies forever)
+
+**[[00_SYSTEM_PROMPT]] — the canonical system prompt.** Stack, principles, work loop, definition-of-done, forbidden actions. Installed 2026-05-16. Treat as binding doctrine until the user explicitly amends it.
+
+---
+
 ## 🚨 Read FIRST when resuming a session
 
-**As of 2026-05-16 (late): HUMAN-REVIEW PIPELINE IS COSMETIC — VERDICT SUBMIT IS A PROTOTYPE. P0 FIX RUN IN PROGRESS.**
+**As of 2026-05-16 (late): VERDICT SUBMIT IS NOW WIRED + 27 audit fixes pushed (commits `7b7e078` / `403741d` / `30b2102`). Frontend Vercel deploy still gated.**
 Read in order:
 
 1. [[04_Sessions/2026-05-16_Session_queue_human_review_audit_verification]] — **READ FIRST.** Forensic verification of two external audits (96-step Queue audit + Playwright pipeline-walk audit). Headline: `VerdictTab.handleSubmit` is a prototype that `console.log`s + toasts "(prototype — payload logged)" but never calls `POST /api/calls/{id}/verdict`. Single defect cascades to: Reviewed tab stuck at 0, `/rejections` Active permanently empty, Compliant/Non-compliant pages show AI scores as if signed-off. Also: claim/release unwired, Tracker CATEGORY filters decorative, Edit-metadata corrupts customer names, Rejections sub-tabs infinite loading. **Fix sequence + audit corrections (10 of 29 audit claims are wrong/stale) inside.**
