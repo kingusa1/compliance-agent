@@ -1,10 +1,45 @@
 ---
 created: 2026-05-10
-updated: 2026-05-15
-tags: [state, issues, gotchas]
+updated: 2026-05-16
+tags: [state, issues, gotchas, stale-tests]
 ---
 
 # Known issues / gotchas
+
+## 🚨 Stale-test pattern — CI red after CHECK / bucket-gate / auth-dep changes (2026-05-16)
+
+**Symptom**: GitHub Actions `coverage` workflow turns red within 1-2 commits of any production change that:
+- alters a CHECK-constrained enum value (e.g. `ck_flags_risk_tag`, `ck_call_segments_stage`),
+- shifts a severity-bucket threshold in `app/checkpoint_analyzer.py`,
+- adds `Depends(current_reviewer)` / `Depends(_require_admin)` to a route,
+- or moves a column write (e.g. `Rejection.outcome_narrative` → `Rejection.fix_narrative`).
+
+**Diagnosis**: tests asserting the OLD behaviour are still on disk. The production change shipped solo; the test wasn't updated.
+
+**Recurring instances (each red 5-6 commits before being caught)**:
+
+| When | Production change | Stale test |
+|---|---|---|
+| 2026-05-15 | AI narrative → `Rejection.fix_narrative` | `test_ai_rejection_reason::test_ai_rejection_reason_propagates_to_rejection_row` |
+| 2026-05-15 | `Depends(current_reviewer)` on `/api/calls/{id}/retry` | `test_routes.py::test_retry_call_*` (×4) returning 401 |
+| 2026-05-15 (`a83e441`) | Medium-only pass-rate gate: <50% → `review` not `coaching` | `test_checkpoint_analyzer::test_all_checkpoints_mixed_results` |
+| 2026-05-16 (`e1c8d3b`) | `vulnerability.risk_tag` → `None` (ck_flags_risk_tag CHECK) | `test_vulnerability::test_detect_emits_medium_when_only_stage1_fires`, `test_detect_emits_high_when_both_stages_agree` |
+
+**Fix recipe** (codified in [[../06_Operations/Skill_Routing#Anti-patterns]]):
+
+Before pushing any commit that mutates one of the patterns above, grep:
+
+```bash
+grep -rn "risk_tag.*Vulnerable\|bucket.*coaching\|outcome_narrative\|Depends(current_reviewer)" backend/tests/
+```
+
+If a hit references the OLD behaviour, update the test in the same commit. The fix for the 2026-05-16 instance was commit `48ec056`: assert `risk_tag is None` + `family == "vulnerability"` in the two vulnerability tests; assert `bucket == "review"` + `compliant is False` in the checkpoint-analyzer test. Touched-tests local run gate:
+
+```bash
+./venv/Scripts/python.exe -m pytest tests/test_<area>.py -q --tb=line
+```
+
+---
 
 ## 🚨 Rejection-create contract: HUMAN-ONLY (2026-05-15) — TWO P0 SUB-INVARIANTS
 

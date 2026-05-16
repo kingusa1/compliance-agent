@@ -183,6 +183,42 @@ that triples wall time for no benefit.
   separate `docs(brain): …` commits so a `git revert` on the feature
   doesn't erase the session log.
 
+- **Don't** change a production behaviour without grepping the test
+  suite for the OLD assertion. This pattern has now bitten us **four**
+  times — CI was red for between 5 and 6 commits each time:
+
+  | Date | Production change | Stale test asserting OLD behaviour |
+  |---|---|---|
+  | 2026-05-15 | AI narrative write moved from `Rejection.outcome_narrative` → `Rejection.fix_narrative` | `test_ai_rejection_reason::test_ai_rejection_reason_propagates_to_rejection_row` |
+  | 2026-05-15 | `Depends(current_reviewer)` added to `/api/calls/{id}/retry` | `test_routes.py::test_retry_call_*` (×4) returning 401 |
+  | 2026-05-15 | `a83e441` added medium-only pass-rate gate (medium-only at <50% → `review` instead of `coaching`) | `test_checkpoint_analyzer::test_all_checkpoints_mixed_results` asserting bucket=`coaching` |
+  | 2026-05-16 | `e1c8d3b` flipped vulnerability `risk_tag` from `"Vulnerable"` → `None` to satisfy `ck_flags_risk_tag` CHECK | `test_vulnerability.py::test_detect_emits_medium_when_only_stage1_fires`, `test_detect_emits_high_when_both_stages_agree` |
+
+  **The pre-push gate**: before any commit that mutates one of these,
+  grep for the OLD assertion string and update both at once.
+
+  ```bash
+  # Before changing a CHECK-constrained enum value or a bucket-gate threshold
+  grep -rn "risk_tag.*Vulnerable\|bucket.*coaching\|outcome_narrative" backend/tests/
+  ```
+
+  Patterns that warrant the grep:
+  - **CHECK constraint changes** — anything where the DB rejects values
+    outside an enum (risk_tag, stage, call_type, status, lifecycle_phase).
+    Always look at `backend/alembic/versions/*ck_*.py` first.
+  - **Severity-bucket gates** — `analysis.py` / `checkpoint_analyzer.py`
+    bucket selection. Any change to the critical/high/medium thresholds
+    or the pass-rate escalation guard.
+  - **Auth dependency adds** — adding `Depends(current_reviewer)` or
+    `Depends(_require_admin)` to any route flips that route's tests
+    from anonymous-200 to 401. The fix is a single line in
+    `app.dependency_overrides`.
+  - **Column-write moves** — moving a field from `Rejection.X` to
+    `Rejection.Y` requires updating every test that asserted on `X`.
+
+  Goal: keep CI green so push-after-push doesn't burn ~7 min of runner
+  time per stale-test discovery.
+
 ---
 
 ## Self-improvement loop
