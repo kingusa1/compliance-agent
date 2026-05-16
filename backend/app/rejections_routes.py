@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
+from app._clock import utcnow
 from typing import Any
 from uuid import UUID
 
@@ -397,7 +398,7 @@ def create_rejection(
     _validate_enum(payload.category, REJECTION_CATEGORIES, "category")
     _validate_enum(payload.fix_required, REMEDIATION_ACTIONS, "fix_required")
 
-    rejected_at = payload.rejected_at or datetime.utcnow()
+    rejected_at = payload.rejected_at or utcnow()
     rid = uuid.uuid4()
     r = Rejection(
         id=rid,
@@ -413,7 +414,7 @@ def create_rejection(
         status="NOT_STARTED",
         rejected_at=rejected_at,
         deadline=_compute_deadline(rejected_at),
-        created_at=datetime.utcnow(),
+        created_at=utcnow(),
     )
     db.add(r)
     db.flush()
@@ -427,7 +428,7 @@ def create_rejection(
             from_status=None,
             to_status="NOT_STARTED",
             notes=None,
-            created_at=datetime.utcnow(),
+            created_at=utcnow(),
         )
     )
     db.commit()
@@ -460,7 +461,7 @@ def patch_rejection(
 
     # Set resolved_at if status moved to a terminal value via patch.
     if payload.status and payload.status in TERMINAL_STATUSES and r.resolved_at is None:
-        r.resolved_at = datetime.utcnow()
+        r.resolved_at = utcnow()
 
     # Audit row for any patch — capture status delta if there was one.
     if payload.status and payload.status != prev_status:
@@ -473,7 +474,7 @@ def patch_rejection(
                 from_status=prev_status,
                 to_status=payload.status,
                 notes=payload.outcome_narrative,
-                created_at=datetime.utcnow(),
+                created_at=utcnow(),
             )
         )
     elif changes:
@@ -487,7 +488,7 @@ def patch_rejection(
                 from_status=prev_status,
                 to_status=prev_status,
                 notes=", ".join(sorted(changes.keys())),
-                created_at=datetime.utcnow(),
+                created_at=utcnow(),
             )
         )
 
@@ -556,7 +557,7 @@ def confirm_verdict(
     prev_state = r.verdict_state
     r.verdict_state = "HUMAN_CONFIRMED"
     r.confirmed_by = user["id"]
-    r.confirmed_at = datetime.utcnow()
+    r.confirmed_at = utcnow()
 
     db.add(
         RejectionAuditLog(
@@ -567,7 +568,7 @@ def confirm_verdict(
             from_status=prev_state,
             to_status="HUMAN_CONFIRMED",
             notes=None,
-            created_at=datetime.utcnow(),
+            created_at=utcnow(),
         )
     )
     db.commit()
@@ -595,7 +596,7 @@ def override_verdict(
         setattr(r, k, v)
     r.verdict_state = "HUMAN_OVERRIDDEN"
     r.confirmed_by = user["id"]
-    r.confirmed_at = datetime.utcnow()
+    r.confirmed_at = utcnow()
 
     db.add(
         RejectionAuditLog(
@@ -606,7 +607,7 @@ def override_verdict(
             from_status=prev_state,
             to_status="HUMAN_OVERRIDDEN",
             notes=", ".join(sorted(changes.keys())) if changes else None,
-            created_at=datetime.utcnow(),
+            created_at=utcnow(),
         )
     )
     db.commit()
@@ -630,7 +631,7 @@ def transition_rejection(
     prev_status = r.status
     r.status = payload.to_status
     if payload.to_status in TERMINAL_STATUSES and r.resolved_at is None:
-        r.resolved_at = datetime.utcnow()
+        r.resolved_at = utcnow()
 
     db.add(
         RejectionAuditLog(
@@ -641,7 +642,7 @@ def transition_rejection(
             from_status=prev_status,
             to_status=payload.to_status,
             notes=payload.notes,
-            created_at=datetime.utcnow(),
+            created_at=utcnow(),
         )
     )
     db.commit()
@@ -784,7 +785,7 @@ def submit_portal_batch(
         f"ids={[str(r.id) for r in rows]}"
     )
 
-    submitted_at = datetime.utcnow()
+    submitted_at = utcnow()
     for r in rows:
         prev = r.status
         r.status = "SUBMITTED_TO_PORTAL"
@@ -950,7 +951,7 @@ def auto_create_rejection_for_verdict(
     if verdict_action not in ("FAIL", "REVIEW"):
         return None
 
-    rejected_at = datetime.utcnow()
+    rejected_at = utcnow()
     customer_slug: str | None = None
     site_id: int | None = None
     supplier = call.detected_supplier
@@ -1040,7 +1041,7 @@ def auto_create_rejection_for_verdict(
         status="NOT_STARTED",
         rejected_at=rejected_at,
         deadline=_compute_deadline(rejected_at),
-        created_at=datetime.utcnow(),
+        created_at=utcnow(),
         # 2026-05-15: stamp reviewer provenance ON CREATE. This entire
         # helper is invoked only from human-triggered routes (submit_verdict
         # / override / POST /api/rejections) — never the pipeline — so the
@@ -1049,7 +1050,7 @@ def auto_create_rejection_for_verdict(
         # ``confirmed_by IS NOT NULL``) silently hides the row even though
         # a human just created it.
         confirmed_by=actor_id,
-        confirmed_at=datetime.utcnow(),
+        confirmed_at=utcnow(),
         # 2026-05-16 audit P1-1 — stamp HUMAN_CONFIRMED on creation. The
         # column has server_default="AI_PENDING", so without this every
         # auto-rejection created from a reviewer's FAIL verdict landed in
@@ -1070,7 +1071,7 @@ def auto_create_rejection_for_verdict(
             from_status=None,
             to_status="NOT_STARTED",
             notes="Auto-created from verdict",
-            created_at=datetime.utcnow(),
+            created_at=utcnow(),
         )
     )
 

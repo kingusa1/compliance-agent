@@ -15,6 +15,7 @@ shows real signal, not pipeline noise.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from app._clock import utcnow
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
@@ -157,7 +158,7 @@ def trend(
     Default ``bucket='week'`` for the 30-day view (4-5 points, readable).
     Day-buckets for shorter windows. Calls created within the window count.
     """
-    now = datetime.utcnow()
+    now = utcnow()
     floor = now - timedelta(days=days)
     rows = (
         _completed(db)

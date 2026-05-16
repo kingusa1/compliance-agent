@@ -25,6 +25,7 @@ import os
 import tempfile
 import time
 from datetime import datetime
+from app._clock import utcnow
 
 from sqlalchemy.orm import Session
 
@@ -1953,7 +1954,7 @@ def _step_finalize(call_id: str, db: Session) -> dict:
     if not call:
         raise RuntimeError(f"finalize: call {call_id} not found")
 
-    call.completed_at = datetime.utcnow()
+    call.completed_at = utcnow()
     derive_compliance(call, db)
 
     # L3: derive deal lifecycle BEFORE the extraction writer commits so

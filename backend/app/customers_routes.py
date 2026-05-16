@@ -12,6 +12,7 @@ the frontend; backfill the values when those tables ship.
 from __future__ import annotations
 
 from datetime import date, datetime
+from app._clock import utcnow
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -124,7 +125,7 @@ def _deal_ref(deal_id: str, created_at: datetime | str | None) -> str:
     elif isinstance(created_at, str) and len(created_at) >= 4 and created_at[:4].isdigit():
         year = int(created_at[:4])
     else:
-        year = datetime.utcnow().year
+        year = utcnow().year
     short = (deal_id or "").replace("-", "")[:4] or "0000"
     return f"DEAL-{year}-{short}"
 

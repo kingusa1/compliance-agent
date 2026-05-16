@@ -93,7 +93,7 @@ def _require_admin(x_admin_key: str = Header(default="")):
 
 @router.get("/api/health")
 def health_check():
-    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "healthy", "timestamp": utcnow().isoformat()}
 
 
 @router.get("/api/reviewers")
@@ -648,7 +648,7 @@ def export_calls_csv(
             buf.seek(0)
             buf.truncate()
 
-    stamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    stamp = utcnow().strftime("%Y%m%d-%H%M%S")
     return StreamingResponse(
         _iter(),
         media_type="text/csv",
@@ -706,7 +706,7 @@ async def retry_call(
     # the row is older than 5 minutes since created_at; anything fresher
     # is likely a real concurrent run.
     from datetime import datetime, timedelta
-    if call.status == "processing" and call.created_at and (datetime.utcnow() - call.created_at) < timedelta(minutes=5):
+    if call.status == "processing" and call.created_at and (utcnow() - call.created_at) < timedelta(minutes=5):
         raise HTTPException(400, "Call is already processing (try again in a few minutes)")
 
     # Delete existing checkpoint records
@@ -1261,7 +1261,7 @@ async def stream_call_processing(call_id: str):
                 call.checkpoint_results = json.dumps(checkpoint_results) if checkpoint_results else None
                 call.score = score
                 call.status = "completed"
-                call.completed_at = datetime.utcnow()
+                call.completed_at = utcnow()
                 db.commit()
 
                 log.info(f"\U0001f4ca COMPLETE call_id={call_id} \u2192 score={score}, compliant={compliant}, {time.time()-stream_start:.1f}s total")
@@ -1343,7 +1343,7 @@ async def stream_call_processing(call_id: str):
                 reason += f" {error_count} checkpoint(s) had errors."
             call.reason = reason
             call.status = "completed"
-            call.completed_at = datetime.utcnow()
+            call.completed_at = utcnow()
             db.commit()
 
             log.info(f"\U0001f4ca COMPLETE call_id={call_id} \u2192 score={score}, compliant={compliant}, {time.time()-stream_start:.1f}s total")
@@ -2991,6 +2991,7 @@ def patch_call_risk_tags(
 from app.auth import current_user as _metadata_current_user
 from app.schemas import EditCallMetadataRequest
 from datetime import date as _date
+from app._clock import utcnow
 
 
 @router.patch("/api/calls/{call_id}/metadata")

@@ -23,6 +23,7 @@ Design choices:
 from __future__ import annotations
 
 from datetime import datetime
+from app._clock import utcnow
 from typing import Any
 
 import inngest
@@ -141,7 +142,7 @@ async def redispatch_watchdog(ctx: inngest.Context) -> dict:
 
             redispatched.append(call_id)
             app_log.info(
-                f"WATCHDOG_REDISPATCH call_id={call_id} at={datetime.utcnow().isoformat()}Z"
+                f"WATCHDOG_REDISPATCH call_id={call_id} at={utcnow().isoformat()}Z"
             )
     finally:
         db.close()

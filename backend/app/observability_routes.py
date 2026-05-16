@@ -30,6 +30,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta
+from app._clock import utcnow
 from typing import Any
 
 import httpx
@@ -356,7 +357,7 @@ async def list_runs(
     historical runs, not just the last hour. The frontend exposes
     1h/24h/7d/all switches for narrower filtering.
     """
-    from_iso = since or (datetime.utcnow() - timedelta(days=30)).isoformat() + "Z"
+    from_iso = since or (utcnow() - timedelta(days=30)).isoformat() + "Z"
     if not from_iso.endswith("Z") and "+" not in from_iso:
         from_iso += "Z"
 
@@ -394,7 +395,7 @@ async def list_runs(
                     Call.id, Call.created_at, Call.completed_at,
                     Call.status, Call.customer_name, Call.deal_id,
                 )
-                .where(Call.created_at >= datetime.utcnow() - timedelta(days=7))
+                .where(Call.created_at >= utcnow() - timedelta(days=7))
                 .order_by(Call.created_at.desc())
                 .limit(min(limit, 100))
             ).all()
@@ -492,7 +493,7 @@ async def list_orphans(
     """
     from datetime import datetime, timedelta
 
-    cutoff = datetime.utcnow() - timedelta(seconds=older_than_seconds)
+    cutoff = utcnow() - timedelta(seconds=older_than_seconds)
     candidates = (
         db.query(Call)
         .filter(Call.status == "processing", Call.created_at < cutoff)
@@ -510,7 +511,7 @@ async def list_orphans(
         {
             "first": 200,
             "filter": {
-                "from": (datetime.utcnow() - timedelta(days=30)).isoformat() + "Z",
+                "from": (utcnow() - timedelta(days=30)).isoformat() + "Z",
                 "timeField": "QUEUED_AT",
             },
             "orderBy": [{"field": "QUEUED_AT", "direction": "DESC"}],
@@ -539,7 +540,7 @@ async def list_orphans(
             "deal_id": str(c.deal_id) if c.deal_id else None,
             "call_type": c.call_type,
             "created_at": c.created_at.isoformat() if c.created_at else None,
-            "age_seconds": int((datetime.utcnow() - c.created_at).total_seconds()) if c.created_at else None,
+            "age_seconds": int((utcnow() - c.created_at).total_seconds()) if c.created_at else None,
         }
         for c in candidates
         if c.id not in known_call_ids
@@ -696,7 +697,7 @@ async def stream_runs(request: Request) -> StreamingResponse:
                 {
                     "first": 20,
                     "filter": {
-                        "from": (datetime.utcnow() - timedelta(minutes=5)).isoformat() + "Z",
+                        "from": (utcnow() - timedelta(minutes=5)).isoformat() + "Z",
                         "timeField": "QUEUED_AT",
                     },
                     "orderBy": [{"field": "QUEUED_AT", "direction": "DESC"}],

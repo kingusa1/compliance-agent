@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime
+from app._clock import utcnow
 
 from sqlalchemy.orm import Session
 
@@ -68,7 +69,7 @@ def derive_compliance(call: Call, db: Session) -> str:
 
     call.compliance_status = status
     call.compliance_source = "auto"
-    call.compliance_decided_at = datetime.utcnow()
+    call.compliance_decided_at = utcnow()
     call.compliance_decided_by = "system"
 
     # Demote any prior is_current decision (unlikely on first run, but safe)

@@ -12,6 +12,7 @@ Tightly scoped:
 from __future__ import annotations
 
 from datetime import datetime
+from app._clock import utcnow
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -121,7 +122,7 @@ def patch_directive(
             f"invalid transition {d.status} -> {new_status}; allowed: {sorted(ALLOWED_TRANSITIONS.get(d.status, set())) or 'terminal'}",
         )
     d.status = new_status
-    d.updated_at = datetime.utcnow()
+    d.updated_at = utcnow()
     if new_status == "fixed":
         d.fixed_at = d.updated_at
     db.commit()

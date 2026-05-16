@@ -2,6 +2,7 @@ import json
 import os
 import uuid
 from datetime import datetime
+from app._clock import utcnow
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse, Response
@@ -192,7 +193,7 @@ def update_script(script_id: str, script: ScriptCreate, request: Request, db: Se
     db_script.version = script.version
     db_script.mode = script.mode
     db_script.checkpoints = new_checkpoints_json
-    db_script.updated_at = datetime.utcnow()
+    db_script.updated_at = utcnow()
     # Structural payload only — list of changed field names, never script body.
     record_audit(
         db,
@@ -217,7 +218,7 @@ def delete_script(script_id: str, request: Request, db: Session = Depends(get_db
         raise HTTPException(404, "Script not found")
 
     db_script.active = False
-    db_script.updated_at = datetime.utcnow()
+    db_script.updated_at = utcnow()
     # Delete is soft (active=False); record action so the chain captures the
     # deactivation. Empty structural payload — id alone identifies the row.
     record_audit(

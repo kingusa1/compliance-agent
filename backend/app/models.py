@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import sqlalchemy as sa
 from sqlalchemy import Boolean, Column, Date, DateTime, Float, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
@@ -377,7 +377,16 @@ class AgentLearning(Base):
 
 
 def _utcnow():
-    return datetime.utcnow()
+    """Return a UTC-aligned NAIVE datetime — same semantics as the legacy
+    ``datetime.utcnow()`` (deprecated in 3.12+, removed in 3.14) but without
+    the DeprecationWarning. We keep the naive shape because the DB columns
+    are mostly ``DateTime`` (no timezone) and switching to aware datetimes
+    would break ``aware < naive`` comparisons across the codebase.
+
+    Audit 2026-05-16 P1-6: use this helper everywhere instead of calling
+    ``datetime.utcnow()`` directly.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class ReviewSession(Base):

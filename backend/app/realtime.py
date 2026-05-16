@@ -35,6 +35,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from datetime import datetime
+from app._clock import utcnow
 from typing import Any, AsyncIterator
 
 log = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ _GLOBAL = "*"
 
 
 def _now_iso() -> str:
-    return datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+    return utcnow().isoformat(timespec="milliseconds") + "Z"
 
 
 def publish(call_id: str, event_type: str, payload: dict[str, Any] | None = None) -> None:

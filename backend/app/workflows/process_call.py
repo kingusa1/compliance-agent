@@ -45,6 +45,7 @@ import asyncio
 import inspect
 import time
 from datetime import datetime
+from app._clock import utcnow
 
 import inngest
 
@@ -105,7 +106,7 @@ def _mark_step_started(call_id: str, step_name: str) -> None:
             call = db.query(Call).filter_by(id=call_id).first()
             if call is not None:
                 if hasattr(call, "last_step_started_at"):
-                    call.last_step_started_at = datetime.utcnow()
+                    call.last_step_started_at = utcnow()
                 if hasattr(call, "last_step_name"):
                     call.last_step_name = step_name
                 if hasattr(call, "last_step_error"):

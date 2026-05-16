@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
+from app._clock import utcnow
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -65,7 +66,7 @@ def _canonicalize_agent(name: str | None, aliases: dict[str, str]) -> str | None
 
 @agents_router.get("")
 def list_agents(db: Session = Depends(get_db)) -> dict:
-    cutoff = datetime.utcnow() - timedelta(days=30)
+    cutoff = utcnow() - timedelta(days=30)
     # W1 (v3-watt-coverage): load alias table once; canonicalise raw names
     # before grouping. Best-effort — see _canonicalize_agent.
     aliases = _load_agent_aliases(db)
@@ -183,7 +184,7 @@ def _safe_float(v: Any) -> float | None:
 
 @agents_router.get("/{agent_name}/drilldown")
 def agent_drilldown(agent_name: str, db: Session = Depends(get_db)) -> dict:
-    now = datetime.utcnow()
+    now = utcnow()
     cutoff_7 = now - timedelta(days=7)
     cutoff_30 = now - timedelta(days=30)
 
