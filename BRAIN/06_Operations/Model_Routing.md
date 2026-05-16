@@ -179,6 +179,58 @@ Opus volume (70% of spend lives there). Future work:
 Neither of those is part of this routing matrix — they're future
 optimisations to the grader itself.
 
+## 2026-05-16 deep-search update — confirmed Anthropic-only for grader
+
+Independent benchmarks + community reports from late-2025 / early-2026
+(Vellum, artificialanalysis.ai, llm-stats, Kenodo, Glukhov on Medium)
+all say the same thing about long-rubric JSON grading at 10k+ context:
+
+- **Opus 4.7 still owns SWE-bench / agentic** (87.6 vs Gemini 3 Pro 80.6
+  vs GPT-5.2 80.0). The compliance-grader workload lives in this class.
+- **DeepSeek V3.2 + Qwen3 fail strict JSON schema** — documented open
+  bug in vLLM #41132, LangChain `with_structured_output()` returns
+  errors. Do NOT route the grader to them.
+- **The Anthropic family is the gold standard for "schema adherence +
+  output stability across repeated identical calls"** — exactly what
+  the 26-rule rubric needs.
+- **Sonnet 4.6 leads GDPval-AA enterprise reliability** — safe to use
+  on the grader behind a confidence-gated Opus fallback.
+
+Cited cascade-pattern papers (proven Opus-equivalent accuracy at 30-70%
+lower cost):
+
+- FrugalGPT (Chen et al., arXiv:2305.05176, ICLR 2025) — up to 98%
+  cost saving with cascade + scoring function.
+- Cascade Routing (ETH Zürich, dekoninck2024cascaderouting) — unified
+  cheap-first router that pareto-dominates routing-only.
+- 3× Haiku self-consistency vote ≈ Sonnet quality at ~60% Sonnet cost
+  on classification / extraction.
+
+## Future optimisation — grader cascade (not yet shipped, owner-decision-pending)
+
+The grader (`checkpoint_analyzer._analyze_batch`) is **70% of all
+OpenRouter spend**. Moving it to a cascade is the only optimisation
+worth shipping:
+
+```
+batch → Sonnet 4.6 with rubric+transcript (cache hit on rubric prefix)
+      → if any cp confidence < 0.8 OR status == 'partial' OR JSON malformed
+          → escalate THAT cp's row to Opus 4.7
+```
+
+Expected save: **~55-65%** of grader spend (~$0.55 per upload at 21
+batches × ~$0.045 each). Accuracy preserved because Opus reviews every
+uncertain checkpoint. Anthropic prompt caching keeps the rubric prefix
+billable at ~10% across the 21 batches within the 5-minute TTL.
+
+**Hard NO on:**
+
+- Routing the grader to a non-Anthropic model. Schema faithfulness drops
+  outside the Anthropic family per independent reports.
+- Skipping the Opus fallback. The whole point of the cascade is that
+  Sonnet's mistakes are caught — without the fallback this is just a
+  blind downgrade.
+
 ## Self-update protocol
 
 Update this file whenever:
@@ -187,3 +239,5 @@ Update this file whenever:
 - An operator overrides a tier (note it under "Forbidden swaps" with a date).
 - A T2/T3 site produces a failure that warrants promotion to T0 (log
   the failure mode + commit hash where the promotion shipped).
+- An external research update changes the recommendation — log under
+  the "deep-search update" section with a date and citations.
