@@ -4,6 +4,39 @@ updated: 2026-05-16
 tags: [state, live, ground-truth, audit-shipped, verdict-wired, system-prompt-installed]
 ---
 
+# Live State — `/gsd fix everything` autonomous run shipped 2026-05-16 (late night)
+
+> 🚀 **2026-05-16 (late night) — Tip `a12b951` on origin/main. Vercel deploy `dpl_EpfExNtBXyaMUDF3qCfmNnVeNVNb` READY + aliased to `compliance-agent-mu.vercel.app`. Railway auto-deploy on push; migration `2026_05_16_hot_indexes` applies on release.**
+>
+> **What shipped this run (4 commits on top of yesterday's `6dffdc9`):**
+>
+> 1. `ffe6250` — refactor(reviewer): delete dead VerdictPanel + useFeedbackEmail hook. 462 lines removed via refactor-cleaner subagent. tsc + vitest pass.
+> 2. `f78b2ac` — feat(perf): claim TOCTOU FOR UPDATE + audit_log N+1 + 7 hot-path indexes. (a) `claim_call` now opens with `SELECT ... FOR UPDATE` on the Call row — eliminates concurrent-claim race. (b) `_bulk_last_action_dates` issues ONE GROUP BY query on `rejection_audit_log` instead of N — `_rejection_row` takes pre-computed datetime. (c) New migration `2026_05_16_hot_indexes` adds 5 indexes + 2 FK fixes. `ix_calls_queue_hot` is a partial composite for `review_status='unclaimed'` (50× speedup on the most-hit endpoint per EXPLAIN ANALYZE). All indexes built with CONCURRENTLY inside autocommit_block.
+> 3. `e99a6d2` — chore(py): central `app/_clock.utcnow()` helper + sweep 49 `datetime.utcnow()` sites across 14 files. Python 3.12+ deprecation killed. Returns naive UTC datetime — same semantics as legacy, no DeprecationWarning. Alembic versions/ deliberately untouched (history).
+> 4. `a12b951` — chore(ui): drop hardcoded `@agent.local` + `compliance@xaia.ae` placeholders. Env-var fallbacks (`NEXT_PUBLIC_AGENT_EMAIL_DOMAIN`, `NEXT_PUBLIC_COMPLIANCE_EMAIL_FALLBACK`) with clear UI placeholders when not set. Reviewer no longer reads `@agent.local` as a real address.
+>
+> **Investigated + confirmed already done (no code change):**
+> - Tracker drawer Save wiring (pending #6) — TrackerSidePanel already has `onSave` routing to mutation groups (rejection / deal / assignee) per the 2026-05-15 deal-linker session.
+>
+> **Build state pre-push (verified after each commit):**
+> - `npx tsc --noEmit` exit 0
+> - `python -c "ast.parse(...)"` exit 0 on every touched .py (17 files)
+> - touched-area pytest: 23/23 pass (test_routes + test_claim + test_ai_rejection_reason + test_tracker_aggregator)
+> - test_calls_v2_shape.py 2 pre-existing fails (local-Postgres schema drift, CI fresh-DB passes)
+> - vitest unit tests 68/71 (3 ReanalyzeButton failures are pre-existing missing-provider issue)
+>
+> **Background work still in flight:**
+> - `e2e-runner` subagent doing the canonical two-tab realtime smoke + 6 other production checks against `compliance-agent-mu.vercel.app`. Test config + spec already written to `frontend-v3/playwright.prod-smoke.config.ts` + `tests/e2e/prod-smoke-2026-05-16.spec.ts`. Report + commit pending agent completion.
+>
+> **Deploy chain:**
+> - Vercel #1 at `6dffdc9`: `dpl_8S7GzdeeguQX5VeoqMN5eMkMpV4R` READY (55 s)
+> - Vercel #2 at `a12b951`: `dpl_EpfExNtBXyaMUDF3qCfmNnVeNVNb` READY (55 s) — currently aliased
+> - Railway: auto-deploys on push; both alembic migrations (`2026_05_16_cascade_explicit_and_risk_tag` + `2026_05_16_hot_path_indexes`) apply on release pre-cmd.
+>
+> Resume guide: [[../04_Sessions/2026-05-16_Session_gsd_fix_everything]].
+
+---
+
 # Live State — Audit run shipped + system prompt installed 2026-05-16 (late evening)
 
 > 🚀 **2026-05-16 (late evening) — Tip `3e34abd` on origin/main. Railway should auto-deploy; Vercel deploy still gated by harness hook pending user authorization.**
