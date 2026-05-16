@@ -1716,6 +1716,64 @@ def release_idle_claims(
     return {"released": count}
 
 
+@hitl_router.get("/api/admin/realtime-status")
+def admin_realtime_status(
+    reviewer: dict = Depends(current_reviewer),
+    db: Session = Depends(get_db),
+):
+    """Diagnostic: report alembic head + Supabase Realtime publication state.
+
+    Used to verify the 2026_05_16_rls_realtime migration applied + which
+    tables are wired for postgres_changes broadcasts. Returns:
+    - alembic_head: current Alembic revision in the DB
+    - publication_tables: list of tables in supabase_realtime publication
+    - rls_enabled_tables: list of tables with RLS enabled
+    - policy_count: total RLS policies in public schema
+    """
+    if reviewer.get("role") not in ("lead", "admin"):
+        raise HTTPException(status_code=403, detail="lead/admin only")
+
+    from sqlalchemy import text as _sql_text
+
+    out: dict[str, object] = {}
+    try:
+        row = db.execute(_sql_text("SELECT version_num FROM alembic_version")).first()
+        out["alembic_head"] = row[0] if row else None
+    except Exception as e:
+        out["alembic_head"] = f"error: {type(e).__name__}: {str(e)[:100]}"
+
+    try:
+        rows = db.execute(_sql_text(
+            "SELECT tablename FROM pg_publication_tables "
+            "WHERE pubname = 'supabase_realtime' AND schemaname = 'public' "
+            "ORDER BY tablename"
+        )).all()
+        out["publication_tables"] = [r[0] for r in rows]
+    except Exception as e:
+        out["publication_tables"] = f"error: {type(e).__name__}: {str(e)[:100]}"
+
+    try:
+        rows = db.execute(_sql_text(
+            "SELECT c.relname FROM pg_class c "
+            "JOIN pg_namespace n ON c.relnamespace = n.oid "
+            "WHERE n.nspname = 'public' AND c.relrowsecurity = true "
+            "ORDER BY c.relname"
+        )).all()
+        out["rls_enabled_tables"] = [r[0] for r in rows]
+    except Exception as e:
+        out["rls_enabled_tables"] = f"error: {type(e).__name__}: {str(e)[:100]}"
+
+    try:
+        row = db.execute(_sql_text(
+            "SELECT count(*) FROM pg_policies WHERE schemaname = 'public'"
+        )).first()
+        out["policy_count"] = row[0] if row else 0
+    except Exception as e:
+        out["policy_count"] = f"error: {type(e).__name__}: {str(e)[:100]}"
+
+    return out
+
+
 @hitl_router.post("/api/admin/force-release-all-claims")
 def admin_force_release_all_claims(
     reviewer: dict = Depends(current_reviewer),
