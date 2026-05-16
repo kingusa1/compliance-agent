@@ -9,16 +9,9 @@ const passThroughLock = async <T>(_name: string, _acquireTimeout: number, fn: ()
 // Browser-safe client using the anon/publishable key.
 // Server-side routes should use a separate admin client (service_role) and
 // must never send that key to the browser.
-//
-// Guard against missing env vars during Next.js static pre-rendering — the
-// build environment may not have NEXT_PUBLIC_* vars injected for SSR workers
-// even when they're configured in the Vercel project.  A placeholder client
-// is safe at build time because "use client" pages never run server-side.
-const _supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "https://placeholder.supabase.co";
-const _supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "placeholder-anon-key";
 export const supabase = createClient(
-  _supabaseUrl,
-  _supabaseKey,
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
   { auth: { lock: passThroughLock } },
 );
 

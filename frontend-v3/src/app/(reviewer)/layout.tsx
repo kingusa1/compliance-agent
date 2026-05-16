@@ -1,3 +1,5 @@
+"use client";
+
 import { AuthGuard } from "@/lib/auth";
 import { ScreenFrame } from "@/components/design/ScreenFrame";
 
