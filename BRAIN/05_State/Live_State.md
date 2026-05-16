@@ -4,7 +4,52 @@ updated: 2026-05-16
 tags: [state, live, ground-truth, audit-shipped, verdict-wired, system-prompt-installed]
 ---
 
-# Live State — Path 3 close-out + 6-item perf wave shipped 2026-05-16 (3am-ish)
+# Live State — 7-commit autonomous perf wave shipped + realtime-broadcast finding 2026-05-16 (late late late)
+
+> 🚀 **2026-05-16 (3am-ish) — Tip `7ca50ec` on origin/main. Vercel `dpl_4dBUomuW65qCn4N5Dom5AG4GbMVs` READY at `539a60b` with `NEXT_PUBLIC_USE_REALTIME=1` baked in.**
+>
+> **7 commits this autonomous run (all pushed):**
+> - `51cc43b` perf(business_detect): Customer cache + 5min TTL + startup pre-load (Item 1)
+> - `2cbde6a` perf(profile_cache): new module + 5min TTL + drop-in for the 2 hot-path dict-builds (Item 2)
+> - `9214c7a` perf(hitl): claim_call sync→async via asyncio.to_thread (Item 3)
+> - `ae1720c` feat(transcription): AssemblyAI webhook callbacks replace 3s poll loop (Item 4)
+> - `2b0b41e` test(perf): Lighthouse baseline script (Item 5)
+> - `539a60b` docs(brain): Path 3 close-out + 6-item perf wave session log
+> - `7ca50ec` feat(admin): /api/admin/realtime-status diagnostic endpoint (added after Playwright caught the migration gap)
+>
+> **🚨 BLOCKER from final Playwright smoke:** Supabase Realtime WebSocket connects but the server replies *"Unable to subscribe to changes ... Please check Realtime is enabled for the given connect parameters."* — meaning the `2026_05_16_rls_realtime` migration (shipped in commit `9f10205`) **may not have applied on prod yet**. The ALTER PUBLICATION supabase_realtime ADD TABLE statements need to have run for events to flow. Hook code IS in the bundle (verified — found in 4 chunks); env var IS set + decrypted value confirmed `"1"`; WebSocket DOES open with the anon key — but the publication is empty.
+>
+> **Fastest path to confirm + unblock realtime (next session):**
+> 1. Wait 60-90s after `7ca50ec` push for Railway to deploy.
+> 2. `curl -H "Authorization: Bearer $ADMIN_JWT" https://compliance-agent-production-690e.up.railway.app/api/admin/realtime-status`
+> 3. Output includes: `alembic_head`, `publication_tables`, `rls_enabled_tables`, `policy_count`.
+> 4. If `publication_tables` is missing `calls/rejections/etc`: either (a) Railway shell → `alembic upgrade head`, OR (b) Supabase SQL editor → run the ALTER PUBLICATION ADDs from `backend/alembic/versions/2026_05_16_rls_realtime.py`.
+>
+> **🚨 Item 6 region audit (read-only finding, no infra change yet):** `/healthz` (no DB) 519ms avg, `/readyz` (1 query) 1199ms avg → **Railway↔Supabase ~680ms round-trip per query**. Supabase in `ap-south-1` (Mumbai); Railway latency 128ms from UAE suggests **US-East**. Cross-region DB hop. Recommendation: relocate Railway to `asia-southeast1` (Singapore) → ~600ms saved per request. **Requires user approval + DNS/backend cutover.**
+>
+> **Lighthouse baseline at `98500ae`** (re-run script: `cd frontend-v3 && node --use-system-ca scripts/lighthouse-baseline.mjs`):
+> - /login: perf **100** / LCP 497ms
+> - /queue: perf **94** / LCP 1642ms
+> - /tracker: perf **89** / LCP 2176ms ← weakest
+> - /rejections: perf **95** / LCP 1509ms
+> - Saved to `frontend-v3/test-results/lighthouse-baseline-2026-05-16.{json,md}`. Re-run after perf wave is fully active for delta.
+>
+> ## 🎯 USER ACTIONS NEEDED (to fully activate this run's value)
+>
+> 1. **Hit `/api/admin/realtime-status`** (admin JWT) → check `publication_tables` is populated. If empty: run `alembic upgrade head` on Railway OR ADD via Supabase SQL editor.
+> 2. **Set Railway env vars** for Item 4 to activate (otherwise AssemblyAI still 3s-polls):
+>    ```
+>    ASSEMBLYAI_WEBHOOK_SECRET=<output of: python -c "import secrets; print(secrets.token_hex(32))">
+>    BACKEND_PUBLIC_URL=https://compliance-agent-production-690e.up.railway.app
+>    ```
+> 3. **Verify Railway region** (Dashboard → Service → Settings). If `us-east-*`, the 680ms RT↔Supabase finding is real; relocation to `asia-southeast1` needs your sign-off.
+> 4. **Verify `DATABASE_URL`** uses Supavisor port 6543 (transaction-mode pooler), not direct 5432.
+> 5. **POST `/api/admin/force-release-all-claims`** (lead/admin JWT) to clear the 5 stuck-in_review calls so Bug 7+8 cross-tab smoke can run.
+> 6. **Re-run Lighthouse** after Items 1-4 fully active → diff against the baseline.
+>
+> Resume guide: [[../04_Sessions/2026-05-16_Session_path3_close_perf_wave]].
+
+---
 
 > 🚀 **2026-05-16 (very late) — Path 3 ACTIVATED + 5 perf commits shipped. Tip `2b0b41e` (push pending in this same wave).**
 >

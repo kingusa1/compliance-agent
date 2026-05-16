@@ -24,22 +24,34 @@ tags: [index, brain]
 
 ## 🚨 Read FIRST when resuming a session
 
-**As of 2026-05-16 (very-very late): tip `6241726` on origin/main. Path 3 Realtime overhaul SHIPPED (feature-flagged, currently NO-OP). Vercel `dpl_6aFpiGWELWkU2LzVRH3xHidQwoTS` READY at `b9e0d12`. 6/8 bugs from the diagnose-fix-verify run shipped + verified in production via Playwright MCP.**
+**As of 2026-05-16 (3am-ish): tip `7ca50ec` on origin/main. Path 3 Realtime ACTIVATED (`NEXT_PUBLIC_USE_REALTIME=1` baked into Vercel `dpl_4dBUomuW65qCn4N5Dom5AG4GbMVs`). 6-item perf wave shipped autonomously. ONE BLOCKER: Supabase Realtime publication may not have applied yet — see action 1 below.**
 
-**🎯 Immediate next-session actions (do these first):**
+**🎯 Immediate next-session actions (do these first, in order):**
 
-1. **Verify Railway applied the alembic migration `2026_05_16_rls_realtime`** — `SELECT count(*) FROM pg_policies WHERE schemaname='public'` should return ≥22 (11 SELECT + 11 deny-write).
-2. **Flip `NEXT_PUBLIC_USE_REALTIME=1` in Vercel project settings** (Settings → Env Vars → Production) → trigger redeploy. This activates the `useRealtimeInvalidate` hook in production.
-3. **POST `/api/admin/force-release-all-claims`** (lead/admin JWT) to clear the 5 stuck-`in_review` locks left over from my Playwright walks. Without this, Bug 7+8 smoke can't run because the queue is drained.
-4. Re-run `frontend-v3/tests/e2e/bug-fixes-2026-05-16.spec.ts --grep "Bug7|Bug8"` to close those last two acceptance tests.
+1. **Hit `/api/admin/realtime-status`** (admin JWT) — new endpoint at `7ca50ec`. Returns `{alembic_head, publication_tables, rls_enabled_tables, policy_count}`. If `publication_tables` is empty or missing `calls/rejections/customer_deals/etc`, the `2026_05_16_rls_realtime` migration hasn't applied on Railway → run `alembic upgrade head` on Railway shell OR exec the ALTER PUBLICATION ADD statements via Supabase SQL editor. Final Playwright smoke this session caught this blocker: WebSocket connects + auth accepted + hook code in bundle, but Supabase replies "Realtime is not enabled" — publication isn't populated.
+
+2. **Set Railway env vars** to activate AssemblyAI webhook (Item 4 of this run):
+   ```
+   ASSEMBLYAI_WEBHOOK_SECRET=<output of: python -c "import secrets; print(secrets.token_hex(32))">
+   BACKEND_PUBLIC_URL=https://compliance-agent-production-690e.up.railway.app
+   ```
+   Without both, the existing 3s poll path runs unchanged (zero-risk fallback).
+
+3. **POST `/api/admin/force-release-all-claims`** (lead/admin JWT) to clear 5 stuck `in_review` calls so Bug 7+8 cross-tab smoke can run.
+
+4. **Verify Railway region + DATABASE_URL pool**. Item 6 audit measured ~680ms Railway↔Supabase per query — strong signal of cross-region placement. Check Railway Dashboard → Service → Settings → Region. Supabase is `ap-south-1`. If Railway is US-East: relocation to `asia-southeast1` saves ~600ms/request. Also verify `DATABASE_URL` ends in `:6543/postgres` (Supavisor transaction-mode pooler), not `:5432` (direct).
+
+5. **Re-run Lighthouse** after Items 1-4 are fully active: `cd frontend-v3 && node --use-system-ca scripts/lighthouse-baseline.mjs`. Diff vs `test-results/lighthouse-baseline-2026-05-16.{json,md}`.
 
 Read in order:
 
-1. [[04_Sessions/2026-05-16_Session_path3_realtime_overhaul]] — **READ FIRST.** Full RLS migration + Supabase Realtime publication on 11 user-visible tables + `useRealtimeInvalidate` hook + 3 page mounts + 5s deals poll killed + admin force-release endpoint + `asyncio.to_thread` on the 2 async-route disk-read sites. **All feature-flagged on `NEXT_PUBLIC_USE_REALTIME=1` — currently NO-OP.** Architecture sketch + rollout playbook + risk register inside.
+1. [[04_Sessions/2026-05-16_Session_path3_close_perf_wave]] — **READ FIRST.** Autonomous run that shipped Items 1-6 + the realtime activation. Customer/Profile caches, claim_call async-via-to_thread, AssemblyAI webhook (with static-header auth NOT HMAC), Lighthouse baseline, region audit, `/api/admin/realtime-status` diagnostic. **Includes the Playwright finding that the Supabase publication may not have applied.**
 
-2. [[04_Sessions/2026-05-16_Session_eight_bug_diagnosis]] — Diagnose-fix-verify of 8 bugs across Tracker/Human Review/Upload. 6 shipped (Bug 1 tracker count drift, Bug 2 flash-empty, Bug 4 queue badge mismatch, Bug 5 lead-gen deal merge, Bug 7 stale rejections invalidation, Bug 8 cross-tab realtime). Bug 3 = feature not built (deferred), Bug 6 = not-a-bug (spec confirmed). Includes 5 continuous-learning rules saved.
+2. [[04_Sessions/2026-05-16_Session_path3_realtime_overhaul]] — Earlier today: full RLS migration `2026_05_16_rls_realtime` (11 user-visible tables) + `is_active_reviewer()` SECURITY DEFINER helper + `useRealtimeInvalidate` hook + 3 page mounts + 5s deals poll killed. **The migration file is shipped at `9f10205` but verify it actually applied via action 1 above.**
 
-3. [[04_Sessions/2026-05-16_Session_queue_human_review_audit_verification]] — Earlier today: forensic verification of two external audits. Headline (now FIXED): `VerdictTab.handleSubmit` was a prototype that `console.log`d a payload and never POSTed; fix in commit `7b7e078`. Includes corrections to 10/29 audit claims.
+3. [[04_Sessions/2026-05-16_Session_eight_bug_diagnosis]] — Diagnose-fix-verify of 8 bugs across Tracker/Human Review/Upload. 6 shipped. Includes 5 continuous-learning rules saved.
+
+4. [[04_Sessions/2026-05-16_Session_queue_human_review_audit_verification]] — Earlier today: forensic verification of two external audits. Headline (now FIXED): `VerdictTab.handleSubmit` was a prototype that never POSTed; fix in commit `7b7e078`. Includes corrections to 10/29 audit claims.
 
 2. [[05_State/Live_State]] — **GROUND TRUTH ON DEPLOY.** Tip backend `3e57545`. (a) Reverted all Sonnet routing on detectors back to Opus 4.7 (Mohamed mandate: Sonnet's transcripts were unreliable on supplier / names / business / call_type). Both `openrouter_model` and `openrouter_cheap_model` now point at `anthropic/claude-opus-4.7` so any leftover `cheap=True` callsite still gets Opus. (b) Added trailing-tokens deal-linker shortcut: if last 2 non-stopword tokens of the business name match EXACTLY between target and candidate, drop fuzzy floor 0.80 → 0.40. Awais 4-call retest: 4 calls → **2 deals** (3 collapsed onto `6ac65bac 'Awais Mustafa Ta Charles Palace'`, one leadgen call still stub because BUSINESS_DETECT returned None on that transcript — transcript-limited). (c) Deleted duplicate Vercel project `compliance-agent-feat-wave5-deploy` that was auto-deploying-and-blocking on every push; only `compliance-agent` (`prj_eHIyIFyxusNdCd6mR9Ff469NrcKO`) remains.
 
