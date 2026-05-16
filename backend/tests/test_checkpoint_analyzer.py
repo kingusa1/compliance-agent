@@ -275,12 +275,16 @@ async def test_all_checkpoints_parallel_all_pass():
 @pytest.mark.asyncio
 async def test_all_checkpoints_mixed_results():
     """Mixed pass/fail/partial results with the severity-weighted verdict
-    introduced 2026-05-10.
+    introduced 2026-05-10 + the 2026-05-15 medium-only pass-rate gate.
 
     SAMPLE_CHECKPOINTS carries no explicit severity — default is 'medium',
     so a fail + a partial both land in the ``medium_hits`` bucket. Under
-    the new mapping that is ``coaching`` → compliant=True (passes with
-    a coaching note logged). The score is still 1/3.
+    the mapping that's normally ``coaching`` (compliant=True with a
+    coaching note logged). But commit ``a83e441`` added a guard: when
+    ALL breaches are medium AND pass-rate < 50%, escalate to ``review``
+    (compliant=False) so cases like Andrew's LOA 0/11-all-medium stop
+    rendering as "coaching/compliant". This test exercises that gate
+    (1/3 = 33% pass rate → escalation fires).
     """
     async def mock_call_llm(prompt, timeout=60.0):
         return json.dumps([
@@ -317,9 +321,10 @@ async def test_all_checkpoints_mixed_results():
     assert summary["failed"] == 1
     assert summary["partial"] == 1
     assert summary["score"] == "1/3"
-    # All breaches default to severity=medium → coaching bucket, still compliant.
-    assert summary["bucket"] == "coaching"
-    assert summary["compliant"] is True
+    # 33% pass rate + all-medium-only breaches → review escalation
+    # (a83e441 pass-rate guard); compliant=False.
+    assert summary["bucket"] == "review"
+    assert summary["compliant"] is False
     assert summary["critical_breaches"] == 0
     assert summary["high_breaches"] == 0
     assert summary["medium_breaches"] == 2  # fail + partial
