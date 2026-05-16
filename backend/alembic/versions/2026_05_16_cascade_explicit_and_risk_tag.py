@@ -89,7 +89,7 @@ def upgrade() -> None:
                              AND attname = '{col}')
                       ]::smallint[]
                 LOOP
-                    EXECUTE format('ALTER TABLE {table} DROP CONSTRAINT %I', fk_name);
+                    EXECUTE format('ALTER TABLE {table} DROP CONSTRAINT %%I', fk_name);
                 END LOOP;
             END $$;
             """

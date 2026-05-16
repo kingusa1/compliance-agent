@@ -110,7 +110,7 @@ def upgrade() -> None:
                 SELECT 1 FROM public.profiles
                 WHERE id = (SELECT auth.uid())::text
                   AND role IN ('reviewer', 'lead', 'admin')
-                  AND COALESCE(is_active, true)
+                  AND COALESCE(active, true)
             );
         $$;
         """
