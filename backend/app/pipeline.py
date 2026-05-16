@@ -495,7 +495,12 @@ def _maybe_merge_into_existing_deal(
     # Compare first 2 tokens' phonetic keys + the full-name token-set overlap;
     # if either lights up we lower the SequenceMatcher floor to 0.60.
     from app.intake.matcher import _metaphone as _mp_key
-    _STOP_TOKENS = {"the", "ltd", "limited", "plc", "and", "of", "for", "trading", "as"}
+    _STOP_TOKENS = {
+        "the", "ltd", "limited", "plc", "and", "of", "for", "trading", "as",
+        # Single-letter remnants after slash/punctuation normalisation
+        # (e.g. "T/A" → "t a", "d/b/a" → "d b a").
+        "t", "a", "b", "d",
+    }
 
     def _token_metaphones(s: str) -> list[str]:
         out: list[str] = []
@@ -551,8 +556,34 @@ def _maybe_merge_into_existing_deal(
             if (target_all_mp or cand_mp_all)
             else 0.0
         )
-        phonetic_strong = phonetic_first2_hit or phonetic_jaccard >= 0.5
-        floor = 0.60 if phonetic_strong else 0.80
+
+        # 2026-05-16 — Trailing-tokens shortcut. Business names tend to
+        # END with the brand ("Trading As Charles Palace", "Mustafa
+        # Trading As Charles Palace"). If the last 2 non-stopword tokens
+        # match EXACTLY between the two names, that's a same-business
+        # signal strong enough to override fuzzy / phonetic — it catches
+        # cases where AssemblyAI mis-transcribes the trading-as prefix
+        # ("Awais Mustafa" vs "Waste Master T/A") but renders the actual
+        # brand identically.
+        def _tail2(s: str) -> tuple[str, ...]:
+            toks = [t for t in s.split() if t not in _STOP_TOKENS]
+            return tuple(toks[-2:]) if len(toks) >= 2 else tuple(toks)
+        trailing_match = (
+            len(_tail2(target_norm)) >= 2
+            and _tail2(target_norm) == _tail2(cand_norm)
+        )
+
+        phonetic_strong = (
+            phonetic_first2_hit or phonetic_jaccard >= 0.5 or trailing_match
+        )
+        # Trailing-2 exact match is the strongest signal — lower floor to 0.40.
+        # Other phonetic signals → 0.60. No signal → 0.80.
+        if trailing_match:
+            floor = 0.40
+        elif phonetic_strong:
+            floor = 0.60
+        else:
+            floor = 0.80
 
         if score >= floor and score > best_score:
             best = cand
@@ -561,7 +592,8 @@ def _maybe_merge_into_existing_deal(
                 log.info(
                     f"\U0001f517 PHONETIC_UPLIFT call_id={call.id} "
                     f"score={score:.2f} floor={floor:.2f} "
-                    f"first2_hit={phonetic_first2_hit} jaccard={phonetic_jaccard:.2f} "
+                    f"first2={phonetic_first2_hit} jaccard={phonetic_jaccard:.2f} "
+                    f"trailing={trailing_match} "
                     f"target={target_norm!r} cand={cand_norm!r}"
                 )
 
