@@ -55,6 +55,7 @@ from app.models import (
     VerdictResponse,
     VerdictSuggestion,
 )
+from app.profile_cache import get_profile_names
 from app.reviewers import current_reviewer, require_lead
 
 logger = logging.getLogger(__name__)
@@ -1351,9 +1352,10 @@ def get_queue(
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     day_ago = now - timedelta(hours=24)
 
-    # Resolve id→name once. Profile count stays small (one row per reviewer),
-    # so loading the whole table is cheaper than a per-row join.
-    name_map = {p.id: p.name for p in db.query(Profile).all()}
+    # Resolve id→name once via the module-level 5-min TTL cache. Profile count
+    # stays small (one row per reviewer) — the cache avoids a redundant DB
+    # round-trip on every queue render.
+    name_map = get_profile_names(db)
 
     # ─── Metrics ─────────────────────────────────────────────────────────
     # Backlog = anything the reviewer still needs to sign off. That includes
@@ -2225,7 +2227,7 @@ def get_agreement(
             {"reviewer": r.actor_id, "verdict": r.verdict}
         )
 
-    name_map = {p.id: p.name for p in db.query(Profile).all()}
+    name_map = get_profile_names(db)
 
     return {
         "call_id": call_id,
@@ -2460,3 +2462,22 @@ def verdicts_at_time(
         "as_of": t,
         "checkpoints": list(by_cp.values()),
     }
+
+
+# ── Internal ops: profile cache ───────────────────────────────────────────────
+
+@hitl_router.post("/api/internal/refresh-profile-cache", tags=["internal"])
+def refresh_profile_cache_endpoint(
+    lead: dict = Depends(require_lead),
+    db: Session = Depends(get_db),
+):
+    """Manually flush and reload the in-memory profile name cache.
+
+    Requires lead role. Useful after bulk profile inserts or role changes
+    that should be reflected immediately without waiting for the 5-min TTL.
+    """
+    from app.profile_cache import refresh_profile_cache
+
+    count = refresh_profile_cache(db)
+    logger.info("profile_cache: manual refresh actor=%s count=%d", lead["id"], count)
+    return {"refreshed": True, "profile_count": count}

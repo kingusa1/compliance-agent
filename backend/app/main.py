@@ -4,7 +4,7 @@ import os
 from contextlib import asynccontextmanager
 
 import sentry_sdk
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -21,7 +21,8 @@ import app.observability_metrics  # noqa: F401
 from app.agents_routes import agents_router
 from app.config import settings
 from app.customers_routes import customers_router
-from app.database import create_tables, engine
+from app.database import create_tables, engine, get_db
+from app.reviewers import current_reviewer
 from app.agent_chat_routes import agent_chat_router
 from app.deals_routes import deals_router
 from app.directives_routes import directives_router
@@ -123,6 +124,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001 — DB may be down at boot; readyz will surface it
         app_log.warning(f"startup_stuck_cleanup_skipped: {type(e).__name__}: {e}")
 
+    # Pre-warm customer cache so first call-ingest doesn't pay a full table scan.
+    # Non-fatal: if the DB is unreachable at boot the cache populates on first miss.
+    try:
+        from app.business_detect import _refresh_customer_cache
+        db = SessionLocal()
+        try:
+            _refresh_customer_cache(db)
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 — cache miss on first request is acceptable
+        app_log.warning(f"customer_cache_warmup_skipped: {type(e).__name__}: {e}")
+
     # Pre-warm Supabase JWKS so first authenticated request doesn't pay the round-trip.
     # Skipped when SUPABASE_URL isn't set (e.g. tests) to keep startup fast.
     if settings.supabase_url:
@@ -132,6 +145,19 @@ async def lifespan(app: FastAPI):
             app_log.info("JWKS pre-warmed from Supabase")
         except Exception as e:
             app_log.warning(f"JWKS pre-warm failed (will retry on first request): {e}")
+
+    # Pre-load profile cache so first queue render doesn't pay a DB round-trip.
+    # Non-blocking — log + continue on failure (DB may be unreachable at boot).
+    try:
+        from app.profile_cache import refresh_profile_cache
+        _pc_db = SessionLocal()
+        try:
+            _pc_count = refresh_profile_cache(_pc_db)
+            app_log.info(f"profile_cache: pre-loaded {_pc_count} profiles")
+        finally:
+            _pc_db.close()
+    except Exception as e:  # noqa: BLE001
+        app_log.warning(f"profile_cache: startup pre-load skipped: {type(e).__name__}: {e}")
 
     # Start the idle-claim sweeper. Runs every 120s on its own Session, so it
     # doesn't compete with request-scoped sessions for connection-pool slots.
@@ -202,6 +228,24 @@ def readyz():
         checks["db"] = f"fail: {type(exc).__name__}"
     status_code = 200 if all(v == "ok" for v in checks.values()) else 503
     return JSONResponse({"status": "ready" if status_code == 200 else "degraded", "checks": checks}, status_code=status_code)
+
+
+@app.post("/api/internal/refresh-customer-cache", tags=["ops"])
+def refresh_customer_cache(
+    reviewer: dict = Depends(current_reviewer),
+    db=Depends(get_db),
+):
+    """Force-refresh the in-process customer name cache.
+
+    Admin/lead only. Returns the number of customers now in cache.
+    Useful after bulk customer imports or when matching feels stale.
+    """
+    from app.business_detect import _refresh_customer_cache, _CUSTOMER_CACHE
+
+    if reviewer.get("role") not in ("lead", "admin"):
+        raise HTTPException(status_code=403, detail="admin or lead role required")
+    _refresh_customer_cache(db)
+    return {"ok": True, "customer_count": len(_CUSTOMER_CACHE.customers)}
 
 
 app.add_middleware(
