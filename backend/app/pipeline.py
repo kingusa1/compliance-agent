@@ -870,11 +870,8 @@ async def _step_detect_metadata(
             and (current_deal.customer_name or "").startswith("(auto-detect pending")
         )
         if current_deal:
-            # 2026-05-16: pass detected supplier so non-EON transcripts get
-            # Opus 4.7 (transcript drift is worst on BG/Pozitive uploads).
-            business_name = await detect_business_name(
-                transcript, supplier_hint=call.detected_supplier or ""
-            )
+            # 2026-05-16: Opus 4.7 mandate across all detectors (Mohamed).
+            business_name = await detect_business_name(transcript)
             # Last-resort fallback: when no business name surfaces, fall back to
             # the detected customer's name so we never leave the stub label.
             if not business_name and call.customer_name and call.customer_name.strip():

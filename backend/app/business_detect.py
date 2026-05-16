@@ -109,35 +109,27 @@ def _looks_like_person_name(name: str) -> bool:
     return False
 
 
-async def detect_business_name(
-    transcript: str, *, supplier_hint: str | None = None
-) -> str | None:
+async def detect_business_name(transcript: str) -> str | None:
     """Return the business name spoken in the call, or None if unclear.
 
     Failures are swallowed and return None — never propagate to the caller.
     The pipeline keeps running with no business name and the auto-detect
     stub deal stays as fallback.
 
-    ``supplier_hint`` lets the caller signal whether this transcript is
-    likely to suffer from non-E.ON transcription drift (Lucca's British
-    Gas / Awais's British Gas / Pozitive uploads). For those we escalate
-    to the full Opus 4.7 model because Sonnet was returning the person
-    name or a hallucinated phonetic guess on those transcripts.
+    2026-05-16 — Mohamed mandate: every detector runs on Opus 4.7. The
+    earlier `supplier_hint` kwarg routed E.ON calls to Sonnet for cost,
+    but Sonnet was returning person names / hallucinated phonetic guesses
+    and that's the highest-cost failure mode in the system (cascades
+    through deal-linker + reviewer queue assignment). Param removed.
     """
     words = transcript.split()
     # Use a wider window than the old 600 because business names often
     # land in the verbal-contract reading further into the call.
     transcript_start = " ".join(words[:1500])
     prompt = _PROMPT.replace("{transcript_start}", transcript_start)
-    # 2026-05-16 — Sonnet-as-cheap was good enough on clean E.ON Next
-    # recordings but mis-extracted business names on British Gas + Pozitive
-    # transcripts where the verbal-contract sequence has more transcription
-    # drift. Route to Opus 4.7 for those suppliers (and when the supplier
-    # is unknown — treat as worst-case).
-    eon_hint = (supplier_hint or "").lower().strip()
-    use_cheap = bool(eon_hint) and "eon" in eon_hint.replace(".", "").replace("e.on", "eon")
     try:
-        result = await _call_llm(prompt, timeout=30.0, cheap=use_cheap)
+        # 2026-05-16 — Opus 4.7 mandate across all detectors.
+        result = await _call_llm(prompt, timeout=30.0, cheap=False)
     except Exception as e:
         log.warning(f"\U0001f3e2 BUSINESS_DETECT failed: {e}")
         return None

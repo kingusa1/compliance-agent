@@ -467,9 +467,10 @@ async def detect_supplier(transcript: str) -> str:
     words = transcript.split()
     transcript_text = " ".join(words[:3000])
     prompt = DETECT_PROMPT.replace("{transcript_start}", transcript_text)
-    # Sonnet is plenty for picking the broker-target supplier; routes through
-    # OpenRouter at ~5x lower cost than Opus.
-    result = await _call_llm(prompt, timeout=30.0, cheap=True)
+    # 2026-05-16 — Mohamed mandate: use Opus 4.7 across the board.
+    # Sonnet was returning unreliable supplier picks on noisy transcripts;
+    # accuracy > cost for this classifier.
+    result = await _call_llm(prompt, timeout=30.0, cheap=False)
     detected = result.strip().strip('"')
     log.info(f"\U0001f50d DETECT supplier \u2192 \"{detected}\"")
     return detected
@@ -506,8 +507,9 @@ async def detect_call_type(transcript: str) -> str | None:
     transcript_start = " ".join(words[:2500])
     prompt = DETECT_CALL_TYPE_PROMPT.replace("{transcript_start}", transcript_start)
     try:
-        # Coarse 4-way classification; Sonnet is fine for this.
-        raw = await _call_llm(prompt, timeout=20.0, cheap=True)
+        # 2026-05-16 — Opus 4.7 mandate from Mohamed: Sonnet was misclassifying
+        # call_type on noisy transcripts. Accuracy > cost.
+        raw = await _call_llm(prompt, timeout=20.0, cheap=False)
     except Exception as e:
         log.warning(f"\U0001f3af DETECT call_type LLM failed: {e}")
         return None
@@ -675,8 +677,9 @@ async def detect_names(transcript: str) -> tuple[str, str]:
     transcript_start = " ".join(words[:600])
     prompt = DETECT_NAMES_PROMPT.replace("{transcript_start}", transcript_start)
     try:
-        # Cheap two-line classification — Sonnet handles this perfectly.
-        result = await _call_llm(prompt, timeout=20.0, cheap=True)
+        # 2026-05-16 — Opus 4.7 mandate from Mohamed: name extraction is
+        # downstream of every grading decision, so accuracy > cost.
+        result = await _call_llm(prompt, timeout=20.0, cheap=False)
     except Exception as e:
         log.warning(f"\U0001f464 DETECT names LLM failed: {e}")
         # Regex still wins for the agent when the LLM is down.

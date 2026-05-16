@@ -19,11 +19,14 @@ class Settings(BaseSettings):
     # tone-sensitive tracker fix_required text). Override per-env.
     openrouter_api_key: str = ""
     openrouter_model: str = "anthropic/claude-opus-4.7"
-    # Cheaper model for high-volume / low-judgment detector calls (supplier
-    # detection, name extraction, business-name extraction, call-type, date
-    # extraction). Routed via the ``cheap=True`` flag on ``_call_llm``. Set
-    # to Sonnet 4.6 by default — Aly's 2026-05-15 cost-mix ask.
-    openrouter_cheap_model: str = "anthropic/claude-sonnet-4.6"
+    # ``cheap=True`` model route — 2026-05-16 Mohamed mandate: keep this on
+    # Opus 4.7 too. Sonnet was returning unreliable transcripts on
+    # supplier / name / business / call-type detection and that's the
+    # highest-cost failure mode (cascades through deal-linker + reviewer
+    # queue). Defense-in-depth: every callsite has also been switched to
+    # `cheap=False`, but if any future caller forgets, this default still
+    # routes to Opus.
+    openrouter_cheap_model: str = "anthropic/claude-opus-4.7"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
     anthropic_api_key: str = ""
