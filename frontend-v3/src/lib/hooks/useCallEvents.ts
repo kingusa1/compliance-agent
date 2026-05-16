@@ -62,9 +62,18 @@ export function useCallEvents(scope: string | null | undefined, enabled = true):
         // deals, dashboard, intelligence. Cache keys span TWO naming
         // conventions: the reviewer keys (top-level "queue" / "calls" /
         // etc.) and the admin keys ("admin" prefix from lib/queries/admin.ts).
+        //
+        // 2026-05-16 audit Bug 8 fix: explicit `["admin", "tracker"]` key
+        // instead of `["tracker"]`. The tracker query at
+        // lib/queries/tracker.ts uses `["admin", "tracker", filters]`, which
+        // the prefix `["tracker"]` does NOT match. The blanket `["admin"]`
+        // below DOES match by prefix but is dangerously broad — explicit
+        // beats blanket, and we want this to keep working if `["admin"]`
+        // is ever tightened.
         qc.invalidateQueries({ queryKey: ["queue"] });
         qc.invalidateQueries({ queryKey: ["calls"] });
-        qc.invalidateQueries({ queryKey: ["tracker"] });
+        qc.invalidateQueries({ queryKey: ["admin", "tracker"] });
+        qc.invalidateQueries({ queryKey: ["rejections"] });
         qc.invalidateQueries({ queryKey: ["dashboard"] });
         qc.invalidateQueries({ queryKey: ["intelligence"] });
         qc.invalidateQueries({ queryKey: ["customers"] });
@@ -77,7 +86,8 @@ export function useCallEvents(scope: string | null | undefined, enabled = true):
         qc.invalidateQueries({ queryKey: ["call", scope] });
         if (eventType === "finalized" || eventType === "score_ready") {
           qc.invalidateQueries({ queryKey: ["queue"] });
-          qc.invalidateQueries({ queryKey: ["tracker"] });
+          qc.invalidateQueries({ queryKey: ["admin", "tracker"] });
+          qc.invalidateQueries({ queryKey: ["rejections"] });
           qc.invalidateQueries({ queryKey: ["intelligence"] });
           qc.invalidateQueries({ queryKey: ["admin"] });
         }

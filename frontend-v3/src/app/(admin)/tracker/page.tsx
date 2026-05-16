@@ -71,11 +71,23 @@ export default function TrackerPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows]);
 
-  // Background fetch for the "Awaiting review" pill so the count shows
-  // even when reviewer is on a different tab. Polls the AI_PENDING tab
-  // independently so the chip always reflects pending work.
-  const awaitingQ = useTrackerRowsQuery({ tab: "awaiting_review" });
-  const awaitingCount = awaitingQ.data?.count ?? 0;
+  // 2026-05-16 audit Bug 1 fix: when the active tab IS awaiting_review,
+  // read the count from the SAME query that drives the table (rows.length
+  // after backend's tab + filter predicates). The previous duplicate
+  // `useTrackerRowsQuery({ tab: "awaiting_review" })` query fired
+  // unfiltered, so the badge stayed at the unfiltered total while any
+  // category/search filter made the table show fewer rows — count != rows.
+  //
+  // When on OTHER tabs (active/fixed/dead/compliant), we still need a
+  // background fetch so the chip shows the queue depth at a glance —
+  // that secondary query is intentionally unfiltered so it counts ALL
+  // awaiting work, not just what matches the current tab's filters.
+  const isOnAwaitingTab = tab === "awaiting_review";
+  const awaitingBgQ = useTrackerRowsQuery({
+    tab: "awaiting_review",
+    // No filters — this is a pure backlog ping for the OTHER-tab badge.
+  });
+  const awaitingCount = isOnAwaitingTab ? rows.length : (awaitingBgQ.data?.count ?? 0);
 
   const setTab = (t: TrackerTab) => {
     const params = new URLSearchParams(sp.toString());

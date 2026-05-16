@@ -4,7 +4,7 @@
  * Backend route: GET /api/tracker/rows?tab=active|fixed|dead|compliant
  * Returns rows in Watt's 17-col XLSX shape (cols A-Q).
  */
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 
 /**
@@ -167,6 +167,13 @@ export function useTrackerRowsQuery(filters: TrackerFilters) {
     // updates land when the reviewer clicks back into the tab.
     staleTime: 15_000,
     gcTime: 5 * 60 * 1000,
+    // 2026-05-16 audit Bug 2 fix: every filter keystroke / pill toggle
+    // creates a NEW queryKey (because `filters` is the third element).
+    // Without keepPreviousData TanStack would show the empty-state
+    // skeleton on every keystroke, making the table "flash empty". With
+    // it, the previous tab's rows render in the meantime + the new fetch
+    // swaps them in atomically when it lands.
+    placeholderData: keepPreviousData,
   });
 }
 

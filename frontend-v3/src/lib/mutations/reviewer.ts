@@ -249,10 +249,16 @@ export function useSubmitVerdict() {
       // manual reload.
       qc.invalidateQueries({ queryKey: ["admin", "tracker"] });
       qc.invalidateQueries({ queryKey: ["admin-calls"] });
-      // W2: invalidate the rejections list when an auto-rejection landed so
-      // the /rejections page picks up the new row without a hard reload.
+      // 2026-05-16 audit Bug 7 fix: invalidate ["rejections"] UNCONDITIONALLY.
+      // Previously gated on data?.auto_rejection_id being truthy, but a FAIL
+      // verdict with no failing CallCheckpoint rows (e.g. reviewer override
+      // on a partial-status call) returns auto_rejection_id=null and the
+      // /rejections page stays stale even though the verdict shipped. Also
+      // covers the case where confirmed_by was updated on a pre-existing
+      // rejection row (which doesn't return an id but DOES change list data).
+      qc.invalidateQueries({ queryKey: ["rejections"] });
+      // W2: surface the new rejection in the toast only when one was created.
       if (data?.auto_rejection_id) {
-        qc.invalidateQueries({ queryKey: ["rejections"] });
         toast.success("Verdict committed + rejection created", {
           description: `Tracked at /rejections/${data.auto_rejection_id.slice(0, 8)}…`,
           action: {
