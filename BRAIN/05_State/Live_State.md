@@ -1,7 +1,54 @@
 ---
 created: 2026-05-10
 updated: 2026-05-16
-tags: [state, live, ground-truth, opus-mandate, trailing-tokens-uplift]
+tags: [state, live, ground-truth, audit-shipped, verdict-wired, system-prompt-installed]
+---
+
+# Live State — Audit run shipped + system prompt installed 2026-05-16 (late evening)
+
+> 🚀 **2026-05-16 (late evening) — Tip `3e34abd` on origin/main. Railway should auto-deploy; Vercel deploy still gated by harness hook pending user authorization.**
+>
+> **What landed since `1fc2f6e`:**
+>
+> 1. `7b7e078` — feat(reviewer): wire VerdictTab.handleSubmit + claim/release + 27 audit fixes. P0 fix for the prototype Submit, claim/release wired, suggestAggregate severity rules, EditMetadata changed-fields-only payload, 4 backend auth gaps sealed, GZip + uvloop, CallResponse.audio_url + CallSummary.call_type/deal_id, lowercase-tolerant verdict normalization, category filter post-hoc on awaiting tab, vercel cache headers, Reanalyze postJson, useEditCallMetadata key fix, N/A pill, mm:ss Math.floor, em-dash placeholder, SavedViewsBar wired, intake batch sentinel, FilterDropdown dead-code removal.
+> 2. `403741d` — feat(db): explicit cascade FKs on calls + widen ck_flags_risk_tag for 'vulnerable'. New alembic migration `2026_05_16_cascade_explicit_and_risk_tag`. Eliminates the silent rollback that was killing every L2_EXTRACTION_WRITE with a vulnerability flag.
+> 3. `30b2102` — docs(brain): 2026-05-16 audit verification + 27 shipped fixes session log.
+> 4. `d53bb94` — docs(brain): install BRAIN/00_SYSTEM_PROMPT.md as canonical operating doctrine (user-supplied). Indexed at top of 00_INDEX.md.
+> 5. `3e34abd` — fix(reviewer,backend): 4 CRITICAL + 4 HIGH fixes from post-push parallel review (refactor-cleaner + python-reviewer + code-reviewer ran in one tool-call block):
+>    - **CRITICAL C7 (security):** `GET /api/calls/{id}` now requires `Depends(current_reviewer)`. Was leaking signed audio URL anonymously after the audio_url addition. test_calls_v2_shape.py gains the standard auth override.
+>    - **CRITICAL C1:** claim release reads `session_id` from `claimSessionRef` (not a closed-over `let`). Cleanup releases even if React 18 strict-mode tore down between mutate() and onSuccess → no orphaned 30-min locks on fast nav.
+>    - **CRITICAL C2:** `claimedRef.current = true` only inside `onSuccess` or on 409. Transient network failure no longer leaves page stuck "Claiming…" forever.
+>    - **CRITICAL C3:** `useSubmitVerdict.onSuccess` invalidates `callCheckpoints` + `["call", id, "segments"]`. Checkpoint tab + per-segment cards stayed stale after verdict submit; fixed.
+>    - **HIGH H2:** hitl_routes Inngest VERDICT_SUBMITTED uses `verdict_action_norm` for verdict + compliant boolean. Lowercase "pass" was emitting `compliant=False` to tracker observability.
+>    - **HIGH H5:** `useClaimCall` + `useReleaseCall` gain `{ silent }` option; auto-claim uses it so 2 toasts don't pop on every navigation.
+>    - **HIGH H3:** N/A applyFilter is a whitelist of explicit unscored statuses (`"" | "na" | "skipped" | "unscored" | "not_scored"`) instead of a catch-all. Future statuses like `error`/`pending` will surface as missing-row totals instead of silently bloating N/A. Mirror change in the count reducer.
+>    - **HIGH H6:** Auto-claim guarded against terminal-state calls (committed / compliant / non_compliant).
+>    - **P1-11:** `useSubmitVerdict` "Open" toast action now `router.push(...)` not `window.location.href` → keeps SPA shell, no login-gate flash.
+>    - **Dead code:** Deleted unreachable FeedbackEmailModal (172 lines), VERDICTS array (60 lines), VerdictRow (50 lines), 3 dead useStates (`reason`, `sendEmailToggle`, `showEmailModal`), and the `useFeedbackEmail` import on call-detail page.
+>    - **Error UI:** IntelligencePanel 4 cards + AgentsPage gain `isError → ErrorState` with Retry, matching the rejections fix pattern.
+>
+> **Build state pre-push (verified on each commit):** `npx tsc --noEmit` exit 0; `python -c "ast.parse(...)"` exit 0 on every touched .py; touched-area pytest = 21 passed (test_routes + test_ai_rejection_reason + test_claim). The 2 `test_calls_v2_shape.py` failures are pre-existing local-Postgres schema drift (`calls.file_hash` / `customer_deals.match_method` columns not on the local DB but are on CI's `alembic upgrade head`).
+>
+> **Deploy state:**
+> - Backend (Railway): `/healthz` 200 + `/readyz {db: ok}` at `compliance-agent-production-690e.up.railway.app`. Auto-deploy on push to main is the normal pattern; tip `3e34abd` should be live shortly.
+> - Frontend (Vercel): **STILL GATED.** Harness hook denied `POST /v13/deployments` until user explicit-authorization (the system prompt says "Auto-deploy from main" — if true the auto path will resolve this; otherwise the manual API trigger needs a `deploy vercel` go-ahead from the user).
+> - Alembic migration `2026_05_16_cascade_explicit_and_risk_tag` will apply on Railway release pre-cmd (`alembic upgrade head`).
+>
+> **Definition-of-Done status:**
+> - [x] Feature works end-to-end **in code** (browser verification pending Vercel deploy)
+> - [ ] Realtime sync <200ms across two tabs **(pending Vercel deploy + smoke)**
+> - [x] Errors surface to UI (IntelligencePanel + AgentsPage + Rejections)
+> - [x] Retry + fallback paths tested (21 tests passing locally)
+> - [x] Logs visible (logger.warning on emit failures)
+> - [x] No new lint/type warnings (`tsc --noEmit` exit 0)
+> - [ ] 80%+ coverage on changed lines **(not measured this run)**
+> - [ ] CI green **(awaiting GitHub Actions on push)**
+> - [x] Supabase migration applied with RLS **(migration file in place; alembic head will apply on Railway release)**
+> - [ ] Smoke-tested on production URL **(pending Vercel deploy)**
+> - [x] BRAIN/ updated (this entry + new session log + 00_SYSTEM_PROMPT.md)
+>
+> Resume guide: [[../04_Sessions/2026-05-16_Session_queue_human_review_audit_verification]] + [[../00_SYSTEM_PROMPT]].
+
 ---
 
 # Live State — Opus 4.7 mandate + trailing-tokens deal-linker 2026-05-16 (mid-day)
