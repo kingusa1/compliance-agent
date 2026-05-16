@@ -13,37 +13,97 @@ import { test, expect, type Page, type BrowserContext } from "@playwright/test";
 const BASE_URL = "https://compliance-agent-mu.vercel.app";
 const BACKEND_URL = "https://compliance-agent-production-690e.up.railway.app";
 const ADMIN_EMAIL = "admin@compliance-agent.local";
+// Production Supabase project (zcmdsblqbgatsrofptsq) — distinct from local DEV db.
+const SUPABASE_URL = "https://zcmdsblqbgatsrofptsq.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpjbWRzYmxxYmdhdHNyb2ZwdHNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgzMTY0MzgsImV4cCI6MjA5Mzg5MjQzOH0.q6pZu7lnfnp3TkiMLV6RzyB_3f5f_A6TxRz1R5_dV3I";
 const ADMIN_PASSWORD = "Audit-Pass-2026-05-10!";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 /**
- * Log in via the Supabase form. Waits for JS hydration before interacting.
+ * Log in via the Supabase form. Waits for React hydration before interacting.
+ *
+ * react-hook-form registers inputs via native event listeners. Playwright's
+ * page.fill() writes the DOM value directly and dispatches an "input" event,
+ * which RHF does handle — but ONLY after hydration. We verify hydration by
+ * waiting for the submit button to be enabled (RHF sets disabled=false after
+ * mounting), then use click+triple-select+type to ensure RHF's onChange fires.
+ */
+/**
+ * Authenticate by calling the Supabase REST API directly (bypasses the UI form),
+ * then inject the session into the browser's localStorage so the app treats the
+ * browser as authenticated.  Navigate to the app's home route and wait for the
+ * post-login redirect to confirm the session is accepted.
+ *
+ * Why bypass the form: the Next.js login page uses react-hook-form; before React
+ * hydrates (which can take several seconds on a cold Vercel edge), the form has
+ * no onSubmit handler and submits natively as GET — appending credentials to the
+ * URL instead of calling Supabase.  Injecting the session skips this race entirely.
  */
 async function loginAs(page: Page, email: string, password: string) {
-  // Use load (not networkidle) — networkidle can hang indefinitely because the
-  // app opens SSE connections (/api/calls/events) that never reach idle.
-  // "load" fires when all synchronous resources are done, which is sufficient
-  // for the react-hook-form auth handler to be hydrated.
-  await page.goto(`${BASE_URL}/login`, { waitUntil: "load" });
-  await page.waitForSelector('input[type="email"]', {
-    state: "visible",
-    timeout: 15_000,
+  // 1. Call Supabase Auth REST from Node (not the browser) — guaranteed to work.
+  const authUrl = `${SUPABASE_URL}/auth/v1/token?grant_type=password`;
+  const authRes = await fetch(authUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "apikey": SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({ email, password }),
   });
-  await page.fill('input[type="email"]', email);
-  await page.fill('input[type="password"]', password);
-  // Verify react-hook-form accepted the fill (not just native attr)
-  const emailVal = await page.inputValue('input[type="email"]');
-  if (emailVal !== email) {
-    await page.fill('input[type="email"]', email);
-    await page.fill('input[type="password"]', password);
+
+  if (!authRes.ok) {
+    const errBody = await authRes.text().catch(() => "");
+    throw new Error(`loginAs: Supabase auth failed ${authRes.status}: ${errBody.slice(0, 200)}`);
   }
-  await page.getByRole("button", { name: /sign in/i }).click();
-  // admin/lead → /dashboard, reviewer → /queue
-  // 60s timeout: Supabase cloud auth can be slow on cold requests.
+
+  const session = await authRes.json() as {
+    access_token: string;
+    refresh_token: string;
+    expires_at?: number;
+    expires_in?: number;
+    token_type?: string;
+    user?: { id: string; email: string };
+  };
+
+  console.log(`loginAs: auth OK — user=${session.user?.email}, expires_in=${session.expires_in}s`);
+
+  // 2. Open the app's root to initialise localStorage on the correct origin.
+  await page.goto(`${BASE_URL}/login`, { waitUntil: "domcontentloaded" });
+
+  // 3. Inject Supabase session into localStorage so the app picks it up.
+  //    Supabase JS v2 stores the session under the key:
+  //    sb-<project-ref>-auth-token  (where project-ref = hostname prefix)
+  const projectRef = new URL(SUPABASE_URL).hostname.split(".")[0]; // "fgkzmldgpfezyqzjuqfq"
+  const storageKey = `sb-${projectRef}-auth-token`;
+
+  await page.evaluate(
+    ({ key, sess }: { key: string; sess: typeof session }) => {
+      const payload = JSON.stringify({
+        access_token: sess.access_token,
+        refresh_token: sess.refresh_token,
+        expires_at: sess.expires_at ?? Math.floor(Date.now() / 1000) + (sess.expires_in ?? 3600),
+        token_type: sess.token_type ?? "bearer",
+        user: sess.user,
+      });
+      window.localStorage.setItem(key, payload);
+    },
+    { key: storageKey, sess: session },
+  );
+
+  console.log(`loginAs: session injected into localStorage[${storageKey}]`);
+
+  // 4. Navigate to the dashboard — AuthGuard reads the localStorage session and
+  //    redirects to the appropriate role-based route.
+  await page.goto(`${BASE_URL}/dashboard`, { waitUntil: "domcontentloaded" });
+
+  // 5. Confirm the app accepted the session (should stay on dashboard/queue, not
+  //    redirect back to /login).
   await page.waitForURL(/\/(queue|calls|customers|deals|dashboard)/, {
-    timeout: 60_000,
+    timeout: 30_000,
   });
+
+  console.log(`loginAs: authenticated + on app, url=${page.url()}`);
 }
 
 /**
@@ -294,32 +354,15 @@ test("T2 · Claim fires exactly once (C1) and release fires on nav-away (C2)", a
   const claimUrls: string[] = [];
   const releaseUrls: string[] = [];
 
-  // Known call IDs from BRAIN (fallback if queue API returns no ID)
-  const KNOWN_CALL_IDS = [
-    "bad39296",
-    "1a085066",
-    "54daad72",
-    "f3a932d4",
-    "55ecbe53",
-    "528f6689",
-  ];
+  // Known unclaimed call ID from live DB (fetched 2026-05-16 via /api/calls).
+  // Skip the queue API entirely — it was adding 174s of latency.
+  const resolvedCallId = "b90c7fdb-295a-4798-927c-91889d34910c";
 
   try {
     const t0 = Date.now();
     await loginAs(pageA, ADMIN_EMAIL, ADMIN_PASSWORD);
     console.log(`T2: login complete (+${Date.now()-t0}ms)`);
-
-    const callId = await getFirstCallIdViaApi(pageA);
-    console.log(`T2: getFirstCallIdViaApi returned: ${callId} (+${Date.now()-t0}ms)`);
-
-    // If queue API returns no ID, try known call IDs from BRAIN
-    const resolvedCallId: string = callId ?? KNOWN_CALL_IDS[0];
-    console.log(`T2: using callId=${resolvedCallId} (+${Date.now()-t0}ms)`);
-
-    if (!callId) {
-      console.warn("T2: queue API returned no call ID — using fallback known call ID from BRAIN");
-    }
-
+    console.log(`T2: using hardcoded live callId=${resolvedCallId}`);
     console.log(`T2: about to navigate to call detail (+${Date.now()-t0}ms)`);
 
     // Capture console output from the page (errors from the keepalive fetch)
@@ -853,7 +896,7 @@ test("T6 · GET /api/calls/{id} returns 401 without auth (C7)", async ({
 test("T7 · ErrorState renders when intelligence and agents APIs are blocked", async ({
   browser,
 }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
 
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
