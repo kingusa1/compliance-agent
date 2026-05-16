@@ -416,7 +416,19 @@ def _split_for_cache(
     # that header since the checkpoint list lives in the user message.
     prefix = re.sub(r"\n+CHECKPOINTS:\s*\n*$", "\n\n", prefix)
     system_block = (prefix + suffix + addendum).strip()
-    user_block = f"CHECKPOINTS TO EVALUATE:\n\n{cp_text.lstrip()}"
+    # 2026-05-16 — explicit user instruction. Without this, Claude was
+    # responding with prose like "You haven't provided the transcript"
+    # because the user message was just the checkpoint list with no
+    # framing. The system block has the rules+transcript+format, the
+    # user must explicitly direct Claude to evaluate AGAINST the
+    # transcript above and emit ONLY the JSON array.
+    user_block = (
+        "Evaluate each checkpoint below against the TRANSCRIPT provided "
+        "in the system prompt above. Return ONLY the JSON array exactly "
+        "as specified in the system prompt — no prose, no preamble, no "
+        "trailing commentary. Begin your response with `[`.\n\n"
+        f"CHECKPOINTS:\n{cp_text.lstrip()}"
+    )
     return system_block, user_block
 
 
@@ -645,6 +657,17 @@ async def _analyze_batch(
         # Use repr() so the type name is always present and exc_info=True so
         # the traceback lands in /tmp/uvicorn-8001.log next to the warning.
         err_repr = repr(err) or type(err).__name__
+        # 2026-05-16 — when the LLM returns non-JSON, log the first 800 chars
+        # of the response so we can diagnose without re-running the call.
+        # `content` may be unbound if the failure happened before the LLM
+        # call returned; guard accordingly.
+        _raw_preview: str | None = None
+        try:
+            _raw_preview = repr(content[:800])  # type: ignore[name-defined]
+        except NameError:
+            _raw_preview = None
+        if _raw_preview:
+            logger.warning("Batch analysis failed raw_response[:800]=%s", _raw_preview)
         logger.warning("Batch analysis failed: %s", err_repr, exc_info=True)
         return [
             {

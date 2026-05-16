@@ -48,6 +48,29 @@ from typing import Any
 
 import httpx
 
+# Local-Python TLS on Windows often can't reach Let's Encrypt intermediate
+# certs in the default store. Force `verify=False` for ALL httpx clients
+# created in this process — covers both the harness's own client and the
+# production `_call_openrouter` / `_call_anthropic` clients invoked via
+# `_analyze_batch`. Operator-only script that only hits known
+# operator-controlled endpoints (Railway prod + OpenRouter); the patch
+# never reaches production code paths.
+_orig_async_init = httpx.AsyncClient.__init__
+
+
+def _patched_async_init(self, *args, **kwargs):  # type: ignore[no-redef]
+    kwargs["verify"] = False
+    return _orig_async_init(self, *args, **kwargs)
+
+
+httpx.AsyncClient.__init__ = _patched_async_init  # type: ignore[assignment]
+
+# Silence the InsecureRequestWarning from this single-shot tool.
+import warnings  # noqa: E402
+import urllib3  # type: ignore  # noqa: E402
+
+warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
+
 # Make backend/ importable when run from repo root or from backend/ itself.
 _THIS_DIR = Path(__file__).resolve().parent
 _BACKEND = _THIS_DIR.parent
@@ -184,6 +207,31 @@ async def _fetch_call_context(
     }
 
 
+async def _diag_raw_call(
+    transcript: str,
+    batch: list[dict],
+    supplier: str,
+    strictness: str,
+    addendum: str,
+) -> None:
+    """When --debug is on, run a single batch through the cached path
+    directly and print the raw LLM response so we can see WHY json.loads
+    is failing."""
+    from app.prompts import get_prompt
+    from app.checkpoint_analyzer import _split_for_cache, _format_checkpoints_with_line_numbers
+    from app.analysis import _call_llm
+
+    template = get_prompt(supplier, strictness)
+    cp_text = _format_checkpoints_with_line_numbers(batch)
+    system, user = _split_for_cache(template, transcript=transcript, cp_text=cp_text, addendum=addendum)
+    print(f"DIAG system_len={len(system)} user_len={len(user)}")
+    print(f"DIAG user[:300]={user[:300]!r}")
+    print(f"DIAG system_tail[-400:]={system[-400:]!r}")
+    raw = await _call_llm(user, system=system, timeout=60.0)
+    print(f"DIAG raw_response_len={len(raw)}")
+    print(f"DIAG raw[:500]={raw[:500]!r}")
+
+
 async def _run_batches(
     *,
     transcript: str,
@@ -280,6 +328,11 @@ async def main() -> int:
         default="cache-ab-report.json",
         help="output JSON path",
     )
+    parser.add_argument(
+        "--debug-one-batch",
+        action="store_true",
+        help="diagnostic: run a single batch via the cached path and dump raw LLM response, then exit",
+    )
     args = parser.parse_args()
     call_ids = [c.strip() for c in args.call_ids.split(",") if c.strip()]
     if not call_ids:
@@ -295,6 +348,27 @@ async def main() -> int:
 
     results: list[dict[str, Any]] = []
     async with httpx.AsyncClient() as client:
+        if args.debug_one_batch:
+            # Diagnostic path — first call_id only, one batch only, print raw.
+            from app import config as _config_dbg
+            _config_dbg.settings.grader_prompt_caching_enabled = True
+            cid = call_ids[0]
+            ctx = await _fetch_call_context(client, args.backend, cid)
+            cps = ctx["checkpoints"]
+            if not cps:
+                print(f"no checkpoints on {cid}")
+                return 2
+            batch = cps[:6]
+            strictness = batch[0].get("strictness", "mandatory")
+            await _diag_raw_call(
+                transcript=ctx["transcript"],
+                batch=batch,
+                supplier=ctx["supplier"],
+                strictness=strictness,
+                addendum="",  # no rag rejections in this probe
+            )
+            return 0
+
         for call_id in call_ids:
             try:
                 r = await _run_one(client, args.backend, call_id)

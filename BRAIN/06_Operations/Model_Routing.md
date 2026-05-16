@@ -179,6 +179,55 @@ Opus volume (70% of spend lives there). Future work:
 Neither of those is part of this routing matrix — they're future
 optimisations to the grader itself.
 
+## 2026-05-16 (later same day) — GRADER CACHE A/B FAILED; FLAG STAYS OFF
+
+The grader-prompt-cache refactor shipped in `7e69735` was A/B-tested
+locally against call `601091d7-1374-4a95-8869-f22ad580971d` (Awais
+leadgen, 113 checkpoints, supplier=E.ON Next).
+
+**Result: 76% verdict mismatch between baseline (flag OFF) and candidate
+(flag ON).** Cannot ship.
+
+| Field | Baseline (flag OFF) | Candidate (flag ON) |
+|---|---|---|
+| pass | 39 | 0 |
+| partial | 9 | 0 |
+| fail | 41 | 56 |
+| error | 0 | 33 |
+| missing | 24 | 24 |
+| **status drift** | — | **86 / 113 (76.1%)** |
+| confidence drift | — | 70 / 113 |
+| evidence Jaccard < 0.90 | — | 48 / 113 |
+
+The reordered prompt — putting transcript+JSON-format in `system=` and
+checkpoints in `user=` — changes Claude's grading behaviour enough that
+~3/4 of verdicts shift, including PASS verdicts collapsing to FAIL.
+Even with an explicit user-message instruction ("evaluate against the
+transcript in the system prompt above; return ONLY the JSON array"),
+the candidate path was strictly less correct than the legacy path.
+
+**Decision**: `settings.grader_prompt_caching_enabled` stays default
+`False` in `config.py`. The flag should NOT be flipped on Railway. The
+A/B harness at `backend/scripts/cache_ab_harness.py` and the
+`_split_for_cache` helper are kept in tree as evidence and for future
+iteration, but the optimisation as designed FAILS the operator's
+zero-degradation mandate.
+
+**Smaller variant not yet tested**: cache only the rules section (top
+of template, ~1.5-3 KB) and keep the transcript IN the user message in
+legacy ordering. Savings drop from ~28% to ~3-5% of grader spend.
+Requires its own A/B before any code change. Parked.
+
+**Final operator-facing answer to "use OpenRouter to lower spend without
+degrading accuracy"**: based on the deep search + this A/B, there is
+**no available optimisation that meets the 100%-accuracy bar**. The
+grader is structurally constrained by Claude's sensitivity to prompt
+ordering, and no alternative OpenRouter model matches Opus 4.7 on
+strict-JSON long-rubric grading without its own degradation risk. The
+cost stays where it is unless the accuracy bar is loosened.
+
+---
+
 ## 2026-05-16 (later same day) — OPERATOR MANDATE: ZERO ACCURACY DEGRADATION
 
 The earlier "T3 Haiku 4.5 demotions" + "grader cascade with Sonnet first"
