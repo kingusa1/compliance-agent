@@ -4,6 +4,42 @@ updated: 2026-05-16
 tags: [state, live, ground-truth, audit-shipped, verdict-wired, system-prompt-installed]
 ---
 
+# Live State — Path 3 close-out + 6-item perf wave shipped 2026-05-16 (3am-ish)
+
+> 🚀 **2026-05-16 (very late) — Path 3 ACTIVATED + 5 perf commits shipped. Tip `2b0b41e` (push pending in this same wave).**
+>
+> **Activated** `NEXT_PUBLIC_USE_REALTIME=1` on Vercel via API (env var id `bkmRWVHIXx1qD5Uz`, production+preview+development). Vercel deploy `dpl_7ZDHGtqxsWzQeeV6n4VRcp866qjc` READY at `98500ae` with the flag baked in. **New deploy needed after push** to pick up the 5 perf commits.
+>
+> **6-item perf wave commits:**
+> - `51cc43b` perf(business_detect): Customer cache + 5min TTL + startup pre-load (Item 1)
+> - `2cbde6a` perf(profile_cache): new module + 5min TTL + startup pre-load (Item 2)
+> - `9214c7a` perf(hitl): claim_call sync→async via asyncio.to_thread (Item 3)
+> - `ae1720c` feat(transcription): AssemblyAI webhook callbacks replace 3s poll loop (Item 4)
+> - `2b0b41e` test(perf): Lighthouse baseline script for compliance-agent prod (Item 5)
+> - + Item 6 region audit findings in the session log (no code commit — read-only investigation)
+>
+> **Lighthouse baseline at `98500ae`:**
+> - /login: perf **100** / LCP 497ms
+> - /queue: perf **94** / LCP 1642ms
+> - /tracker: perf **89** / LCP 2176ms (weakest)
+> - /rejections: perf **95** / LCP 1509ms
+> - Saved to `frontend-v3/test-results/lighthouse-baseline-2026-05-16.{json,md}`. Re-run via `cd frontend-v3 && node --use-system-ca scripts/lighthouse-baseline.mjs` after each deploy.
+>
+> **🚨 Item 6 region audit headline finding:** Railway↔Supabase round-trip is **~680ms per query** (`/healthz` 519ms no-DB vs `/readyz` 1199ms with-DB). Strong signal Railway and Supabase are in different regions. Supabase is `ap-south-1` (Mumbai); Railway latency from UAE is 128ms which suggests **US-East**. Recommendation (NOT shipped): relocate Railway service to `asia-southeast1` (Singapore) → ~600ms saved per request. Also: verify `DATABASE_URL` uses Supavisor pooler port 6543, not direct 5432. User approval gate.
+>
+> **🎯 Immediate next-session actions:**
+> 1. **Push these 6 commits** (pending in this wave).
+> 2. **Set Railway env vars** to activate Item 4 webhook: `ASSEMBLYAI_WEBHOOK_SECRET=$(python -c "import secrets; print(secrets.token_hex(32))")` + `BACKEND_PUBLIC_URL=https://compliance-agent-production-690e.up.railway.app`.
+> 3. **Trigger Vercel redeploy** at new tip so the perf commits land + the realtime flag stays baked.
+> 4. **POST `/api/admin/force-release-all-claims`** with lead/admin JWT to unstick the 5 calls trapped in_review.
+> 5. **Re-run Lighthouse** + diff against the baseline → write the perf-delta report.
+> 6. **Two-tab Playwright smoke** with realtime ON: Tracker ↔ Queue ↔ Rejections sub-200ms sync.
+> 7. **Verify Railway region** in dashboard + confirm `DATABASE_URL` uses port 6543. If misaligned, surface the migration plan for user approval.
+>
+> Resume guide: [[../04_Sessions/2026-05-16_Session_path3_close_perf_wave]].
+
+---
+
 # Live State — Path 3 Realtime overhaul shipped (feature-flagged) 2026-05-16 (very-very late)
 
 > 🚀 **2026-05-16 (very-very late) — Tip `b9e0d12` on origin/main. Vercel `dpl_6aFpiGWELWkU2LzVRH3xHidQwoTS` (at `b9e0d12`) READY. Railway will auto-apply alembic `2026_05_16_rls_realtime` on release.**
