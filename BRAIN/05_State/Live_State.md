@@ -4,6 +4,42 @@ updated: 2026-05-16
 tags: [state, live, ground-truth, audit-shipped, verdict-wired, system-prompt-installed]
 ---
 
+# Live State — 6 of 8 bugs fixed from /gsd diagnose-fix-verify run 2026-05-16 (very late)
+
+> 🚀 **2026-05-16 (very late) — Tip `648db39` on origin/main. Vercel `dpl_J8roczZNR7G6H54G2rR3r2Ej1AW2` (at `648db39`) READY + aliased.**
+>
+> **Shipped this run (2 commits, 6 bugs fixed):**
+>
+> - `df38f54` — fix(backend): 3 audit-traced bugs
+>   - **Bug 4** — Human Review Queue badge mismatch. `hitl_routes.py:1344` `backlog` count was `!= reviewed` (included in_review); now `== unclaimed` matching the Pending list filter exactly.
+>   - **Bug 5** — Lead-gen deal-merge silently skipped. `pipeline.py:472` bailed on empty `detected_supplier`; relaxed entry guard so per-candidate supplier check downstream owns the decision.
+>   - **Bug 8a** — Cross-tab realtime sync. `submit_verdict` now calls `realtime.publish(call_id, "score_ready", ...)` post-commit so OTHER tabs receive the SSE event. Was only firing `emit()` (pg_notify with no LISTEN bridge).
+>
+> - `648db39` — fix(tracker,reviewer): 3 audit-traced bugs
+>   - **Bug 1** — Tracker badge vs rows drift. `tracker/page.tsx:77` ran a duplicate unfiltered query; now reads `rows.length` when on awaiting_review tab.
+>   - **Bug 2** — Tracker flash-empty on filter change. `lib/queries/tracker.ts:131` queryKey includes `filters` object → new key per keystroke. Added `placeholderData: keepPreviousData`.
+>   - **Bug 7** — Stale /rejections after FAIL verdict. `lib/mutations/reviewer.ts:254` only invalidated `["rejections"]` when `auto_rejection_id` was truthy; now unconditional.
+>   - **Bug 8b** — SSE key-prefix mismatch. `useCallEvents.ts:67` invalidated `["tracker"]` but actual key is `["admin", "tracker", filters]`. Now explicit `["admin", "tracker"]` + adds `["rejections"]` to the per-call branch.
+>
+> **Not shipped:**
+> - **Bug 3 (Saved Views on Tracker)** — diagnosed as "feature was never built." The `SavedViewsBar` component is mounted on `/queue` only; tracker has no Saved Views affordance. Building it for Tracker requires a TrackerFilters adapter (the component only speaks QueueFilter shape) — separate feature commit, not a regression fix. Logged in session log.
+> - **Bug 6 (Upload → Process page)** — NOT A BUG. Current behavior IS the spec: single file → `/calls/{id}`, multi-file → `/calls` dashboard via the `__BATCH_TO_CALLS_DASHBOARD__` sentinel. There is no pre-process "review/grouping" step in the codebase or BRAIN workflow docs. User likely uploading single files one at a time.
+> - **Bug 4b ("This page couldn't load" sub-tab error page)** — inconclusive from static analysis. Needs browser devtools repro on the post-deploy build to identify the throwing component. Will revisit if it persists after `648db39` lands.
+>
+> **Build state:** `tsc --noEmit` exit 0. Backend pytest 18/18 (test_routes + test_claim).
+>
+> **Acceptance gating still pending (user to verify in browser):**
+> - Bug 1: open `/tracker?tab=awaiting_review`, click a category pill — badge should update to filtered count.
+> - Bug 2: rapid-switch filter pills — table should never flash empty.
+> - Bug 4: `/queue` Pending tab badge should now match list rows exactly.
+> - Bug 5: upload two lead-gen calls with same business name + no supplier detected — should merge under one deal.
+> - Bug 7: submit FAIL verdict on a call → /rejections page should refresh within 200ms.
+> - Bug 8: open `/tracker` in Tab A + submit verdict in Tab B's `/queue` → Tab A row updates within 200ms.
+>
+> Resume guide: [[../04_Sessions/2026-05-16_Session_eight_bug_diagnosis]].
+
+---
+
 # Live State — P0 claim-release closed + Playwright smoke green 2026-05-16 (late late night)
 
 > 🚀 **2026-05-16 (late late night) — Tip `9ef9209` on origin/main. Vercel `dpl_356vjYNmTCXmja6itboSwi4aS2nv` (at `90c39f5`) READY + aliased. Two-tab Playwright smoke T2 + T7 PASS on production.**
