@@ -17,6 +17,7 @@
  * uploaded" matters more than "where is the scripts page".
  */
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -156,6 +157,7 @@ export default function DashboardPage() {
   const queueBacklog = useQueueBacklog();
   const [uploadOpen, setUploadOpen] = useState(false);
   const qc = useQueryClient();
+  const router = useRouter();
   const isFreshInstall = (stats.data?.total_calls ?? 0) === 0;
   const backlog = queueBacklog.data?.metrics?.backlog ?? 0;
 
@@ -444,14 +446,20 @@ export default function DashboardPage() {
       <UploadModal
         open={uploadOpen}
         onOpenChange={setUploadOpen}
-        // 2026-05-14 audit fix: without explicit invalidation the dashboard
-        // would lag the new call by 60s (stats staleTime) / 30s (recent +
-        // queue staleTime). Invalidate all three query keys on success so
-        // the KPI counters + Recent Calls + Queue Backlog refresh instantly.
-        onSuccess={() => {
+        onSuccess={(callId) => {
+          // Invalidate dashboard queries so KPI counters + Recent Calls
+          // + Queue Backlog refresh instantly instead of waiting 30–60s.
           qc.invalidateQueries({ queryKey: ["dashboard:stats"] });
           qc.invalidateQueries({ queryKey: ["dashboard:recent-calls"] });
           qc.invalidateQueries({ queryKey: ["dashboard:queue-backlog"] });
+          // Redirect to the live pipeline view so the reviewer can
+          // watch processing. Mirrors the default UploadModal logic
+          // (which is suppressed once any onSuccess is provided).
+          if (callId === "__BATCH_TO_CALLS_DASHBOARD__") {
+            router.push("/calls");
+            return;
+          }
+          if (callId) router.push(`/calls/${callId}`);
         }}
       />
     </div>

@@ -294,6 +294,10 @@ export default function TrackerPage() {
         onOpenChange={setUploadOpen}
         onSuccess={(callId) => {
           setUploadOpen(false);
+          if (callId === "__BATCH_TO_CALLS_DASHBOARD__") {
+            router.push("/calls");
+            return;
+          }
           if (callId) router.push(`/calls/${callId}`);
         }}
       />
