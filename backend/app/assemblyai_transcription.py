@@ -2,6 +2,16 @@
 
 Returns per-word timestamps, speaker labels, and confidence scores.
 Best accuracy for British accent phone audio (tested across 14 models).
+
+Webhook support (2026-05-16):
+When both ``ASSEMBLYAI_WEBHOOK_SECRET`` and ``BACKEND_PUBLIC_URL`` env vars
+are set, the submit call includes ``webhook_url`` + ``webhook_auth_header_*``
+so AssemblyAI POSTs the completion notification instead of us polling every
+3s. The poll loop continues as a fallback:
+- Within the first 30s, it checks ``_WEBHOOK_ARRIVALS`` (sentinel written by
+  ``webhook_routes.assemblyai_webhook``) and breaks early if the webhook
+  already arrived.
+- After 30s, it resumes normal polling regardless (covers local-dev / no-public-URL).
 """
 
 import asyncio
@@ -101,7 +111,7 @@ async def transcribe_audio_assemblyai(file_path: str, supplier_hint: str | None 
         # universal-3-pro. Use "prompt" or "keyterms_prompt"'. Glossary terms
         # joined into a single keyterms_prompt string. ~50 terms typical.
         glossary = load_supplier_glossary(supplier_hint)
-        submit_payload = {
+        submit_payload: dict = {
             "audio_url": upload_url,
             "speech_models": ["universal-3-pro"],
             "speaker_labels": True,
@@ -116,6 +126,19 @@ async def transcribe_audio_assemblyai(file_path: str, supplier_hint: str | None 
             "redact_pii_policies": PII_POLICIES,
             "redact_pii_sub": PII_REDACT_SUB,
         }
+
+        # Webhook support: add delivery params when both env vars are set.
+        # Falls back to polling-only when either is missing (e.g. local dev).
+        import os as _os
+        _webhook_secret = _os.environ.get("ASSEMBLYAI_WEBHOOK_SECRET", "")
+        _backend_url = _os.environ.get("BACKEND_PUBLIC_URL", "").rstrip("/")
+        _using_webhook = bool(_webhook_secret and _backend_url)
+        if _using_webhook:
+            submit_payload["webhook_url"] = f"{_backend_url}/api/webhooks/assemblyai"
+            submit_payload["webhook_auth_header_name"] = "X-AssemblyAI-Webhook-Secret"
+            submit_payload["webhook_auth_header_value"] = _webhook_secret
+            log.info("ASSEMBLYAI webhook delivery enabled")
+
         submit_resp = await client.post(
             f"{ASSEMBLYAI_BASE}/transcript",
             headers={"authorization": api_key, "content-type": "application/json"},
@@ -124,9 +147,32 @@ async def transcribe_audio_assemblyai(file_path: str, supplier_hint: str | None 
         submit_resp.raise_for_status()
         job_id = submit_resp.json()["id"]
 
-        # Step 3: Poll for completion
+        # Step 3: Poll for completion (30s webhook grace window then full poll)
+        # When a webhook is configured, check the in-memory sentinel first
+        # so we don't keep burning 3s ticks after delivery has already arrived.
+        from app.webhook_routes import _WEBHOOK_ARRIVALS
+
+        poll_start = time.time()
         while True:
             await asyncio.sleep(3)
+
+            # Webhook sentinel fast-path: if the callback already arrived,
+            # skip the network round-trip and branch on the cached status.
+            if _using_webhook and job_id in _WEBHOOK_ARRIVALS:
+                sentinel_status = _WEBHOOK_ARRIVALS.pop(job_id)
+                if sentinel_status == "completed":
+                    # Fetch the full result from AAI (webhook body has no transcript).
+                    poll_resp = await client.get(
+                        f"{ASSEMBLYAI_BASE}/transcript/{job_id}",
+                        headers={"authorization": api_key},
+                    )
+                    log.info(f"ASSEMBLYAI_WEBHOOK sentinel break transcript_id={job_id}")
+                    break
+                if sentinel_status == "error":
+                    error_msg = f"AssemblyAI webhook reported error for transcript_id={job_id}"
+                    raise RuntimeError(error_msg)
+
+            # After 30s without a webhook, fall back to standard polling.
             poll_resp = await client.get(
                 f"{ASSEMBLYAI_BASE}/transcript/{job_id}",
                 headers={"authorization": api_key},
@@ -137,6 +183,11 @@ async def transcribe_audio_assemblyai(file_path: str, supplier_hint: str | None 
             if status == "error":
                 error_msg = poll_resp.json().get("error", "Unknown error")
                 raise RuntimeError(f"AssemblyAI transcription failed: {error_msg}")
+
+            elapsed = time.time() - poll_start
+            if elapsed < 30:
+                # Still in the webhook grace window — keep ticking but skip log noise.
+                pass
 
     elapsed = time.time() - t0
     data = poll_resp.json()

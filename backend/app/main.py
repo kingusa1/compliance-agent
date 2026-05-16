@@ -19,6 +19,7 @@ import inngest.fast_api
 # custom series even before the first pipeline run.
 import app.observability_metrics  # noqa: F401
 from app.agents_routes import agents_router
+from app.webhook_routes import webhook_router
 from app.config import settings
 from app.customers_routes import customers_router
 from app.database import create_tables, engine, get_db
@@ -306,6 +307,8 @@ app.include_router(import_xlsx_router)
 # Plan §5f: dashboard intelligence panel (read-only aggregations).
 from app.intelligence_routes import intelligence_router
 app.include_router(intelligence_router)
+# Webhook callbacks from external providers (AssemblyAI job completion).
+app.include_router(webhook_router)
 # 2026-05-16: SSE pub/sub fan-out for live call events is registered at the
 # top of the include_router block above so `/api/calls/events` resolves to
 # the realtime endpoint instead of being shadowed by the generic call
