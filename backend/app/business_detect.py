@@ -4,13 +4,69 @@ business the call is about). Used downstream by pipeline.detect_metadata
 to fuzzy-merge auto-detect uploads onto existing Customer rows."""
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
+from typing import NamedTuple
 
 from sqlalchemy.orm import Session
 
 from app.analysis import _call_llm
 from app.logger import log
 from app.models import Customer
+
+
+# ── Customer cache (5-minute TTL) ──────────────────────────────────────────
+
+class _CustomerRow(NamedTuple):
+    """Lightweight projection of a Customer row used for matching."""
+    id: object  # UUID
+    legal_name: str
+    trading_as: str | None
+
+
+@dataclass
+class _CustomerCache:
+    customers: list[_CustomerRow] = field(default_factory=list)
+    loaded_at: datetime | None = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+_CUSTOMER_CACHE = _CustomerCache()
+_CACHE_TTL_SECONDS = 300  # 5 minutes
+
+
+def _refresh_customer_cache(db: Session) -> None:
+    """Query the customer table (narrow projection) and rebuild the cache.
+
+    Thread-safe write via the asyncio.Lock on the singleton. Callers that
+    do not hold a running event loop (e.g. startup sync code) call this
+    directly; async callers use ``await _arefresh_customer_cache(db)``
+    to respect the lock.
+    """
+    rows = db.query(Customer.id, Customer.legal_name, Customer.trading_as).all()
+    customers = [
+        _CustomerRow(id=r.id, legal_name=r.legal_name or "", trading_as=r.trading_as)
+        for r in rows
+    ]
+    _CUSTOMER_CACHE.customers = customers
+    _CUSTOMER_CACHE.loaded_at = datetime.now(timezone.utc)
+    log.info(f"customer_cache refreshed: {len(customers)} customers loaded")
+
+
+async def _arefresh_customer_cache(db: Session) -> None:
+    """Async-safe wrapper that holds the lock while refreshing."""
+    async with _CUSTOMER_CACHE.lock:
+        _refresh_customer_cache(db)
+
+
+def _cache_is_stale() -> bool:
+    """Return True when the cache is empty or older than TTL."""
+    if not _CUSTOMER_CACHE.customers or _CUSTOMER_CACHE.loaded_at is None:
+        return True
+    age = (datetime.now(timezone.utc) - _CUSTOMER_CACHE.loaded_at).total_seconds()
+    return age >= _CACHE_TTL_SECONDS
 
 
 _PROMPT = """Read this UK energy-brokerage call (Watt Utilities / TPI calling a
@@ -171,15 +227,22 @@ def fuzzy_match_customer(
     if not name or not name.strip():
         return None
 
+    # Refresh cache if stale or empty before scoring.
+    if _cache_is_stale():
+        _refresh_customer_cache(db)
+
     target = name.strip().lower()
-    best: Customer | None = None
+    best_id = None
     best_score = 0.0
-    for customer in db.query(Customer).all():
-        legal = (customer.legal_name or "").lower()
+    for row in _CUSTOMER_CACHE.customers:
+        legal = (row.legal_name or "").lower()
         if not legal:
             continue
         score = SequenceMatcher(None, target, legal).ratio()
         if score >= threshold and score > best_score:
-            best = customer
+            best_id = row.id
             best_score = score
-    return best
+
+    if best_id is None:
+        return None
+    return db.query(Customer).filter(Customer.id == best_id).first()
