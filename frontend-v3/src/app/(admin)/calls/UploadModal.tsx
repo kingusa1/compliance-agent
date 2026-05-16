@@ -46,6 +46,14 @@ export function UploadModal({
       onSuccess(callId);
       return;
     }
+    // 2026-05-16 audit — when the L7Form signals a multi-file batch via
+    // the sentinel, land on /calls (the admin dashboard) so the reviewer
+    // can monitor all uploads' pipeline status live. Single-file uploads
+    // still land on the call's detail page.
+    if (callId === "__BATCH_TO_CALLS_DASHBOARD__") {
+      router.push("/calls");
+      return;
+    }
     if (callId) router.push(`/calls/${callId}`);
   };
 

@@ -148,7 +148,23 @@ export default function RejectionsPage() {
       <div className="grid min-h-0 flex-1 grid-cols-[60%_40%] overflow-hidden">
         <div className="flex min-w-0 flex-col overflow-hidden border-r border-[var(--border-subtle)]">
           <div className="flex-1 overflow-y-auto">
-            {!listQ.isLoading && rejections.length === 0 ? (
+            {listQ.isError ? (
+              <div className="m-6 rounded-xl border border-red-300 bg-red-50 p-6 text-center">
+                <p className="text-[13.5px] font-medium text-red-900">
+                  Couldn’t load rejections.
+                </p>
+                <p className="mx-auto mt-1 max-w-[440px] text-[12px] text-red-800">
+                  {listQ.error instanceof Error ? listQ.error.message : "Unknown error"}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => listQ.refetch()}
+                  className="mt-4 inline-flex items-center gap-2 rounded-md border border-red-300 bg-white px-3 py-1.5 text-[12.5px] text-red-900 hover:bg-red-100"
+                >
+                  Retry
+                </button>
+              </div>
+            ) : !listQ.isLoading && rejections.length === 0 ? (
               <div className="m-6 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-6 text-center">
                 <p className="text-[13.5px] font-medium text-[var(--text-primary)]">
                   No rejections in the {TAB_LABELS[tab]} tab.

@@ -39,4 +39,4 @@ EXPOSE 8001
 # uvicorn (clean SIGTERM handling for Railway's 15s grace window). The
 # `exec` keeps signal forwarding intact; without it uvicorn would be a
 # child of /bin/sh and miss SIGTERM.
-CMD sh -c "(alembic upgrade head 2>&1 | tail -40 || echo 'ALEMBIC_FAILED — boot continues in degraded mode (see /readyz)') & exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1 --proxy-headers --forwarded-allow-ips='*'"
+CMD sh -c "(alembic upgrade head 2>&1 | tail -40 || echo 'ALEMBIC_FAILED — boot continues in degraded mode (see /readyz)') & exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1 --loop uvloop --http httptools --no-access-log --proxy-headers --forwarded-allow-ips='*'"

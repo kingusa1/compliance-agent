@@ -15,6 +15,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 import { postJson, uploadMultipart } from "@/lib/mutations";
 import { adminKeys } from "@/lib/queries/admin";
+import { reviewerKeys } from "@/lib/queries/reviewer";
 
 // ── Upload call ───────────────────────────────────────────────────
 //
@@ -156,7 +157,13 @@ export function useEditCallMetadata(callId: string) {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "calls"] });
-      qc.invalidateQueries({ queryKey: ["reviewer", "callDetail", callId] });
+      // 2026-05-16 audit fix — was invalidating a non-existent key
+      // ``["reviewer", "callDetail", callId]``. The real reviewer
+      // call-detail key is ``reviewerKeys.callDetail(callId)`` →
+      // ``["call", callId, "detail"]``. Saving metadata now actually
+      // refreshes the call-detail page (was silent stale before).
+      qc.invalidateQueries({ queryKey: reviewerKeys.callDetail(callId) });
+      qc.invalidateQueries({ queryKey: reviewerKeys.callFlags(callId) });
       qc.invalidateQueries({ queryKey: ["admin", "tracker"] });
     },
   });

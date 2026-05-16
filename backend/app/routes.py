@@ -512,7 +512,12 @@ async def upload_call(
                         "call_id": str(call.id),
                         "audio_path": call.file_path,
                         "customer_name": call.customer_name,
-                        "deal_id": deal_id,
+                        # 2026-05-16 audit P2-8 — send the resolved UUID
+                        # (string), not the raw form input which is None
+                        # for auto-detect / L7-upsert uploads. Downstream
+                        # Inngest steps relying on event.data["deal_id"]
+                        # were silently getting None for all such uploads.
+                        "deal_id": str(resolved_deal_id) if resolved_deal_id else None,
                         "call_type": call_type,
                         "script_id": call.script_id,
                     },
@@ -750,7 +755,12 @@ async def retry_call(
 
 
 @router.post("/api/calls/{call_id}/checkpoint/{cp_index}/retry")
-async def retry_checkpoint(call_id: str, cp_index: int, db: Session = Depends(get_db)):
+async def retry_checkpoint(
+    call_id: str,
+    cp_index: int,
+    db: Session = Depends(get_db),
+    _reviewer=Depends(current_reviewer),
+):
     """Re-analyze a single checkpoint for a call."""
     from app.checkpoint_analyzer import analyze_single_checkpoint
 
@@ -817,6 +827,7 @@ async def review_checkpoint_verdict(
     verdict: str,
     notes: str = "",
     db: Session = Depends(get_db),
+    _reviewer=Depends(current_reviewer),
 ):
     """Human reviewer confirms or overrides a checkpoint verdict.
 
@@ -1785,18 +1796,48 @@ def get_call(call_id: str, db: Session = Depends(get_db)):
     )
     if not call:
         raise HTTPException(404, "Call not found")
-    return call
+    # 2026-05-16 perf — bake the signed audio URL into the detail response so
+    # the call-detail page can start playback without a second round-trip to
+    # /api/calls/{id}/audio-url. Saves ~150-250ms RTT on every mount.
+    #
+    # NOTE: build the response model explicitly via `model_validate` and
+    # set `audio_url` on the Pydantic object, NOT on the ORM instance.
+    # Setting attributes on the SQLAlchemy row works only until the next
+    # session expiry / commit — Pydantic's from_attributes serialisation
+    # may run after that point and reset to the column default (None).
+    response = CallResponse.model_validate(call, from_attributes=True)
+    if call.audio_storage_key:
+        try:
+            url = signed_url(call.audio_storage_key, expires_in=3600)
+            if url:
+                response.audio_url = url
+        except Exception:
+            # Never let signed-URL failure 500 the detail GET — the legacy
+            # /audio-url path is still wired as a fallback.
+            log.warning(
+                "signed_url_failed call_id=%s", call_id, exc_info=True,
+            )
+    return response
 
 
 @router.post("/api/calls/{call_id}/reanalyze", status_code=202)
 async def reanalyze_call(
     call_id: str,
     db: Session = Depends(get_db),
-    actor_id: str | None = None,
+    reviewer=Depends(current_reviewer),
 ):
     """Replay the analyze->score->finalize sub-pipeline against the stored
     transcript. Returns 202 with a fresh run_id; client polls the call to
-    see the new verdict."""
+    see the new verdict.
+
+    2026-05-16 audit fix — actor_id now derived from the authenticated
+    reviewer instead of being a client-controllable query param. Previously
+    any unauthenticated request could stamp arbitrary actor_ids on the
+    audit trail.
+    """
+    actor_id = (
+        reviewer.get("id") if isinstance(reviewer, dict) else getattr(reviewer, "id", None)
+    )
     return await _reanalyze_call(call_id, db, actor_id=actor_id)
 
 
@@ -1804,6 +1845,7 @@ async def reanalyze_call(
 async def admin_wipe_all_calls(
     confirm: str = "",
     db: Session = Depends(get_db),
+    _auth: dict = Depends(_require_admin),
 ):
     """DESTRUCTIVE — hard-deletes every Call + cascade-bound rows.
 
@@ -2908,7 +2950,12 @@ _RISK_TAGS_ALLOWED = frozenset({
 
 
 @router.patch("/api/calls/{call_id}/risk-tags")
-def patch_call_risk_tags(call_id: str, body: dict, db: Session = Depends(get_db)):
+def patch_call_risk_tags(
+    call_id: str,
+    body: dict,
+    db: Session = Depends(get_db),
+    _reviewer=Depends(current_reviewer),
+):
     """Update the per-call risk-tag chip set.
 
     Body shape: ``{"tags": [...]}``. Tags must come from the closed enum

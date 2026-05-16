@@ -1,20 +1,24 @@
 "use client";
 
 /**
- * VerdictTab — UX prototype for per-checkpoint verdict workflow.
+ * VerdictTab — per-checkpoint verdict workflow.
  *
- * Replaces the simple 5-button + reason form with a per-checkpoint
- * review workflow:
- *   - Aggregate verdict row (5 actions) auto-suggests from per-CP picks
+ *   - Aggregate verdict row (Pass / Needs Review / Non-Compliant) with
+ *     severity-aware "Suggested: ..." derived from AI fail/partial counts
+ *     and the reviewer's per-CP action picks.
  *   - Per-CP cards grouped by status (FAIL → PARTIAL → PASS-collapsed)
- *   - Action select + comment textarea per non-pass CP
- *   - Live email preview (monospace, pre-formatted)
- *   - Submit currently console.logs payload + toasts (PROTOTYPE).
+ *     with action select + comment textarea per non-pass CP.
+ *   - Live email preview (monospace, pre-formatted).
+ *   - Submit fires `useSubmitVerdict` against `POST /api/calls/{id}/verdict`.
+ *     The aggregate `reasoning` field combines `overallReason` plus a
+ *     digest of the reviewer's per-CP action picks; the per-CP comments
+ *     themselves are persisted independently via `useReviewCheckpoint`
+ *     (the 1-click Pass / Override → Fail on the Checkpoints tab), so
+ *     the backend has the full audit trail without needing a richer
+ *     verdict payload schema.
  *
- * TODO(backend): once `useSubmitVerdict` accepts per-CP payload + the
- * `/feedback-email` mutation accepts the structured email body, wire
- * `onSubmit` to actually fire those mutations. For now we deliberately
- * stay client-only so user can approve the UX before backend changes.
+ * Audit 2026-05-16: this used to be a console.log prototype that never
+ * fired the verdict mutation — see BRAIN session note. Now wired.
  */
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -43,6 +47,7 @@ import {
   RISK_TAGS,
   useCustomerEmail,
   useSetCallRiskTags,
+  useSubmitVerdict,
   type RiskTag,
 } from "@/lib/mutations/reviewer";
 import {
@@ -400,11 +405,20 @@ export function VerdictTab(props: VerdictTabProps) {
   }
 
   // ── Derived ──────────────────────────────────────────────────────
+  // Severity-aware suggestion: a call with AI-flagged fails or partials
+  // must never suggest PASS just because the reviewer hasn't picked
+  // per-CP actions yet. Pass the AI status counts so suggestAggregate
+  // can short-circuit. See email-preview.ts:suggestAggregate.
   const suggested = useMemo(
-    () => suggestAggregate(perCpActions),
-    [perCpActions],
+    () =>
+      suggestAggregate(perCpActions, {
+        fails: fails.length,
+        partials: partials.length,
+      }),
+    [perCpActions, fails.length, partials.length],
   );
   const aggregate: AggregateAction | null = overrideAggregate ?? suggested;
+  const submitVerdict = useSubmitVerdict();
 
   const needActionCount = useMemo(() => {
     let n = 0;
@@ -536,26 +550,48 @@ export function VerdictTab(props: VerdictTabProps) {
   }
 
   function handleSubmit() {
-    // PROTOTYPE: log payload + toast — do NOT fire useSubmitVerdict.
-    // Backend payload shape needs extension before wiring.
-    const payload = {
-      callId,
-      aggregate,
-      overrideAggregate,
-      suggested,
-      overallReason,
-      sendEmail,
-      perCpActions: Object.fromEntries(perCpActions),
-      perCpComments: Object.fromEntries(perCpComments),
-      email,
-    };
-    // eslint-disable-next-line no-console
-    console.log("[verdict-tab prototype] submit payload:", payload);
-    toast.success("Verdict submitted (prototype — payload logged)", {
-      description: "Backend wiring pending. See console for full shape.",
-    });
-    onSubmitted?.();
-    handleCancel();
+    if (!aggregate) return;
+    // Compose an audit-trail reason that captures the reviewer's overall
+    // note plus a digest of per-CP action picks. Per-CP comments are also
+    // persisted independently via useReviewCheckpoint when the reviewer
+    // hits 1-click Pass / Override → Fail on the Checkpoints tab, so the
+    // aggregate `reasoning` field only needs the call-level narrative
+    // plus a short action-summary trail.
+    const actionEntries = Array.from(perCpActions.entries())
+      .filter(([, a]) => a !== "no_action")
+      .map(([key, a]) => {
+        const cp = cpCards.find((c) => c.key === key);
+        const label = cp ? nameOf(cp) : key;
+        const comment = (perCpComments.get(key) ?? "").trim();
+        const tail = comment ? ` — ${comment}` : "";
+        return `• [${PER_CP_ACTION_LABEL[a]}] ${label}${tail}`;
+      });
+    const reasonParts: string[] = [];
+    if (overallReason.trim()) reasonParts.push(overallReason.trim());
+    if (actionEntries.length > 0) {
+      reasonParts.push("\nActions:\n" + actionEntries.join("\n"));
+    }
+    const reason = reasonParts.join("\n").trim() || "(no reason provided)";
+
+    submitVerdict.mutate(
+      {
+        callId,
+        // Call-level verdict — no specific checkpoint id. Backend accepts
+        // empty string per VerdictPayload contract (see backend tests).
+        checkpoint_id: "",
+        action: aggregate as VerdictAction,
+        reason,
+        sendEmail,
+      },
+      {
+        onSuccess: () => {
+          onSubmitted?.();
+          handleCancel();
+        },
+        // onError already surfaces toast via the mutation hook — no
+        // duplicate toast here.
+      },
+    );
   }
 
   // ── Render helpers ───────────────────────────────────────────────
@@ -852,15 +888,22 @@ export function VerdictTab(props: VerdictTabProps) {
                   padding: "10px 4px",
                   background: isChosen ? v.fillBg : v.bg,
                   color: isChosen ? v.fillFg : v.fg,
-                  border: `${isSuggested && !isChosen ? "2px dashed " : "1px solid "}${
-                    isChosen ? v.fillBg : v.border
-                  }`,
+                  // High-contrast selection: 3px outline + offset ring makes the
+                  // chosen tile unmistakable in both dark and light themes.
+                  // Previous styling collapsed visually on the green/red tiles.
+                  border: isChosen
+                    ? `3px solid ${v.fillBg}`
+                    : `${isSuggested ? "2px dashed " : "1px solid "}${v.border}`,
+                  outline: isChosen ? "2px solid var(--text-primary)" : "none",
+                  outlineOffset: isChosen ? 1 : 0,
                   borderRadius: 8,
                   cursor: "pointer",
                   fontFamily: "inherit",
-                  fontWeight: 500,
+                  fontWeight: isChosen ? 700 : 500,
+                  transform: isChosen ? "translateY(-1px)" : "none",
+                  transition: "transform 120ms ease, outline-color 80ms",
                   boxShadow: isChosen
-                    ? "var(--shadow-md), inset 0 1px 0 rgba(255,255,255,0.15)"
+                    ? "var(--shadow-md), inset 0 1px 0 rgba(255,255,255,0.20)"
                     : "none",
                 }}
               >
@@ -1372,7 +1415,7 @@ export function VerdictTab(props: VerdictTabProps) {
           Cancel
         </button>
         <button
-          disabled={submitDisabled}
+          disabled={submitDisabled || submitVerdict.isPending}
           onClick={handleSubmit}
           data-testid="verdict-submit"
           style={{
@@ -1384,13 +1427,14 @@ export function VerdictTab(props: VerdictTabProps) {
             borderRadius: 6,
             fontSize: 13,
             fontWeight: 500,
-            cursor: submitDisabled ? "not-allowed" : "pointer",
-            opacity: submitDisabled ? 0.5 : 1,
+            cursor:
+              submitDisabled || submitVerdict.isPending ? "not-allowed" : "pointer",
+            opacity: submitDisabled || submitVerdict.isPending ? 0.5 : 1,
             fontFamily: "inherit",
             boxShadow: "var(--shadow-sm)",
           }}
         >
-          Submit verdict
+          {submitVerdict.isPending ? "Submitting…" : "Submit verdict"}
         </button>
       </div>
     </div>

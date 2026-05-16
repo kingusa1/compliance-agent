@@ -274,7 +274,7 @@ export type SegmentCardsProps = {
   }>;
   /** Status filter from the page-level filter pills (All / Passed / Partial
    *  / Non-Compliant). Falls back to "all". */
-  cpFilter?: "all" | "passed" | "partial" | "fail";
+  cpFilter?: "all" | "passed" | "partial" | "fail" | "na";
   /** Optional shared props for the inner CheckpointCard rows. */
   innerProps?: {
     callDurationSec: number;
@@ -350,6 +350,8 @@ export function SegmentCards({ callId, cpCards = [], cpFilter = "all", innerProp
       if (cpFilter === "passed") return s === "pass";
       if (cpFilter === "partial") return s === "partial";
       if (cpFilter === "fail") return s === "fail";
+      // N/A (audit 2026-05-16 P1 #9) — checkpoints with no scored verdict.
+      if (cpFilter === "na") return s !== "pass" && s !== "partial" && s !== "fail";
       return true;
     });
   };

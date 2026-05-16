@@ -89,6 +89,13 @@ export interface Call {
   revision?: number;
   call_ref?: string | null;
   slug?: string | null;
+  // 2026-05-16 perf — pre-signed Supabase Storage URL for the call audio,
+  // returned inline by GET /api/calls/{id} so the call-detail page can
+  // start playback without a second round-trip. Null on legacy on-disk
+  // uploads — frontend falls back to the dedicated /audio-url endpoint.
+  audio_url?: string | null;
+  deal_id?: string | null;
+  call_type?: string | null;
 }
 
 export interface CallListResponse {

@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useEditCallMetadata, type EditCallMetadataPayload } from "@/lib/mutations/admin";
 
 type CallSeed = {
@@ -9,6 +9,7 @@ type CallSeed = {
 };
 
 type DealSeed = {
+  customer_name?: string | null;
   supplier?: string | null;
   mpan_or_mprn?: string | null;
   expected_live_date?: string | null;
@@ -33,35 +34,99 @@ export function EditMetadataDialog({
   onClose: () => void;
 }) {
   const m = useEditCallMetadata(call.id);
-  const [form, setForm] = useState<EditCallMetadataPayload>({
-    customer_name: call.customer_name ?? "",
-    agent_name: call.agent_name ?? "",
-    supplier: deal?.supplier ?? "",
-    mpan_or_mprn: deal?.mpan_or_mprn ?? "",
-    expected_live_date: deal?.expected_live_date ?? "",
-    deal_value_gbp: deal?.deal_value_gbp ?? undefined,
-    contract_length_months: deal?.term_months ?? undefined,
-    notes: deal?.notes ?? "",
-  });
+
+  // Prefer the deal-resolved canonical customer name over the call-row
+  // value when both exist. The call row sometimes carries a truncated
+  // first-token-only customer ("Awais") while the deal canonical is the
+  // full business name ("Awais Mustafa Ta Charles Palace"). Pre-filling
+  // from the deal canonical prevents the modal from inviting an
+  // accidental no-op save that silently shortens the customer record.
+  // See BRAIN 2026-05-16 audit P0 #5.
+  const seededCustomerName = (deal?.customer_name?.trim() || call.customer_name?.trim() || "") as string;
+
+  // Original seed — anchor for "did the user change this field?".
+  const seed = useMemo<EditCallMetadataPayload>(
+    () => ({
+      customer_name: seededCustomerName,
+      agent_name: call.agent_name ?? "",
+      supplier: deal?.supplier ?? "",
+      mpan_or_mprn: deal?.mpan_or_mprn ?? "",
+      expected_live_date: deal?.expected_live_date ?? "",
+      deal_value_gbp: deal?.deal_value_gbp ?? undefined,
+      contract_length_months: deal?.term_months ?? undefined,
+      notes: deal?.notes ?? "",
+    }),
+    // seed is frozen at first render — re-opening the modal remounts the
+    // component (gated by `open` prop below) which rebuilds the seed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [call.id],
+  );
+  const [form, setForm] = useState<EditCallMetadataPayload>(seed);
 
   if (!open) return null;
 
+  // Heuristic guard: if the user is about to save a customer_name that
+  // is a strict prefix of the existing canonical (e.g. "Awais" replacing
+  // "Awais Mustafa Ta Charles Palace") AND they didn't actively edit it,
+  // surface a confirm so a careless Save can't truncate a deal record.
+  const customerNameWouldShrink =
+    !!form.customer_name?.trim() &&
+    !!seededCustomerName &&
+    form.customer_name.trim() === seededCustomerName &&
+    seededCustomerName.split(/\s+/).length === 1 &&
+    !!deal?.customer_name?.trim() &&
+    deal.customer_name.trim().length > seededCustomerName.length;
+
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    // Strip empty strings + NaN
+    // CHANGED-FIELDS-ONLY payload. Only send fields the user actively
+    // touched (current value ≠ seed). This prevents the modal from
+    // silently re-writing every field on Save when the user only wanted
+    // to change one. Previously a no-op Save would re-stamp call.customer_name
+    // with whatever was in the pre-fill (and could shorten a name).
     const payload: EditCallMetadataPayload = {};
-    if (form.customer_name?.trim()) payload.customer_name = form.customer_name.trim();
-    if (form.agent_name?.trim()) payload.agent_name = form.agent_name.trim();
-    if (form.supplier?.trim()) payload.supplier = form.supplier.trim();
-    if (form.mpan_or_mprn?.trim()) payload.mpan_or_mprn = form.mpan_or_mprn.trim();
-    if (form.expected_live_date?.trim()) payload.expected_live_date = form.expected_live_date.trim();
-    if (typeof form.deal_value_gbp === "number" && !Number.isNaN(form.deal_value_gbp)) {
-      payload.deal_value_gbp = form.deal_value_gbp;
+    const txt = (v: string | null | undefined) => (v ?? "").trim();
+
+    if (txt(form.customer_name) !== txt(seed.customer_name)) {
+      const v = txt(form.customer_name);
+      if (v) payload.customer_name = v;
     }
-    if (typeof form.contract_length_months === "number" && !Number.isNaN(form.contract_length_months)) {
-      payload.contract_length_months = form.contract_length_months;
+    if (txt(form.agent_name) !== txt(seed.agent_name)) {
+      const v = txt(form.agent_name);
+      if (v) payload.agent_name = v;
     }
-    if (form.notes?.trim()) payload.notes = form.notes.trim();
+    if (txt(form.supplier) !== txt(seed.supplier)) {
+      const v = txt(form.supplier);
+      if (v) payload.supplier = v;
+    }
+    if (txt(form.mpan_or_mprn) !== txt(seed.mpan_or_mprn)) {
+      const v = txt(form.mpan_or_mprn);
+      if (v) payload.mpan_or_mprn = v;
+    }
+    if (txt(form.expected_live_date) !== txt(seed.expected_live_date)) {
+      const v = txt(form.expected_live_date);
+      if (v) payload.expected_live_date = v;
+    }
+    if (form.deal_value_gbp !== seed.deal_value_gbp) {
+      if (typeof form.deal_value_gbp === "number" && !Number.isNaN(form.deal_value_gbp)) {
+        payload.deal_value_gbp = form.deal_value_gbp;
+      }
+    }
+    if (form.contract_length_months !== seed.contract_length_months) {
+      if (typeof form.contract_length_months === "number" && !Number.isNaN(form.contract_length_months)) {
+        payload.contract_length_months = form.contract_length_months;
+      }
+    }
+    if (txt(form.notes) !== txt(seed.notes)) {
+      const v = txt(form.notes);
+      if (v) payload.notes = v;
+    }
+
+    // Nothing changed → close without firing the mutation.
+    if (Object.keys(payload).length === 0) {
+      onClose();
+      return;
+    }
     m.mutate(payload, { onSuccess: () => onClose() });
   };
 
@@ -88,8 +153,16 @@ export function EditMetadataDialog({
               className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1.5 text-[13px]"
               value={form.customer_name ?? ""}
               onChange={(e) => setForm({ ...form, customer_name: e.target.value })}
-              placeholder="Acme Industrial Ltd"
+              placeholder="Type the canonical business name…"
             />
+            {customerNameWouldShrink && (
+              <p className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
+                Heads up: the deal canonical is{" "}
+                <strong>{deal?.customer_name}</strong> — saving without editing
+                will keep the shorter value <strong>{seededCustomerName}</strong> on
+                the call row. Type the full name if you want them to agree.
+              </p>
+            )}
           </label>
 
           <label className="flex flex-col gap-1 text-[12px]">
@@ -98,7 +171,7 @@ export function EditMetadataDialog({
               className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1.5 text-[13px]"
               value={form.agent_name ?? ""}
               onChange={(e) => setForm({ ...form, agent_name: e.target.value })}
-              placeholder="Sammy R."
+              placeholder="Type to override auto-detected agent…"
             />
           </label>
 

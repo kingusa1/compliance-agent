@@ -17,7 +17,6 @@ import { useMemo, useRef, useState } from "react";
 import {
   Search,
   AlertCircle,
-  Bookmark,
   Play,
   Pause,
   Download,
@@ -38,6 +37,7 @@ import { Pill } from "@/components/design/Pill";
 import { FilterChip } from "@/components/design/FilterChip";
 import { EmptyState } from "@/components/design/EmptyState";
 import { Waveform } from "@/components/design/Waveform";
+import { SavedViewsBar } from "./SavedViewsBar";
 
 import type { QueueCall } from "@/lib/api";
 
@@ -103,6 +103,19 @@ const STAGE_LABEL: Record<string, string> = {
   verbal: "Verbal",
   loa: "LOA",
 };
+
+/**
+ * Format seconds as `MM:SS` with both minute and second floored.
+ * Fixes audit 2026-05-16 P1 #10 — the previous inline formatter omitted
+ * `Math.floor` on the modulo, causing display like `1:9.911999999999992`
+ * instead of `01:09` whenever `seconds` was a float.
+ */
+function formatMmSs(seconds: number | null | undefined): string {
+  const s = Math.max(0, Math.floor(Number(seconds) || 0));
+  const mm = Math.floor(s / 60).toString().padStart(2, "0");
+  const ss = (s % 60).toString().padStart(2, "0");
+  return `${mm}:${ss}`;
+}
 
 function formatRelative(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -200,14 +213,15 @@ function QueueRow({
       <div style={{ minWidth: 0 }}>
         <div
           style={{
-            color: "var(--text-primary)",
+            color: row.customer_name ? "var(--text-primary)" : "var(--text-faint)",
             fontWeight: 500,
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
           }}
+          title={row.customer_name ?? "Customer not yet extracted"}
         >
-          {row.customer_name ?? "(unknown customer)"}
+          {row.customer_name ?? "—"}
         </div>
         <div
           style={{
@@ -369,7 +383,7 @@ function PreviewPanel({ row }: { row: QueueCall | null }) {
           {row.supplier || "Unknown supplier"}
         </div>
         <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>
-          {row.duration ? `${Math.floor((row.duration ?? 0) / 60)}:${String((row.duration ?? 0) % 60).padStart(2, "0")} · ` : ""}
+          {row.duration ? `${formatMmSs(row.duration)} · ` : ""}
           {formatRelative(row.created_at)}
         </div>
       </div>
@@ -421,7 +435,7 @@ function PreviewPanel({ row }: { row: QueueCall | null }) {
               color: "var(--text-muted)",
             }}
           >
-            {`${Math.floor(currentTime / 60)}:${String(Math.floor(currentTime % 60)).padStart(2, "0")}`} / {row.duration ? `${Math.floor((row.duration ?? 0) / 60)}:${String((row.duration ?? 0) % 60).padStart(2, "0")}` : "—:—"}
+            {formatMmSs(currentTime)} / {row.duration ? formatMmSs(row.duration) : "—:—"}
           </div>
           {audioUrlQuery.data?.url && (
             <audio
@@ -746,49 +760,17 @@ export default function QueuePage() {
             }}
           />
         </div>
-        <button
-          type="button"
-          disabled
-          title="Coming soon"
-          aria-disabled
-          style={{
-            height: 32,
-            padding: "0 12px",
-            fontSize: 13,
-            fontWeight: 500,
-            background: "var(--bg-elev2)",
-            color: "var(--text-muted)",
-            border: "1px solid var(--border-subtle)",
-            borderRadius: 6,
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-            cursor: "not-allowed",
-            opacity: 0.6,
+        {/* 2026-05-16 audit fix — was a "Coming soon" placeholder even
+            though SavedViewsBar.tsx already implements the full CRUD UI
+            against the existing backend endpoints (useSavedViewsQuery /
+            useSaveView / useDeleteView). Wire it in. */}
+        <SavedViewsBar
+          current={{ filter, q: search }}
+          onApply={({ filter: nextFilter, q: nextQ }) => {
+            if (nextFilter) setFilter(nextFilter);
+            if (nextQ !== undefined) setSearch(nextQ);
           }}
-        >
-          {/* 2026-05-14 audit fix: was a silent no-op. Gated behind
-              "Coming soon" until the saved-views CRUD UI lands; backend
-              endpoints already exist (useSavedViewsQuery in reviewer.ts)
-              but the menu/popover hasn't been built. */}
-          <Bookmark size={14} />
-          Saved views
-          <span
-            style={{
-              fontSize: 9,
-              fontWeight: 700,
-              padding: "1px 6px",
-              borderRadius: 999,
-              background: "var(--bg-elev3)",
-              color: "var(--text-faint)",
-              textTransform: "uppercase",
-              letterSpacing: "0.06em",
-              marginLeft: 4,
-            }}
-          >
-            Coming soon
-          </span>
-        </button>
+        />
       </div>
 
       {/* Error banner */}

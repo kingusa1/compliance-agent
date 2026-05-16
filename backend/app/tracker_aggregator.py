@@ -532,6 +532,14 @@ def build_tracker_rows(
         for call in calls:
             deal = deals_by_id.get(call.deal_id) if call.deal_id else None
             rows.append(_awaiting_review_row(call, deal, db))
+        # 2026-05-16 audit fix — the CATEGORY pill on the Tracker page
+        # was a silent no-op on the awaiting_review tab because the
+        # category column doesn't exist on Call; it's derived per-call
+        # from `_ai_suggestions_for_call` inside `_awaiting_review_row`.
+        # Apply the filter post-hoc on the rendered rows.
+        if category:
+            allowed = {c for c in category if c}
+            rows = [r for r in rows if r.get("category") in allowed]
         return rows
 
     if tab == "compliant":

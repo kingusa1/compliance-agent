@@ -40,4 +40,20 @@ ENV PORT=8001 \
 
 EXPOSE 8001
 
-CMD sh -c "(alembic upgrade head 2>&1 | tail -40 || echo 'ALEMBIC_FAILED — boot continues in degraded mode (see /readyz)') & exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1 --proxy-headers --forwarded-allow-ips='*'"
+# 2026-05-16 perf — explicit --loop uvloop --http httptools enables the
+# C-extension event loop + HTTP parser shipped with uvicorn[standard].
+# uvloop alone is ~2-3× faster than asyncio's default selector loop for
+# the proxy-heavy I/O profile this service has (DB pool + Supabase
+# Storage + OpenRouter outbound).
+#
+# --no-access-log: every Railway request was being JSON-logged, adding
+# ~30-80ms per request to stdout buffering. The Prometheus instrumentator
+# + Sentry already give us per-route latency + error visibility, so the
+# uvicorn access log is redundant noise on prod.
+#
+# Workers stays at 1 because realtime.py uses in-memory asyncio.Queue
+# pub/sub keyed on call_id — moving to >1 worker would silently break
+# SSE delivery (each worker has its own queue and the publisher only
+# fans out within its own process). Wait for Redis pub/sub to ship before
+# scaling workers.
+CMD sh -c "(alembic upgrade head 2>&1 | tail -40 || echo 'ALEMBIC_FAILED — boot continues in degraded mode (see /readyz)') & exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1 --loop uvloop --http httptools --no-access-log --proxy-headers --forwarded-allow-ips='*'"

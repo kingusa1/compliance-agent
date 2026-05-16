@@ -5,7 +5,7 @@
  * pages narrow on render. Mutation wrappers + invalidation rules live in
  * lib/mutations/rejections.ts.
  */
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import { apiFetch } from "@/lib/api";
 import type {
@@ -81,6 +81,17 @@ export function useRejectionsQuery(params: RejectionsListParams = {}) {
     // (was re-rendering operational pages on a 3 s loop and breaking
     // audio playback on call detail). True push-based updates need SSE.
     staleTime: 15_000,
+    // 2026-05-16 perf — keep the previous tab's rows visible while the
+    // new tab fetches. Without this, Fixed/Dead/Archive tab switches show
+    // a permanent "Loading rejections..." skeleton because each new
+    // queryKey has no cache → `isLoading` flips to true → the page-level
+    // `!isLoading && rejections.length === 0` empty-state branch never
+    // executes (audit 2026-05-16 P1).
+    placeholderData: keepPreviousData,
+    // Cap retries so a hung backend doesn't leave the UI Loading
+    // forever — show the error after one retry instead.
+    retry: 1,
+    retryDelay: 1500,
   });
 }
 

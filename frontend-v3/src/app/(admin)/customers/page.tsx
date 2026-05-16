@@ -10,7 +10,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { Search, ChevronDown, Inbox } from "lucide-react";
+import { Search, Inbox } from "lucide-react";
 
 import { useAdminCustomersQuery } from "@/lib/queries/admin";
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
@@ -38,30 +38,6 @@ function HeaderCell({ children }: { children: React.ReactNode }) {
       }}
     >
       {children}
-    </div>
-  );
-}
-
-function FilterDropdown({ label, value }: { label: string; value: string }) {
-  return (
-    <div
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        height: 30,
-        padding: "0 10px",
-        background: "var(--bg-elev2)",
-        border: "1px solid var(--border-subtle)",
-        borderRadius: 6,
-        fontSize: 12,
-        color: "var(--text-primary)",
-        cursor: "pointer",
-      }}
-    >
-      <span style={{ color: "var(--text-faint)" }}>{label}:</span>
-      <span>{value}</span>
-      <ChevronDown size={12} style={{ color: "var(--text-muted)" }} />
     </div>
   );
 }
@@ -183,8 +159,14 @@ export default function CustomersListPage() {
             }}
           />
         </div>
-        <FilterDropdown label="Supplier" value="All" />
-        <FilterDropdown label="Worst action" value="All" />
+        {/* 2026-05-16 audit fix — the previous Supplier + Worst action
+            "FilterDropdown" widgets rendered with a cursor:pointer and
+            ChevronDown but had no onClick / onChange wiring. They were
+            dead. Filtering by supplier / action already happens through
+            the search box (server uses ILIKE on customer + agent + supplier);
+            real dropdowns can be re-introduced once the backend exposes
+            multi-select aggregates. Until then we remove the fake controls
+            so reviewers don't click expecting them to work. */}
         <div style={{ flex: 1 }} />
         <button
           type="button"

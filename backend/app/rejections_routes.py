@@ -1050,6 +1050,14 @@ def auto_create_rejection_for_verdict(
         # a human just created it.
         confirmed_by=actor_id,
         confirmed_at=datetime.utcnow(),
+        # 2026-05-16 audit P1-1 — stamp HUMAN_CONFIRMED on creation. The
+        # column has server_default="AI_PENDING", so without this every
+        # auto-rejection created from a reviewer's FAIL verdict landed in
+        # the DB tagged AI_PENDING — misclassifying it back into the
+        # "awaiting review" bucket and confusing the tracker's verdict-state
+        # filter. The helper is reviewer-only by construction (see above),
+        # so HUMAN_CONFIRMED is correct for every code path that reaches here.
+        verdict_state="HUMAN_CONFIRMED",
     )
     db.add(r)
     db.flush()

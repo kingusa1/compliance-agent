@@ -175,6 +175,13 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
   // (only-fill-if-blank), so the first-finished call's detection
   // backfills the shared deal.
   const [sameDeal, setSameDeal] = useState(false);
+  // 2026-05-16 audit — when the user explicitly UNTICKS the same-deal box,
+  // we must honour that choice even on multi-file drops. Previously
+  // `sameDealEffective = valid.length > 1 ? true : sameDeal` silently
+  // forced same-deal=true on every multi-file drop, breaking the
+  // "untick to split" promise in the helper text. This tracks whether
+  // the user has manually interacted with the checkbox in this session.
+  const [sameDealTouched, setSameDealTouched] = useState(false);
   const qc = useQueryClient();
   // Bypass useUploadCall hook here. TanStack Query's useMutation tracks a
   // single in-flight state; rapid parallel mutate() calls only render the
@@ -188,13 +195,16 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
       return;
     }
 
-    // When the reviewer drops 2+ files together, they almost always
-    // belong to the same deal (Lead Gen + Passover + Closer + LOA for
-    // one customer). Default same-deal ON unless they've explicitly
-    // ticked it off. Single-file drops leave the toggle alone — the
-    // pipeline will create or join a deal from the detected customer
-    // name as before.
-    const sameDealEffective = valid.length > 1 ? true : sameDeal;
+    // When the reviewer drops 2+ files together, default same-deal ON
+    // (most multi-drops are Lead Gen + Passover + Closer + LOA for one
+    // customer). BUT if the reviewer has manually toggled the checkbox
+    // this session, honour their choice — including "untick to split"
+    // on a multi-file drop. The helper text promises this behaviour.
+    const sameDealEffective = sameDealTouched
+      ? sameDeal
+      : valid.length > 1
+        ? true
+        : sameDeal;
     setBatchUploads(valid.map((f) => ({ name: f.name, size: f.size, status: "pending" })));
 
     // Same-deal mode: create one stub deal up-front, attach every file's
@@ -244,18 +254,29 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
       }),
     );
 
-    // Navigate to the first successful call now that the batch is done.
-    // For single-file uploads this matches the old click-Upload UX. For
-    // multi-file batches the user lands on the first call's detail page
-    // — they can navigate to siblings via the customer page or queue.
+    // Navigate when the batch finishes:
+    //   - 1 file → directly to that call's detail page (current UX).
+    //   - 2+ files → /calls so the reviewer can watch ALL of them
+    //     ingest live (each row shows its pipeline status via SSE).
+    //     This addresses the audit complaint: "when i upload it doesn't
+    //     direct me to the upload dashboard where i can monitor uploads
+    //     live" — single-call detail hides sibling progress.
     const firstCid = completed.find((c) => !!c);
+    const successCount = completed.filter((c) => !!c).length;
     if (firstCid && onSuccess) {
-      toast.success(
-        valid.length === 1
-          ? "Call uploaded, processing"
-          : `${valid.length} calls uploaded — opening the first one`,
-      );
-      onSuccess(firstCid);
+      if (valid.length === 1) {
+        toast.success("Call uploaded, processing");
+        onSuccess(firstCid);
+      } else {
+        toast.success(
+          `${successCount} of ${valid.length} call${valid.length === 1 ? "" : "s"} uploaded — opening the live dashboard`,
+        );
+        // Signal "navigate to /calls instead of /calls/{id}" by passing
+        // a sentinel value. Callers that override onSuccess (e.g. the
+        // customer page that closes the modal in-place) still receive
+        // the first call id so their existing logic works.
+        onSuccess("__BATCH_TO_CALLS_DASHBOARD__");
+      }
     }
     qc.invalidateQueries({ queryKey: ["admin", "calls"] });
     qc.invalidateQueries({ queryKey: ["admin", "customers"] });
@@ -390,8 +411,8 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
           // Surface "why nothing happens when I click Upload" — RHF
           // silently swallows submit when validation fails. Show the
           // first error to the reviewer so they can act on it.
-          // eslint-disable-next-line no-console
-          console.warn("[L7Form] submit blocked by validation:", errors);
+          // 2026-05-16 audit fix — removed stray `console.warn`; the
+          // toast.error below is the user-facing surface.
           const flat: string[] = [];
           const walk = (obj: unknown, path: string) => {
             if (!obj || typeof obj !== "object") return;
@@ -451,13 +472,16 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
           <input
             type="checkbox"
             checked={sameDeal}
-            onChange={(e) => setSameDeal(e.target.checked)}
+            onChange={(e) => {
+              setSameDeal(e.target.checked);
+              setSameDealTouched(true);
+            }}
             data-testid="l7-same-deal"
           />
           <span className="text-[12px] text-[var(--text-muted)]">
             Same deal — group these files as one deal record{" "}
             <span className="text-[10px] text-[var(--text-dim)]">
-              (auto-on when you drop 2+ files together; untick to split)
+              (auto-on when you drop 2+ files together; tick or untick to override)
             </span>
           </span>
         </label>

@@ -96,6 +96,12 @@ export function useReviewCheckpoint() {
     onSuccess: (_data, { callId }) => {
       qc.invalidateQueries({ queryKey: reviewerKeys.callDetail(callId) });
       qc.invalidateQueries({ queryKey: reviewerKeys.callCheckpoints(callId) });
+      // SegmentCards on the call-detail page reads from a separate key
+      // (`["call", id, "segments"]` — see calls/[id]/page.tsx). Without
+      // this invalidation, overriding a single CP updated the top-bar
+      // score (63/88 → 62/88) but left the per-segment cards still
+      // showing 63/88 and the filter pills stale. Audit 2026-05-16 P1 #8.
+      qc.invalidateQueries({ queryKey: ["call", callId, "segments"] });
       // Toasts on every checkpoint click would be noisy — stay silent on success.
     },
     onError: (err) => {

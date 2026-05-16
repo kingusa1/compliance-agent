@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 from sentry_sdk.integrations.fastapi import FastApiIntegration
@@ -210,6 +211,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 2026-05-16 perf — gzip large JSON responses (>1KB). Call detail
+# responses are 100-500KB with the inline transcript + checkpoint_results
+# JSON; over the Railway→Vercel pipe gzip cuts that to ~30-80KB. Streaming
+# responses (SSE) are exempt — Starlette's GZipMiddleware automatically
+# skips text/event-stream responses.
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 
 if settings.prometheus_enabled:
     Instrumentator(

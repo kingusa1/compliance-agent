@@ -163,6 +163,14 @@ class CallResponse(BaseModel):
     # rows return None; pydantic validator below normalises to [].
     risk_tags: Optional[List[str]] = Field(default_factory=list)
 
+    # 2026-05-16 perf — pre-signed Supabase Storage URL for the call audio.
+    # Populated by `get_call` so the call-detail page can start audio
+    # playback without a second round-trip to /api/calls/{id}/audio-url.
+    # Null when the call has no `audio_storage_key` (legacy on-disk uploads
+    # or in-progress uploads) — frontend falls back to the dedicated
+    # /audio-url endpoint in that case.
+    audio_url: Optional[str] = None
+
     @field_validator("risk_tags", mode="before")
     @classmethod
     def _risk_tags_default(cls, v):
@@ -232,6 +240,13 @@ class CallSummary(BaseModel):
     compliance_status: str | None = None
     review_status: str | None = None
     reason: str | None = None
+    # 2026-05-16 audit P2-7 fix — `list_calls` selects both columns from
+    # the DB, but the response model was silently dropping them, so the
+    # /calls list page rendered every row with "NULL stage" and no deal
+    # linkage. Surface them here so the table can show stage + deal
+    # without a second fetch.
+    call_type: str | None = None
+    deal_id: UUID | None = None
 
     class Config:
         from_attributes = True

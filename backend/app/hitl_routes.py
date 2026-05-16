@@ -605,7 +605,11 @@ async def submit_verdict(
     # Sprint TR-3 — also flip ``call.compliant=True`` on PASS so the
     # tracker's "Compliant" tab can read the boolean directly without
     # joining the verdict_history audit table.
-    elif payload.verdict == "PASS":
+    elif verdict_action_norm == "PASS":
+        # 2026-05-16 audit P2-6 fix — frontend sends lowercase "pass" too.
+        # The previous case-sensitive `payload.verdict == "PASS"` silently
+        # skipped this branch, leaving call.compliant unset and never
+        # firing the customer confirmation email.
         call.compliant = True
         try:
             from app.email_routes import send_customer_email_for_call

@@ -62,26 +62,41 @@ export type BuiltEmail = {
 };
 
 /**
- * Suggest the aggregate verdict from per-CP actions.
+ * Suggest the aggregate verdict.
  *
- * Priority:
- *   block          → BLOCK
- *   recall_redo    → FAIL
- *   schedule_another / reask_supp → REVIEW
- *   coach          → COACHING
- *   else           → PASS
+ * Severity rules (when statusCounts present) trump per-CP action picks
+ * so a call with AI-flagged fails or partials never suggests PASS just
+ * because the reviewer hasn't manually picked actions yet:
+ *   fails > 0       → FAIL
+ *   partials > 0    → REVIEW
+ *   blockedBucket   → FAIL
  *
- * Returns null when no per-CP actions are set yet (so the UI shows
- * "no suggestion yet").
+ * Then fall back to per-CP action priority:
+ *   recall_redo                              → FAIL
+ *   schedule_another / reask_supp            → REVIEW
+ *   coach                                    → COACHING
+ *   all no_action / ignore                   → PASS
+ *
+ * Returns null only when statusCounts is absent AND no per-CP actions are
+ * set yet (preserves the "no suggestion yet" UX path).
  */
+export type SuggestStatusCounts = {
+  fails: number;
+  partials: number;
+  blockedBucket?: boolean;
+};
+
 export function suggestAggregate(
   perCpActions: Map<string, PerCpAction>,
+  statusCounts?: SuggestStatusCounts,
 ): AggregateAction | null {
+  if (statusCounts) {
+    if (statusCounts.blockedBucket) return "FAIL";
+    if (statusCounts.fails > 0) return "FAIL";
+    if (statusCounts.partials > 0) return "REVIEW";
+  }
   const acts = [...perCpActions.values()];
-  if (acts.length === 0) return null;
-  // No explicit "block" action exists in the per-CP set; reserve the
-  // recall_redo path as the strongest signal mapping to FAIL. We expose
-  // a manual override so reviewers can pick BLOCK directly when needed.
+  if (acts.length === 0) return statusCounts ? "PASS" : null;
   if (acts.some((a) => a === "recall_redo")) return "FAIL";
   if (acts.some((a) => a === "schedule_another" || a === "reask_supp")) {
     return "REVIEW";

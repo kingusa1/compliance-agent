@@ -44,9 +44,12 @@ import {
   useAgentChat,
   useReviewCheckpoint,
   useRetryCheckpoint,
+  useClaimCall,
+  useReleaseCall,
   type VerdictAction,
 } from "@/lib/mutations/reviewer";
 import { ApiError, apiFetch } from "@/lib/api";
+import { useMe } from "@/lib/auth";
 import { formatScorePercent } from "@/lib/score";
 import { Pill } from "@/components/design/Pill";
 import { WorkflowTypePill } from "@/components/design/WorkflowTypePill";
@@ -593,6 +596,7 @@ export default function CallDetailPage({
   // stays mounted across pipeline-step transitions (no re-mount, no reset).
   useCallEvents(id);
 
+  const meQ = useMe();
   const detail = useCallDetailQuery(id);
   const wordsQuery = useCallWordsQuery(id);
   const flagsQuery = useCallFlagsQuery(id);
@@ -603,6 +607,17 @@ export default function CallDetailPage({
   const agentChat = useAgentChat();
   const reviewCheckpoint = useReviewCheckpoint();
   const retryCheckpoint = useRetryCheckpoint();
+  const claimCall = useClaimCall();
+  const releaseCall = useReleaseCall();
+
+  // Claim lifecycle (2026-05-16 audit P0 #2). The page opens in
+  // "Reviewing" mode visually — back this with a real claim so two
+  // reviewers can't double-work the same call. 409 → read-only banner,
+  // reviewer can take over or back out.
+  const [claimSessionId, setClaimSessionId] = useState<string | null>(null);
+  const [claimReadOnly, setClaimReadOnly] = useState(false);
+  const [claimConflictBy, setClaimConflictBy] = useState<string | null>(null);
+  const claimedRef = useRef<boolean>(false);
 
   const [tab, setTab] = useState<"checkpoints" | "verdict" | "chat">("checkpoints");
 
@@ -627,7 +642,7 @@ export default function CallDetailPage({
   });
   // Plan §5b: top-row pill filter restored (Pass / Partial / Non-Compliant)
   // with counts. Click a chip → narrow the checkpoint list to that status.
-  const [cpFilter, setCpFilter] = useState<"all" | "passed" | "partial" | "fail">("all");
+  const [cpFilter, setCpFilter] = useState<"all" | "passed" | "partial" | "fail" | "na">("all");
   const [chosen, setChosen] = useState<VerdictAction | null>(null);
   const [reason, setReason] = useState("");
   const [sendEmailToggle, setSendEmailToggle] = useState(false);
@@ -663,6 +678,47 @@ export default function CallDetailPage({
       qc.invalidateQueries({ queryKey: reviewerKeys.callWords(id) });
     }
   }, [c?.status, wordsQuery.data, qc, id]);
+
+  // Claim the call on mount, release on unmount. Guarded with a ref so
+  // React 18 strict-mode double-invocation doesn't fire two claim
+  // requests; only the first one wins and the cleanup releases that one.
+  // 409 from claim means another reviewer holds the lock — flip to
+  // read-only banner instead of swallowing the toast error.
+  useEffect(() => {
+    if (!id || claimedRef.current) return;
+    claimedRef.current = true;
+    let acquiredSessionId: string | null = null;
+    claimCall.mutate(id, {
+      onSuccess: (data) => {
+        acquiredSessionId = data.session_id ?? null;
+        setClaimSessionId(acquiredSessionId);
+        setClaimReadOnly(false);
+        setClaimConflictBy(null);
+      },
+      onError: (err) => {
+        if (err instanceof ApiError && err.status === 409) {
+          let by: string | null = null;
+          try {
+            const parsed = JSON.parse(err.body) as { detail?: string; claimed_by?: string };
+            by = parsed.claimed_by ?? parsed.detail ?? null;
+          } catch {
+            /* body not JSON */
+          }
+          setClaimConflictBy(by);
+          setClaimReadOnly(true);
+        }
+        // non-409 errors already surface a toast via the mutation hook
+      },
+    });
+    return () => {
+      if (acquiredSessionId) {
+        releaseCall.mutate(acquiredSessionId);
+      }
+    };
+    // We intentionally depend on id only — claimCall/releaseCall identities
+    // change every render and we do NOT want to re-claim on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   const words = wordsQuery.data?.words ?? [];
   const flags = flagsQuery.data?.flags ?? [];
@@ -1121,10 +1177,16 @@ export default function CallDetailPage({
           <Pill tone="emerald" dot>
             Committed
           </Pill>
-        ) : (
+        ) : claimReadOnly ? (
+          <Pill tone="red" dot>
+            Read-only · claimed by {claimConflictBy ?? "another reviewer"}
+          </Pill>
+        ) : claimSessionId ? (
           <Pill tone="amber" dot>
             Reviewing
           </Pill>
+        ) : (
+          <Pill tone="amber">Claiming…</Pill>
         )}
         <button
           type="button"
@@ -1173,6 +1235,13 @@ export default function CallDetailPage({
           </span>
         </div>
         <button
+          type="button"
+          onClick={() => {
+            detail.refetch();
+            checkpointsQuery.refetch();
+            qc.invalidateQueries({ queryKey: ["call", id, "segments"] });
+          }}
+          title="Refresh call detail + checkpoints"
           style={{
             height: 28,
             padding: "0 10px",
@@ -1192,18 +1261,23 @@ export default function CallDetailPage({
           Retry
         </button>
         <button
+          type="button"
+          disabled
+          title="Export — coming soon"
+          aria-disabled
           style={{
             height: 28,
             padding: "0 10px",
             background: "var(--bg-elev2)",
             border: "1px solid var(--border-subtle)",
-            color: "var(--text-primary)",
+            color: "var(--text-muted)",
             borderRadius: 6,
             fontSize: 12,
             display: "inline-flex",
             alignItems: "center",
             gap: 5,
-            cursor: "pointer",
+            cursor: "not-allowed",
+            opacity: 0.6,
             fontFamily: "inherit",
           }}
         >
@@ -1482,13 +1556,19 @@ export default function CallDetailPage({
             </div>
             <audio
               ref={audioRef}
-              src={audioUrlQuery.data?.url ?? undefined}
+              // 2026-05-16 perf — prefer the audio_url baked into the
+              // detail response so we don't wait on the second RTT to
+              // /audio-url. Falls back to the dedicated endpoint for
+              // legacy callers or when the inline URL expires (50min
+              // staleTime on the dedicated endpoint re-issues a fresh
+              // signed URL well before the 1hr Supabase TTL).
+              src={c?.audio_url ?? audioUrlQuery.data?.url ?? undefined}
               preload="metadata"
               onTimeUpdate={() => audioRef.current && setCurrentSec(audioRef.current.currentTime)}
               onPause={() => setPaused(true)}
               onPlay={() => setPaused(false)}
             />
-            {audioUrlQuery.isError && (
+            {!c?.audio_url && audioUrlQuery.isError && (
               <div
                 style={{
                   fontSize: 11,
@@ -1650,15 +1730,24 @@ export default function CallDetailPage({
                       if (s === "pass") acc.passed++;
                       else if (s === "partial") acc.partial++;
                       else if (s === "fail") acc.fail++;
+                      else acc.na++;
                       return acc;
                     },
-                    { passed: 0, partial: 0, fail: 0 },
+                    { passed: 0, partial: 0, fail: 0, na: 0 },
                   );
+                  // Audit 2026-05-16 P1 #9: previously `All` = cpCards.length
+                  // while Passed+Partial+Fail summed only scored CPs, so the
+                  // pills didn't add up (e.g. All 113 / 63+6+19=88, 25 hidden).
+                  // Expose an explicit N/A pill so reviewers can see the
+                  // skipped/unscored category instead of silently dropping it.
                   const chips: { key: typeof cpFilter; label: string; n: number; tone: string }[] = [
                     { key: "all", label: "All", n: cpCards.length, tone: "var(--text-primary)" },
                     { key: "passed", label: "Passed", n: counts.passed, tone: "var(--emerald)" },
                     { key: "partial", label: "Partial", n: counts.partial, tone: "var(--amber)" },
                     { key: "fail", label: "Non-Compliant", n: counts.fail, tone: "var(--red)" },
+                    ...(counts.na > 0
+                      ? [{ key: "na" as const, label: "N/A", n: counts.na, tone: "var(--text-faint)" }]
+                      : []),
                   ];
                   return (
                     <div style={{ display: "flex", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
@@ -1787,7 +1876,7 @@ export default function CallDetailPage({
                     customerName={c?.customer_name ?? null}
                     filename={c?.filename ?? null}
                     score={c?.score ?? null}
-                    reviewerEmail="compliance@xaia.ae"
+                    reviewerEmail={meQ.data?.email ?? null}
                     cpCards={cpCards.map((m) => ({
                       key: m.key,
                       script: m.script,
