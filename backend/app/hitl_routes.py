@@ -1689,6 +1689,63 @@ def release_idle_claims(
     return {"released": count}
 
 
+@hitl_router.post("/api/admin/force-release-all-claims")
+def admin_force_release_all_claims(
+    reviewer: dict = Depends(current_reviewer),
+    db: Session = Depends(get_db),
+):
+    """Force-release ALL active ClaimLock rows regardless of TTL.
+
+    2026-05-16 audit: testing flows + Playwright walks auto-claim every
+    call detail page mount; each claim holds a 30-min TTL. After a long
+    QA pass the queue can end up with all calls stuck in `in_review`
+    state, blocking subsequent verification work. This endpoint is the
+    emergency reset valve.
+
+    Admin/lead gated: only roles in ('lead', 'admin') can call. Audit-
+    logged with reason='admin_force_release' so the trail records who
+    nuked the locks.
+
+    Returns: count of locks released.
+    """
+    if reviewer.get("role") not in ("lead", "admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="Only lead or admin can force-release all claims",
+        )
+
+    now = utcnow()
+    active_locks = db.query(ClaimLock).all()
+    released = 0
+    for lock in active_locks:
+        rs = db.query(ReviewSession).filter_by(id=lock.review_session_id).first()
+        if rs is not None and rs.is_active:
+            rs.is_active = False
+            rs.released_at = now
+            rs.release_reason = "admin_force_release"
+        call = db.query(Call).filter_by(id=lock.call_id).first()
+        if call is not None and call.review_status == "in_review":
+            call.review_status = "unclaimed"
+            call.revision = (call.revision or 1) + 1
+        db.delete(lock)
+        released += 1
+
+    # Single audit row summarising the bulk action — no need for one
+    # per lock since the actor + timestamp + count are sufficient to
+    # reconstruct the event.
+    record_audit(
+        db,
+        action="hitl.force_release_all",
+        entity_type="claim_locks",
+        entity_id="*",
+        payload={"released_count": released},
+        actor_id=reviewer["id"],
+    )
+
+    db.commit()
+    return {"released": released}
+
+
 # ─── GET /api/calls/{id}/agent-trace ───────────────────────────────────────
 #
 # Expose the persisted chain-of-thought for an agent run. The agent loop

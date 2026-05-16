@@ -2047,7 +2047,11 @@ async def admin_ingest_phrase_packs(
     src = docs_dir() / "compliance_xai__watt_ai_phrase_detection_dataset_1.md"
     if not src.exists():
         raise HTTPException(500, f"phrase dataset not found at {src}")
-    md = src.read_text(encoding="utf-8", errors="ignore")
+    # 2026-05-16 audit: don't block the event loop on disk read. The
+    # phrase dataset is ~200KB markdown — small enough to read sync, but
+    # this is an async route and we have other concurrent uploads to
+    # serve. Offload to the default executor.
+    md = await asyncio.to_thread(src.read_text, encoding="utf-8", errors="ignore")
 
     defs = pack_definitions()
     if only_phase:
@@ -2538,7 +2542,8 @@ async def admin_ingest_script_checkpoints(
             )
             continue
 
-        md = best_path.read_text(encoding="utf-8", errors="ignore")
+        # 2026-05-16 audit: same offload pattern as the phrase-pack route.
+        md = await asyncio.to_thread(best_path.read_text, encoding="utf-8", errors="ignore")
         try:
             cps = await extract_checkpoints_from_markdown(
                 script_md=md,
