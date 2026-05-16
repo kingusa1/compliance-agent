@@ -191,7 +191,7 @@ export function buildEmailPreview(args: BuildEmailArgs): BuiltEmail {
   lines.push("");
   lines.push("Please confirm receipt + complete the required actions within 7 days.");
   lines.push("");
-  lines.push(`Reviewer: ${reviewerEmail || "compliance@xaia.ae"}`);
+  lines.push(`Reviewer: ${reviewerEmail || (process.env.NEXT_PUBLIC_COMPLIANCE_EMAIL_FALLBACK || "(reviewer email unavailable)")}`);
 
   return { subject, body: lines.join("\n") };
 }
@@ -268,7 +268,7 @@ export function buildCustomerEmailPreview(args: CustomerEmailArgs): BuiltEmail {
     "If you did not authorise this contract, please contact us immediately.",
   );
   lines.push("");
-  lines.push(args.reviewerEmail || "compliance@xaia.ae");
+  lines.push(args.reviewerEmail || (process.env.NEXT_PUBLIC_COMPLIANCE_EMAIL_FALLBACK || "(reviewer email unavailable)"));
 
   return { subject, body: lines.join("\n") };
 }

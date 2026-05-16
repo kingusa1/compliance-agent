@@ -1204,9 +1204,17 @@ export function VerdictTab(props: VerdictTabProps) {
             >
               <div>
                 <span style={{ color: "var(--text-faint)" }}>To: </span>
-                {agentName
-                  ? `${agentName.toLowerCase().replace(/\s+/g, ".")}@agent.local`
-                  : "agent@agent.local"}
+                {(() => {
+                  // Agent email lookup: NEXT_PUBLIC_AGENT_EMAIL_DOMAIN drives
+                  // the synthesized address (e.g. "@watt.example"); if not
+                  // configured we render a clear placeholder so reviewers
+                  // don't misread "@agent.local" as a real deliverable
+                  // address. Audit 2026-05-16 P1.
+                  const domain = process.env.NEXT_PUBLIC_AGENT_EMAIL_DOMAIN;
+                  if (!agentName) return <em style={{ color: "var(--text-faint)" }}>(no agent on file)</em>;
+                  if (!domain) return <em style={{ color: "var(--text-faint)" }}>(agent email lookup not configured)</em>;
+                  return `${agentName.toLowerCase().replace(/\s+/g, ".")}@${domain}`;
+                })()}
               </div>
               <div>
                 <span style={{ color: "var(--text-faint)" }}>Subject: </span>
