@@ -179,6 +179,93 @@ Opus volume (70% of spend lives there). Future work:
 Neither of those is part of this routing matrix — they're future
 optimisations to the grader itself.
 
+## 2026-05-16 (later same day) — OPERATOR MANDATE: ZERO ACCURACY DEGRADATION
+
+The earlier "T3 Haiku 4.5 demotions" + "grader cascade with Sonnet first"
+recommendations on this page **ARE NO LONGER APPLICABLE.** Operator
+re-stated the priority: accuracy is non-negotiable, do not degrade the
+system at all, even on the reviewer-editable narratives.
+
+**Concrete consequences:**
+
+- Every `_call_llm` site stays on **Opus 4.7** until further notice.
+- The `cheap=True` argument is effectively dead. `openrouter_cheap_model`
+  is already routed to Opus 4.7 as defence-in-depth (commit `17a9895`).
+- The cascade plan (Sonnet first → Opus fallback on `confidence<0.8`)
+  is parked. Do NOT ship it without an explicit, written operator ask.
+- The Haiku demotion plan for `date_extractor` / `entities._llm_fallback` /
+  4× `rejection_factory.*` / `agent/feedback` is parked. Same reason.
+
+## The ONLY lossless optimisation worth pursuing — broader prompt caching
+
+This optimisation **does not change which model runs, does not change
+the prompt content, and does not affect Claude's output**. It only
+changes HOW the prompt is delivered to Anthropic so the cache fires.
+
+**Current state (audited 2026-05-16):**
+
+- 4 callsites pass `system=` and get the 10%-input-cost cache discount:
+  `analyze_compliance_v2`, `analyze_compliance_watt`, `quality_agent`,
+  `rejection_advisor`.
+- **15 callsites do NOT pass `system=`** including the grader
+  (`checkpoint_analyzer._analyze_batch`) which is **70% of all spend**
+  and runs 21 batches per upload — every batch re-pays full input price
+  on the same supplier rules + transcript prefix.
+
+**The savings (if and only if operator approves an A/B test first):**
+
+The grader sends ~4k input tokens per batch × 21 batches = ~84k input
+tokens per upload at full Opus rate ($5/1M = $0.42 per upload on input).
+After moving the static prefix (supplier rules + transcript + JSON
+format instructions) into `system=`, only the 6-checkpoint user message
+varies per batch. That collapses to:
+
+- 1 full-rate batch (cache write): ~$0.02 input
+- 20 cached batches (10% read price): ~$0.04 input
+- Total: ~$0.06 input per upload (was $0.42)
+
+**Saving: ~$0.36 input per upload = ~28% of total OpenRouter spend.**
+Output cost is unchanged. This is the largest lossless optimisation in
+the entire backend.
+
+**Why it MIGHT change accuracy (worth being honest about):**
+
+Splitting the prompt into `system=` and `user=` blocks changes the
+relative order of {RULES, CHECKPOINTS, TRANSCRIPT, JSON_FORMAT} that
+Claude sees. The original order is RULES → CHECKPOINTS → TRANSCRIPT →
+JSON. The cached order is RULES + TRANSCRIPT + JSON in system →
+CHECKPOINTS in user. Claude is empirically robust to this kind of
+reordering, but "empirically robust" is not "byte-identical output".
+
+**Ship-only-after protocol** (operator-approved, NOT yet executed):
+
+1. Add a feature flag `settings.grader_prompt_caching_enabled` (default
+   False). Code change is reversible by flipping the flag.
+2. Pick a recently-completed call (e.g. one of the Awais 4 from
+   2026-05-16). Run the existing path → capture all 21 batch responses.
+3. Flip the flag on. Re-run the same call → capture all 21 batch
+   responses.
+4. Diff: every checkpoint must have the SAME `status`, `confidence`,
+   `evidence` (within token-level paraphrasing). If any verdict drifts,
+   roll back.
+5. Only after a clean diff: leave the flag on in production.
+
+**Do NOT ship the refactor without operator green-light on the A/B
+protocol.** Even a "lossless" change that touches the grader's prompt
+shape carries non-zero risk of subtle output drift on edge cases.
+
+## Other lossless candidates (lower impact)
+
+These also stay PARKED until operator green-light:
+
+- Move 6 other `_call_llm` callsites to `system=` for caching where they
+  have repeated static prefixes (script_checkpoint_extractor,
+  phrase_pack_extractor when re-extracting multiple chunks of one
+  script, content_classifier when batched). Lower volume = lower saving.
+- Cache the supplier-detect prompt across re-runs of the same call.
+
+---
+
 ## 2026-05-16 deep-search update — confirmed Anthropic-only for grader
 
 Independent benchmarks + community reports from late-2025 / early-2026
