@@ -24,10 +24,22 @@ tags: [index, brain]
 
 ## 🚨 Read FIRST when resuming a session
 
-**As of 2026-05-16 (late): VERDICT SUBMIT IS NOW WIRED + 27 audit fixes pushed (commits `7b7e078` / `403741d` / `30b2102`). Frontend Vercel deploy still gated.**
+**As of 2026-05-16 (very-very late): tip `6241726` on origin/main. Path 3 Realtime overhaul SHIPPED (feature-flagged, currently NO-OP). Vercel `dpl_6aFpiGWELWkU2LzVRH3xHidQwoTS` READY at `b9e0d12`. 6/8 bugs from the diagnose-fix-verify run shipped + verified in production via Playwright MCP.**
+
+**🎯 Immediate next-session actions (do these first):**
+
+1. **Verify Railway applied the alembic migration `2026_05_16_rls_realtime`** — `SELECT count(*) FROM pg_policies WHERE schemaname='public'` should return ≥22 (11 SELECT + 11 deny-write).
+2. **Flip `NEXT_PUBLIC_USE_REALTIME=1` in Vercel project settings** (Settings → Env Vars → Production) → trigger redeploy. This activates the `useRealtimeInvalidate` hook in production.
+3. **POST `/api/admin/force-release-all-claims`** (lead/admin JWT) to clear the 5 stuck-`in_review` locks left over from my Playwright walks. Without this, Bug 7+8 smoke can't run because the queue is drained.
+4. Re-run `frontend-v3/tests/e2e/bug-fixes-2026-05-16.spec.ts --grep "Bug7|Bug8"` to close those last two acceptance tests.
+
 Read in order:
 
-1. [[04_Sessions/2026-05-16_Session_queue_human_review_audit_verification]] — **READ FIRST.** Forensic verification of two external audits (96-step Queue audit + Playwright pipeline-walk audit). Headline: `VerdictTab.handleSubmit` is a prototype that `console.log`s + toasts "(prototype — payload logged)" but never calls `POST /api/calls/{id}/verdict`. Single defect cascades to: Reviewed tab stuck at 0, `/rejections` Active permanently empty, Compliant/Non-compliant pages show AI scores as if signed-off. Also: claim/release unwired, Tracker CATEGORY filters decorative, Edit-metadata corrupts customer names, Rejections sub-tabs infinite loading. **Fix sequence + audit corrections (10 of 29 audit claims are wrong/stale) inside.**
+1. [[04_Sessions/2026-05-16_Session_path3_realtime_overhaul]] — **READ FIRST.** Full RLS migration + Supabase Realtime publication on 11 user-visible tables + `useRealtimeInvalidate` hook + 3 page mounts + 5s deals poll killed + admin force-release endpoint + `asyncio.to_thread` on the 2 async-route disk-read sites. **All feature-flagged on `NEXT_PUBLIC_USE_REALTIME=1` — currently NO-OP.** Architecture sketch + rollout playbook + risk register inside.
+
+2. [[04_Sessions/2026-05-16_Session_eight_bug_diagnosis]] — Diagnose-fix-verify of 8 bugs across Tracker/Human Review/Upload. 6 shipped (Bug 1 tracker count drift, Bug 2 flash-empty, Bug 4 queue badge mismatch, Bug 5 lead-gen deal merge, Bug 7 stale rejections invalidation, Bug 8 cross-tab realtime). Bug 3 = feature not built (deferred), Bug 6 = not-a-bug (spec confirmed). Includes 5 continuous-learning rules saved.
+
+3. [[04_Sessions/2026-05-16_Session_queue_human_review_audit_verification]] — Earlier today: forensic verification of two external audits. Headline (now FIXED): `VerdictTab.handleSubmit` was a prototype that `console.log`d a payload and never POSTed; fix in commit `7b7e078`. Includes corrections to 10/29 audit claims.
 
 2. [[05_State/Live_State]] — **GROUND TRUTH ON DEPLOY.** Tip backend `3e57545`. (a) Reverted all Sonnet routing on detectors back to Opus 4.7 (Mohamed mandate: Sonnet's transcripts were unreliable on supplier / names / business / call_type). Both `openrouter_model` and `openrouter_cheap_model` now point at `anthropic/claude-opus-4.7` so any leftover `cheap=True` callsite still gets Opus. (b) Added trailing-tokens deal-linker shortcut: if last 2 non-stopword tokens of the business name match EXACTLY between target and candidate, drop fuzzy floor 0.80 → 0.40. Awais 4-call retest: 4 calls → **2 deals** (3 collapsed onto `6ac65bac 'Awais Mustafa Ta Charles Palace'`, one leadgen call still stub because BUSINESS_DETECT returned None on that transcript — transcript-limited). (c) Deleted duplicate Vercel project `compliance-agent-feat-wave5-deploy` that was auto-deploying-and-blocking on every push; only `compliance-agent` (`prj_eHIyIFyxusNdCd6mR9Ff469NrcKO`) remains.
 
