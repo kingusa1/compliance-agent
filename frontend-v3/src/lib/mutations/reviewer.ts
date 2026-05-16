@@ -270,28 +270,6 @@ export function useSubmitVerdict() {
   });
 }
 
-// ── Feedback email ────────────────────────────────────────────────
-
-export type FeedbackEmailArgs = {
-  callId: string;
-  to_addr: string;
-  subject: string;
-  body_markdown: string;
-};
-
-export function useFeedbackEmail() {
-  return useMutation({
-    mutationFn: ({ callId, ...body }: FeedbackEmailArgs) =>
-      postJson(`/api/calls/${encodeURIComponent(callId)}/feedback-email`, body),
-    onSuccess: () => {
-      toast.success("Feedback email sent", { description: "Logged to backend." });
-    },
-    onError: (err) => {
-      toast.error("Couldn’t send email", { description: _errMessage(err, "Try again.") });
-    },
-  });
-}
-
 // ── Customer confirmation email (W3.B v3-watt-coverage) ──────────
 
 export type CustomerEmailArgs = {
@@ -319,8 +297,8 @@ export type CustomerEmailResponse = {
 /**
  * Send the post-call customer confirmation email (compliance manual §8).
  * Backed by ``POST /api/calls/{id}/customer-email``. Distinct from
- * ``useFeedbackEmail`` which targets the *internal* sales agent, not the
- * customer — the two endpoints log separate SEND events for clarity.
+ * This hook targets the *customer*, not the internal sales agent —
+ * the two endpoints log separate SEND events for clarity.
  */
 export function useCustomerEmail() {
   return useMutation({

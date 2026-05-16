@@ -47,22 +47,16 @@ test("reviewer claims, scores checkpoints, and submits a verdict", async ({
   // accessible name rather than role=tab.
   await page.getByRole("button", { name: /^Verdict$/ }).click();
 
-  // The reviewer page renders an inline Verdict panel inside the right
-  // column — this targets the embedded one. data-testid `verdict-panel`
-  // is owned by the standalone <VerdictPanel/>; the inline copy uses
-  // verdict-action-* test ids.
-  await page.getByTestId("verdict-action-PASS").click();
+  // VerdictTab aggregate action buttons use data-testid="verdict-agg-{KEY}".
+  await page.getByTestId("verdict-agg-PASS").click();
 
+  // VerdictTab overall-reason textarea (auto-populated, freely editable).
   await page
-    .getByPlaceholder(/reason|min 10/i)
+    .getByTestId("verdict-overall-reason")
     .fill("Compliance verified after audit.");
 
-  // The reviewer detail page wires its own Submit; the standalone panel
-  // uses data-testid="verdict-submit". Match either.
-  const submit = page
-    .locator('[data-testid="verdict-submit"], button:has-text("Submit verdict")')
-    .first();
-  await submit.click();
+  // VerdictTab submit button.
+  await page.getByTestId("verdict-submit").click();
 
   // Sonner toast — match by text.
   await expect(page.getByText(/Verdict submitted/i)).toBeVisible({ timeout: 10_000 });
