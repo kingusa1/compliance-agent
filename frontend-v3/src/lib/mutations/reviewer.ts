@@ -39,7 +39,10 @@ function _errMessage(err: unknown, fallback: string): string {
 // ── Claim / release ───────────────────────────────────────────────
 
 export type ClaimResponse = {
-  session_id: string;
+  /** Backend returns review_session_id (not session_id). Both aliases accepted. */
+  review_session_id: string;
+  /** Legacy alias kept for callers that already destructure session_id. */
+  session_id?: string;
   expires_at?: string;
   status?: string;
 };

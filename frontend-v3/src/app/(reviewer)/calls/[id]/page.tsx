@@ -455,8 +455,10 @@ export default function CallDetailPage({
       {
         onSuccess: (data) => {
           claimedRef.current = true;
-          claimSessionRef.current = data.session_id ?? null;
-          setClaimSessionId(data.session_id ?? null);
+          // Backend returns review_session_id; fall back to session_id for safety.
+          const sid = data.review_session_id ?? data.session_id ?? null;
+          claimSessionRef.current = sid;
+          setClaimSessionId(sid);
           setClaimReadOnly(false);
           setClaimConflictBy(null);
         },
