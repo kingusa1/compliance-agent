@@ -9,7 +9,16 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.database import SessionLocal
 from app.models import Call, CustomerDeal
+from app.reviewers import current_reviewer
 
+# Audit 2026-05-16 C7: GET /api/calls/{id} now requires auth (the endpoint
+# embeds a signed audio URL). Override the dep so these schema-shape tests
+# assert against 200/404 instead of the auth gate's 401.
+app.dependency_overrides[current_reviewer] = lambda: {
+    "id": "test-reviewer",
+    "email": "test@compliance-agent.local",
+    "role": "admin",
+}
 client = TestClient(app)
 
 

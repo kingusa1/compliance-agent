@@ -197,7 +197,38 @@ export default function AgentsPage() {
           <HeaderCell>Status</HeaderCell>
         </div>
         <div style={{ flex: 1, overflowY: "auto" }} className="ca-scroll">
-          {query.isLoading
+          {query.isError ? (
+            <div
+              role="alert"
+              style={{
+                padding: "40px 24px",
+                textAlign: "center",
+                color: "var(--text-muted)",
+                fontSize: 13,
+                display: "flex",
+                flexDirection: "column",
+                gap: 12,
+                alignItems: "center",
+              }}
+            >
+              <div>Couldn’t load agents.</div>
+              <button
+                type="button"
+                onClick={() => query.refetch()}
+                style={{
+                  fontSize: 12,
+                  padding: "6px 14px",
+                  background: "transparent",
+                  border: "1px solid var(--border-subtle)",
+                  borderRadius: 6,
+                  color: "var(--text-primary)",
+                  cursor: "pointer",
+                }}
+              >
+                Retry
+              </button>
+            </div>
+          ) : query.isLoading
             ? Array.from({ length: 8 }).map((_, i) => (
                 <div
                   key={i}

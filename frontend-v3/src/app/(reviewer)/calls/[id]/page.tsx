@@ -40,7 +40,6 @@ import {
 } from "@/lib/queries/reviewer";
 import {
   useSubmitVerdict,
-  useFeedbackEmail,
   useAgentChat,
   useReviewCheckpoint,
   useRetryCheckpoint,
@@ -288,121 +287,6 @@ function parseTranscriptText(transcript: string): TranscriptLine[] {
 // Backwards-compat alias: callers used `fallbackLines` previously.
 const fallbackLines = parseTranscriptText;
 
-const VERDICTS: Array<{
-  key: VerdictAction;
-  label: string;
-  Icon: typeof CheckCircle2;
-  fillBg: string;
-  fillFg: string;
-  bg: string;
-  fg: string;
-  border: string;
-}> = [
-  {
-    key: "PASS",
-    label: "Pass",
-    Icon: CheckCircle2,
-    fillBg: "var(--emerald)",
-    fillFg: "#04201a",
-    bg: "var(--emerald-bg)",
-    fg: "var(--emerald-400)",
-    border: "var(--emerald-border)",
-  },
-  {
-    key: "REVIEW",
-    // 2026-05-14: user requested "Review" -> "Human Review" everywhere
-    // the AI escalates a call for human attention.
-    label: "Human Review",
-    Icon: AlertTriangle,
-    fillBg: "var(--amber)",
-    fillFg: "#1a1100",
-    bg: "var(--amber-bg)",
-    fg: "var(--amber-400)",
-    border: "var(--amber-border)",
-  },
-  {
-    key: "COACHING",
-    label: "Coaching",
-    Icon: GraduationCap,
-    fillBg: "var(--blue)",
-    fillFg: "#04162a",
-    bg: "var(--blue-bg)",
-    fg: "var(--blue)",
-    border: "var(--blue-border)",
-  },
-  {
-    key: "FAIL",
-    label: "Fail",
-    Icon: XCircle,
-    fillBg: "var(--red)",
-    fillFg: "#fff",
-    bg: "var(--red-bg)",
-    fg: "var(--red)",
-    border: "var(--red-border)",
-  },
-  {
-    key: "BLOCK",
-    label: "Block",
-    Icon: Ban,
-    fillBg: "var(--violet)",
-    fillFg: "#100a1f",
-    bg: "var(--violet-bg)",
-    fg: "var(--violet)",
-    border: "var(--violet-border)",
-  },
-];
-
-function VerdictRow({
-  chosen,
-  onPick,
-}: {
-  chosen: VerdictAction | null;
-  onPick: (k: VerdictAction) => void;
-}) {
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
-      {VERDICTS.map((v) => {
-        const isChosen = chosen === v.key;
-        const Icon = v.Icon;
-        return (
-          <button
-            key={v.key}
-            type="button"
-            onClick={() => onPick(v.key)}
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 6,
-              padding: "12px 6px",
-              background: isChosen ? v.fillBg : v.bg,
-              color: isChosen ? v.fillFg : v.fg,
-              border: `1px solid ${isChosen ? v.fillBg : v.border}`,
-              borderRadius: 8,
-              cursor: "pointer",
-              fontFamily: "inherit",
-              fontWeight: 500,
-              boxShadow: isChosen ? "var(--shadow-md), inset 0 1px 0 rgba(255,255,255,0.15)" : "none",
-            }}
-          >
-            <Icon size={18} strokeWidth={1.75} />
-            <span
-              style={{
-                fontSize: 11,
-                fontWeight: 600,
-                letterSpacing: "0.02em",
-                textTransform: "uppercase",
-              }}
-            >
-              {v.label}
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 // TranscriptLineRow removed — replaced by `TranscriptPlayer` (per-word
 // click-to-seek + double-click edit + karaoke). Speaker turn grouping is
 // now owned by the new component. Line-level state on this page (`lines`,
@@ -410,178 +294,6 @@ function VerdictRow({
 // `spotlightLine`) is still used by the audio waveform tickers and the
 // chat citation chip lookup, so the line-derivation memos remain in place.
 
-function FeedbackEmailModal({
-  onClose,
-  onSend,
-  agentEmail,
-  filename,
-  defaultBody,
-}: {
-  onClose: () => void;
-  onSend: (to: string, subject: string, body: string) => void;
-  agentEmail: string;
-  filename: string;
-  defaultBody: string;
-}) {
-  const [to, setTo] = useState(agentEmail);
-  const [subject, setSubject] = useState(`Compliance review · ${filename} · PASS`);
-  const [body, setBody] = useState(defaultBody);
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.55)",
-        display: "grid",
-        placeItems: "center",
-        zIndex: 60,
-        backdropFilter: "blur(2px)",
-      }}
-    >
-      <div
-        style={{
-          width: 460,
-          background: "var(--bg-elev1)",
-          border: "1px solid var(--border-strong)",
-          borderRadius: 10,
-          boxShadow: "var(--shadow-xl)",
-          overflow: "hidden",
-        }}
-      >
-        <div
-          style={{
-            padding: "16px 20px",
-            borderBottom: "1px solid var(--border-subtle)",
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-          }}
-        >
-          <Mail size={16} style={{ color: "var(--emerald)" }} />
-          <div style={{ fontSize: 15, fontWeight: 600 }}>Send feedback email</div>
-          <div style={{ flex: 1 }} />
-          <button
-            onClick={onClose}
-            style={{ background: "transparent", border: "none", color: "var(--text-faint)", cursor: "pointer" }}
-            aria-label="Close"
-          >
-            <XCircle size={16} />
-          </button>
-        </div>
-        <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
-          <label style={{ display: "block" }}>
-            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>To</div>
-            <input
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              style={{
-                height: 32,
-                width: "100%",
-                padding: "0 10px",
-                background: "var(--bg-elev2)",
-                border: "1px solid var(--border-subtle)",
-                borderRadius: 6,
-                color: "var(--text-primary)",
-                fontSize: 13,
-                outline: "none",
-                fontFamily: "inherit",
-              }}
-            />
-          </label>
-          <label style={{ display: "block" }}>
-            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Subject</div>
-            <input
-              value={subject}
-              onChange={(e) => setSubject(e.target.value)}
-              style={{
-                height: 32,
-                width: "100%",
-                padding: "0 10px",
-                background: "var(--bg-elev2)",
-                border: "1px solid var(--border-subtle)",
-                borderRadius: 6,
-                color: "var(--text-primary)",
-                fontSize: 13,
-                outline: "none",
-                fontFamily: "inherit",
-              }}
-            />
-          </label>
-          <label style={{ display: "block" }}>
-            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Message</div>
-            <textarea
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              style={{
-                width: "100%",
-                minHeight: 130,
-                padding: 12,
-                background: "var(--bg-canvas)",
-                border: "1px solid var(--border-subtle)",
-                borderRadius: 6,
-                color: "var(--text-primary)",
-                fontSize: 13,
-                lineHeight: 1.55,
-                resize: "vertical",
-                fontFamily: "inherit",
-                outline: "none",
-                boxSizing: "border-box",
-              }}
-            />
-          </label>
-        </div>
-        <div
-          style={{
-            padding: "12px 20px",
-            borderTop: "1px solid var(--border-subtle)",
-            display: "flex",
-            justifyContent: "flex-end",
-            gap: 8,
-          }}
-        >
-          <button
-            onClick={onClose}
-            style={{
-              height: 32,
-              padding: "0 12px",
-              fontSize: 13,
-              background: "var(--bg-elev2)",
-              border: "1px solid var(--border-subtle)",
-              color: "var(--text-primary)",
-              borderRadius: 6,
-              cursor: "pointer",
-              fontFamily: "inherit",
-            }}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => onSend(to, subject, body)}
-            style={{
-              height: 32,
-              padding: "0 12px",
-              fontSize: 13,
-              background: "var(--emerald)",
-              color: "#04201a",
-              border: "1px solid var(--emerald)",
-              borderRadius: 6,
-              cursor: "pointer",
-              fontFamily: "inherit",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              boxShadow: "var(--shadow-sm)",
-            }}
-          >
-            <Mail size={14} />
-            Send email
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export default function CallDetailPage({
   params,
@@ -603,7 +315,6 @@ export default function CallDetailPage({
   const checkpointsQuery = useCallCheckpointsQuery(id);
   const audioUrlQuery = useCallAudioUrlQuery(id);
   const submitVerdict = useSubmitVerdict();
-  const sendEmail = useFeedbackEmail();
   const agentChat = useAgentChat();
   const reviewCheckpoint = useReviewCheckpoint();
   const retryCheckpoint = useRetryCheckpoint();
@@ -617,7 +328,12 @@ export default function CallDetailPage({
   const [claimSessionId, setClaimSessionId] = useState<string | null>(null);
   const [claimReadOnly, setClaimReadOnly] = useState(false);
   const [claimConflictBy, setClaimConflictBy] = useState<string | null>(null);
+  // claimedRef gates ONE in-flight or settled claim per page mount.
+  // claimSessionRef captures the session_id as soon as onSuccess fires so the
+  // unmount cleanup can release it even if React 18 strict-mode tore down the
+  // component between mutate() and onSuccess.
   const claimedRef = useRef<boolean>(false);
+  const claimSessionRef = useRef<string | null>(null);
 
   const [tab, setTab] = useState<"checkpoints" | "verdict" | "chat">("checkpoints");
 
@@ -644,10 +360,7 @@ export default function CallDetailPage({
   // with counts. Click a chip → narrow the checkpoint list to that status.
   const [cpFilter, setCpFilter] = useState<"all" | "passed" | "partial" | "fail" | "na">("all");
   const [chosen, setChosen] = useState<VerdictAction | null>(null);
-  const [reason, setReason] = useState("");
-  const [sendEmailToggle, setSendEmailToggle] = useState(false);
   const [committed, setCommitted] = useState(false);
-  const [showEmailModal, setShowEmailModal] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [paused, setPaused] = useState(true);
@@ -679,46 +392,72 @@ export default function CallDetailPage({
     }
   }, [c?.status, wordsQuery.data, qc, id]);
 
-  // Claim the call on mount, release on unmount. Guarded with a ref so
-  // React 18 strict-mode double-invocation doesn't fire two claim
-  // requests; only the first one wins and the cleanup releases that one.
-  // 409 from claim means another reviewer holds the lock — flip to
-  // read-only banner instead of swallowing the toast error.
+  // Claim the call on mount, release on unmount.
+  //
+  // Lifecycle invariants:
+  // 1. claimedRef.current flips to true ONLY inside onSuccess — so a transient
+  //    network failure does NOT permanently block retries (C2). On non-409
+  //    error we leave claimedRef=false so the next effect run can try again
+  //    if the component remounts. The mutation hook itself surfaces the toast.
+  // 2. The session_id is mirrored into claimSessionRef as soon as onSuccess
+  //    fires. Cleanup reads from the ref, NOT from a captured `let`, so it
+  //    releases the lock even if React 18 strict-mode tore down the component
+  //    between mutate() and onSuccess (C1).
+  // 3. We skip the claim entirely for terminal-state calls (committed /
+  //    compliant / non_compliant) — claiming makes no sense there and would
+  //    cause spurious 4xx + a read-only banner (H6).
+  // 4. The auto-claim path uses the mutation hooks' { silent: true } option so
+  //    the page-mount doesn't pop "Call claimed" + "Released review session"
+  //    toasts on every navigation (H5).
+  const terminalStatus =
+    c?.status === "committed" ||
+    c?.compliance_status === "compliant" ||
+    c?.compliance_status === "non_compliant";
+
   useEffect(() => {
-    if (!id || claimedRef.current) return;
-    claimedRef.current = true;
-    let acquiredSessionId: string | null = null;
-    claimCall.mutate(id, {
-      onSuccess: (data) => {
-        acquiredSessionId = data.session_id ?? null;
-        setClaimSessionId(acquiredSessionId);
-        setClaimReadOnly(false);
-        setClaimConflictBy(null);
-      },
-      onError: (err) => {
-        if (err instanceof ApiError && err.status === 409) {
-          let by: string | null = null;
-          try {
-            const parsed = JSON.parse(err.body) as { detail?: string; claimed_by?: string };
-            by = parsed.claimed_by ?? parsed.detail ?? null;
-          } catch {
-            /* body not JSON */
+    if (!id || claimedRef.current || terminalStatus) return;
+    claimCall.mutate(
+      { callId: id, silent: true },
+      {
+        onSuccess: (data) => {
+          claimedRef.current = true;
+          claimSessionRef.current = data.session_id ?? null;
+          setClaimSessionId(data.session_id ?? null);
+          setClaimReadOnly(false);
+          setClaimConflictBy(null);
+        },
+        onError: (err) => {
+          if (err instanceof ApiError && err.status === 409) {
+            // 409 = another reviewer holds the lock → page is read-only;
+            // flip the ref so we don't keep retrying.
+            claimedRef.current = true;
+            let by: string | null = null;
+            try {
+              const parsed = JSON.parse(err.body) as { detail?: string; claimed_by?: string };
+              by = parsed.claimed_by ?? parsed.detail ?? null;
+            } catch {
+              /* body not JSON — leave by=null */
+            }
+            setClaimConflictBy(by);
+            setClaimReadOnly(true);
           }
-          setClaimConflictBy(by);
-          setClaimReadOnly(true);
-        }
-        // non-409 errors already surface a toast via the mutation hook
+          // For non-409 (network blip, 5xx) leave claimedRef=false so a
+          // remount can retry. The mutation hook surfaces an error toast.
+        },
       },
-    });
+    );
     return () => {
-      if (acquiredSessionId) {
-        releaseCall.mutate(acquiredSessionId);
+      const sid = claimSessionRef.current;
+      if (sid) {
+        releaseCall.mutate({ sessionId: sid, silent: true });
+        claimSessionRef.current = null;
       }
     };
-    // We intentionally depend on id only — claimCall/releaseCall identities
-    // change every render and we do NOT want to re-claim on every render.
+    // We intentionally depend on id + terminalStatus only — claimCall/
+    // releaseCall identities change every render and we do NOT want to
+    // re-claim on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [id, terminalStatus]);
 
   const words = wordsQuery.data?.words ?? [];
   const flags = flagsQuery.data?.flags ?? [];
@@ -1730,7 +1469,10 @@ export default function CallDetailPage({
                       if (s === "pass") acc.passed++;
                       else if (s === "partial") acc.partial++;
                       else if (s === "fail") acc.fail++;
-                      else acc.na++;
+                      else if (s === "" || s === "na" || s === "skipped" || s === "unscored" || s === "not_scored") acc.na++;
+                      // Unknown statuses (error / pending / future enums) are
+                      // intentionally NOT counted — they should surface as a
+                      // missing-row total instead of silently inflating N/A.
                       return acc;
                     },
                     { passed: 0, partial: 0, fail: 0, na: 0 },
@@ -2075,21 +1817,6 @@ export default function CallDetailPage({
           </div>
         </div>
       </div>
-
-      {showEmailModal && (
-        <FeedbackEmailModal
-          onClose={() => setShowEmailModal(false)}
-          onSend={(to, subject, body) => {
-            sendEmail.mutate(
-              { callId: id, to_addr: to, subject, body_markdown: body },
-              { onSuccess: () => setShowEmailModal(false) },
-            );
-          }}
-          agentEmail={c?.agent_name ? `${c.agent_name.toLowerCase().replace(/\s+/g, ".")}@agent.local` : "agent@example.com"}
-          filename={c?.filename ?? id}
-          defaultBody={`Hi,\n\nYour call has been reviewed. ${reason}\n\n— Reviewer`}
-        />
-      )}
 
       {c && (
         <EditMetadataDialog

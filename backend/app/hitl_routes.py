@@ -649,12 +649,12 @@ async def submit_verdict(
         emit_event(VERDICT_SUBMITTED, {
             "call_id": call_id,
             "actor_id": reviewer["id"],
-            "verdict": payload.verdict,
+            "verdict": verdict_action_norm,
             "rejection_ids": auto_rejection_ids,
-            "compliant": payload.verdict == "PASS",
+            "compliant": verdict_action_norm == "PASS",
         })
     except Exception:
-        pass
+        logger.warning("VERDICT_SUBMITTED emit_event failed", exc_info=True)
 
     ai_verdict = ai_row.verdict if ai_row else _ai_verdict_of(cp)
     learning_triggered = False

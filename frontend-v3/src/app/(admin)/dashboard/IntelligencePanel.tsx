@@ -88,6 +88,41 @@ function EmptyState({ message }: { message: string }) {
   );
 }
 
+function ErrorState({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div
+      role="alert"
+      style={{
+        padding: "20px 8px",
+        textAlign: "center",
+        color: "var(--text-muted)",
+        fontSize: 12,
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        alignItems: "center",
+      }}
+    >
+      <span>Couldn’t load this panel.</span>
+      <button
+        type="button"
+        onClick={onRetry}
+        style={{
+          fontSize: 11,
+          padding: "4px 10px",
+          background: "transparent",
+          border: "1px solid var(--border-subtle)",
+          borderRadius: 6,
+          color: "var(--text-primary)",
+          cursor: "pointer",
+        }}
+      >
+        Retry
+      </button>
+    </div>
+  );
+}
+
 // ── Card 1: Compliance % by supplier ─────────────────────────────────
 
 function SupplierBars() {
@@ -98,6 +133,7 @@ function SupplierBars() {
   });
   const items = q.data?.items ?? [];
   if (q.isLoading) return <EmptyState message="Loading…" />;
+  if (q.isError) return <ErrorState onRetry={() => q.refetch()} />;
   if (!items.length) return <EmptyState message="No completed calls yet." />;
   const maxTotal = Math.max(...items.map((i) => i.total));
 
@@ -172,6 +208,7 @@ function AgentLeaderboard() {
   });
   const items = q.data?.items ?? [];
   if (q.isLoading) return <EmptyState message="Loading…" />;
+  if (q.isError) return <ErrorState onRetry={() => q.refetch()} />;
   if (!items.length)
     return (
       <EmptyState message="No agents with ≥3 completed calls yet." />
@@ -266,6 +303,7 @@ function CallTypeDonut() {
   const items = q.data?.items ?? [];
   const total = items.reduce((acc, x) => acc + x.total, 0);
   if (q.isLoading) return <EmptyState message="Loading…" />;
+  if (q.isError) return <ErrorState onRetry={() => q.refetch()} />;
   if (!total) return <EmptyState message="No completed calls yet." />;
 
   // SVG donut math
@@ -368,6 +406,7 @@ function TrendLine() {
   });
   const items = q.data?.items ?? [];
   if (q.isLoading) return <EmptyState message="Loading…" />;
+  if (q.isError) return <ErrorState onRetry={() => q.refetch()} />;
   if (items.length < 2)
     return (
       <EmptyState message="Need at least 2 weeks of data to draw a trend." />

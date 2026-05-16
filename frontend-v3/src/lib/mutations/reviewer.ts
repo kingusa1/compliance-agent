@@ -12,6 +12,7 @@
  * (mutate, mutateAsync, isPending, ...) — pages choose whether to await.
  */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
 import { deleteJson, patchJson, postJson, putJson } from "@/lib/mutations";
@@ -43,18 +44,29 @@ export type ClaimResponse = {
   status?: string;
 };
 
+// silent=true suppresses success/error toasts — used by the page-mount
+// auto-claim path so navigating to a call detail page doesn't pop two
+// toasts on every view. User-initiated claim/release sites omit it and
+// get the standard toast UX.
+export type ClaimArgs = { callId: string; silent?: boolean };
+export type ReleaseArgs = { sessionId: string; silent?: boolean };
+
 export function useClaimCall() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (callId: string): Promise<ClaimResponse> =>
+    mutationFn: ({ callId }: ClaimArgs): Promise<ClaimResponse> =>
       postJson<ClaimResponse>(`/api/calls/${encodeURIComponent(callId)}/claim`),
-    onSuccess: (_data, callId) => {
+    onSuccess: (_data, { callId, silent }) => {
       qc.invalidateQueries({ queryKey: ["queue"] });
       qc.invalidateQueries({ queryKey: reviewerKeys.callDetail(callId) });
-      toast.success("Call claimed", { description: "30-min review lock acquired." });
+      if (!silent) {
+        toast.success("Call claimed", { description: "30-min review lock acquired." });
+      }
     },
-    onError: (err) => {
-      toast.error("Couldn’t claim call", { description: _errMessage(err, "Try again.") });
+    onError: (err, { silent }) => {
+      if (!silent) {
+        toast.error("Couldn’t claim call", { description: _errMessage(err, "Try again.") });
+      }
     },
   });
 }
@@ -62,14 +74,16 @@ export function useClaimCall() {
 export function useReleaseCall() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (sessionId: string) =>
+    mutationFn: ({ sessionId }: ReleaseArgs) =>
       postJson(`/api/review-sessions/${encodeURIComponent(sessionId)}/release`),
-    onSuccess: () => {
+    onSuccess: (_data, { silent }) => {
       qc.invalidateQueries({ queryKey: ["queue"] });
-      toast("Released review session");
+      if (!silent) toast("Released review session");
     },
-    onError: (err) => {
-      toast.error("Couldn’t release session", { description: _errMessage(err, "Try again.") });
+    onError: (err, { silent }) => {
+      if (!silent) {
+        toast.error("Couldn’t release session", { description: _errMessage(err, "Try again.") });
+      }
     },
   });
 }
@@ -208,6 +222,7 @@ export type VerdictResponse = {
 
 export function useSubmitVerdict() {
   const qc = useQueryClient();
+  const router = useRouter();
   return useMutation({
     mutationFn: ({ callId, checkpoint_id, action, reason }: VerdictArgs) =>
       postJson<VerdictResponse>(`/api/calls/${encodeURIComponent(callId)}/verdict`, {
@@ -218,6 +233,12 @@ export function useSubmitVerdict() {
       }),
     onSuccess: (data, { callId }) => {
       qc.invalidateQueries({ queryKey: reviewerKeys.callDetail(callId) });
+      // Verdict submission flips per-CP status on the backend; checkpoints
+      // + segments queries are separate cache keys and would otherwise show
+      // stale pass/partial/fail counts until manual refresh. Audit 2026-05-16
+      // CRITICAL C3.
+      qc.invalidateQueries({ queryKey: reviewerKeys.callCheckpoints(callId) });
+      qc.invalidateQueries({ queryKey: ["call", callId, "segments"] });
       qc.invalidateQueries({ queryKey: ["queue"] });
       qc.invalidateQueries({ queryKey: reviewerKeys.findings() });
       // Plan §5c: tracker rows mirror call verdicts — invalidate them on
@@ -233,11 +254,10 @@ export function useSubmitVerdict() {
           description: `Tracked at /rejections/${data.auto_rejection_id.slice(0, 8)}…`,
           action: {
             label: "Open",
-            onClick: () => {
-              if (typeof window !== "undefined") {
-                window.location.href = `/rejections?focus=${encodeURIComponent(data.auto_rejection_id!)}`;
-              }
-            },
+            // router.push keeps the SPA shell; window.location.href forced
+            // a full reload that wiped the verdict-submit's query cache and
+            // flashed the login gate. Audit 2026-05-16 P1-11.
+            onClick: () => router.push(`/rejections?focus=${encodeURIComponent(data.auto_rejection_id!)}`),
           },
         });
       } else {

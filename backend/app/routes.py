@@ -1783,7 +1783,11 @@ def get_call_segments(call_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/api/calls/{call_id}", response_model=CallResponse)
-def get_call(call_id: str, db: Session = Depends(get_db)):
+def get_call(
+    call_id: str,
+    db: Session = Depends(get_db),
+    _reviewer=Depends(current_reviewer),
+):
     # selectinload, not joinedload: Call rows are huge (transcripts + word_data
     # ~200KB each), and joinedload's cartesian join duplicates the Call row once
     # per checkpoint — 24× blowup, ~5MB over the Supabase pooler, ~100s per request.

@@ -350,8 +350,11 @@ export function SegmentCards({ callId, cpCards = [], cpFilter = "all", innerProp
       if (cpFilter === "passed") return s === "pass";
       if (cpFilter === "partial") return s === "partial";
       if (cpFilter === "fail") return s === "fail";
-      // N/A (audit 2026-05-16 P1 #9) — checkpoints with no scored verdict.
-      if (cpFilter === "na") return s !== "pass" && s !== "partial" && s !== "fail";
+      // N/A: explicit unscored/skipped statuses + truly empty. Whitelist (not
+      // catch-all) so future statuses like 'error' or 'pending' don't silently
+      // land in this bucket — they should surface as a bug, not be hidden.
+      // Audit 2026-05-16 P1 #9; review H3.
+      if (cpFilter === "na") return s === "" || s === "na" || s === "skipped" || s === "unscored" || s === "not_scored";
       return true;
     });
   };
