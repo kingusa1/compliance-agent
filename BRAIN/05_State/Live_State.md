@@ -4,6 +4,33 @@ updated: 2026-05-16
 tags: [state, live, ground-truth, audit-shipped, verdict-wired, system-prompt-installed]
 ---
 
+# Live State — Path 3 Realtime overhaul shipped (feature-flagged) 2026-05-16 (very-very late)
+
+> 🚀 **2026-05-16 (very-very late) — Tip `b9e0d12` on origin/main. Vercel `dpl_6aFpiGWELWkU2LzVRH3xHidQwoTS` (at `b9e0d12`) READY. Railway will auto-apply alembic `2026_05_16_rls_realtime` on release.**
+>
+> **Shipped this run (2 commits):**
+>
+> - `9f10205` — feat(realtime,perf): RLS + Supabase Realtime publication migration on 11 user-visible tables (`is_active_reviewer()` SECURITY DEFINER STABLE helper + SELECT policy + deny-write policy per table + ADD TABLE to supabase_realtime). Plus admin `POST /api/admin/force-release-all-claims` (role-gated lead/admin) for unsticking the queue after QA pass. Plus `asyncio.to_thread(Path.read_text, ...)` on the 2 async-route disk-read sites that were blocking the event loop.
+> - `b9e0d12` — feat(realtime): `useRealtimeInvalidate(table, keys, options)` hook (feature-flagged on `NEXT_PUBLIC_USE_REALTIME=1`) + mounted on `/tracker` (calls/rejections/customer_deals → ["admin","tracker"]) + `/queue` (calls/review_sessions → ["queue"]) + `/rejections` (rejections → ["rejections"]). Removed the `refetchInterval: 5000` from `useDealCompositeVerdictQuery` (12 wasted requests/min per deal view).
+>
+> **Status:**
+> - Backend pytest 21/21. `tsc --noEmit` exit 0.
+> - Hook is currently NO-OP (flag is OFF by default). The existing SSE path drives invalidation as before.
+> - To activate: add `NEXT_PUBLIC_USE_REALTIME=1` to Vercel project settings → trigger redeploy. Then run two-tab smoke.
+>
+> **Architecture:** the in-memory SSE pub/sub (`useCallEvents` + `realtime.publish`) keeps running for non-DB events (pipeline step progress, transcription milestones). Supabase Realtime is layered ON TOP for DB CDC events. Both paths invalidate the same TanStack Query keys — redundant by design during rollout.
+>
+> **Next-session pickup:**
+> 1. Verify Railway applied the migration: `SELECT count(*) FROM pg_policies WHERE schemaname='public'` should return ≥22.
+> 2. Set `NEXT_PUBLIC_USE_REALTIME=1` in Vercel project settings.
+> 3. POST `/api/admin/force-release-all-claims` to clear the 5 stuck-in_review locks blocking Bug 7+8 smoke.
+> 4. Re-run `tests/e2e/bug-fixes-2026-05-16.spec.ts` — Bug 7+8 should close.
+> 5. Continue Wave 4 perf (Customer cache + Profile cache + claim_call async migration).
+>
+> Resume guide: [[../04_Sessions/2026-05-16_Session_path3_realtime_overhaul]].
+
+---
+
 # Live State — 6 of 8 bugs fixed from /gsd diagnose-fix-verify run 2026-05-16 (very late)
 
 > 🚀 **2026-05-16 (very late) — Tip `648db39` on origin/main. Vercel `dpl_J8roczZNR7G6H54G2rR3r2Ej1AW2` (at `648db39`) READY + aliased.**
