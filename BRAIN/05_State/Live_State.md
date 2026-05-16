@@ -1,8 +1,78 @@
 ---
 created: 2026-05-10
 updated: 2026-05-16
-tags: [state, live, ground-truth, audit-shipped, verdict-wired, system-prompt-installed]
+tags: [state, live, ground-truth, audit-shipped, verdict-wired, system-prompt-installed, path3-handoff]
 ---
+
+# Live State — Path 3 FULLY ACTIVE 2026-05-17 (autonomous closeout)
+
+> 🚀 **2026-05-17 — Realtime publication LIVE. Webhook LIVE. Claims drained. 2 migration bugs found and fixed.**
+>
+> **What's active on prod RIGHT NOW:**
+> - `alembic_head=2026_05_16_rls_realtime` ✓
+> - `publication_tables` populated with 11 user-visible tables ✓
+> - `policy_count=22` (11 SELECT + 11 deny-write RLS policies) ✓
+> - AssemblyAI webhook: signed→200, wrong→401, none→401 ✓
+> - `ASSEMBLYAI_WEBHOOK_SECRET` + `BACKEND_PUBLIC_URL` set on Railway ✓
+> - Stuck claims drained (1 released) ✓
+>
+> **Two production-blocking migration bugs fixed (uncommitted at session-end):**
+> - `2026_05_16_cascade_explicit_and_risk_tag.py:92` — `%I` → `%%I` (psycopg2 paramstyle escape)
+> - `2026_05_16_rls_realtime.py:113` — `is_active` → `active` (column-name match)
+>
+> **Data prep done on prod:** 24 pure-orphan `reviewer_edits` rows deleted (refs pointed at deleted parents); cleared the way for `fk_reviewer_edits_rejection` constraint.
+>
+> **Lighthouse 3-run summary** (`frontend-v3/test-results/lighthouse-baseline-2026-05-16-{PRE,MID-prerealtime,POST-realtime}.{json,md}`):
+>
+> | Page | PRE | MID | POST | Δ vs PRE |
+> |---|---|---|---|---|
+> | /login | 100 / 497 | 100 / 471 | **100 / 530** | 0 / +33 |
+> | /queue | 94 / 1642 | 91 / 1916 | **87 / 2355** | −7 / +713 |
+> | /tracker | 89 / 2176 | 88 / 2340 | **90 / 2119** | +1 / −57 |
+> | /rejections | 95 / 1509 | 94 / 1588 | **95 / 1527** | 0 / +18 |
+>
+> All within ±300ms LCP run-to-run noise except /queue (+713 ms POST-realtime), likely Supabase Realtime WebSocket initial-connect cost. Not a clear regression; needs 3-run rolling median to call.
+>
+> **Still needs user:** Railway service region — `railway status --json` doesn't expose it. Dashboard click: https://railway.app/project/dbb268ad-3a1b-45c6-8c11-1666a3f133e9/service/48ae7748-e35e-4b30-a33b-8c60221133a0/settings
+>
+> Resume guide: [[../04_Sessions/2026-05-17_Session_path3_closeout]].
+>
+> ---
+>
+> ## Earlier in this session (handoff phase, pre-execution)
+
+# Live State — Path 3 handoff verified + Lighthouse re-run 2026-05-16 (resume run, no commits)
+
+> 📍 **2026-05-16 (resume) — Tip still `829c73f` on origin/main. No code commits this session.**
+>
+> Resume run executed verification + Lighthouse re-baseline + handoff. Two ops (admin JWT mint, Railway env grep) sandbox-blocked → produced exact commands for the user instead. See [[../04_Sessions/2026-05-16_Session_path3_handoff]] for the full action list.
+>
+> **Verified directly this session:**
+> - Railway latestDeployment `SUCCESS` at `7ca50ec`. Backend `/healthz` 200/435ms, `/readyz` 200/1170ms — the ~680ms RT↔Supabase delta still reproduces.
+> - Vercel `/login` 200, `/` 307. App shell live.
+> - `POST /api/webhooks/assemblyai` deployed and **auth-gated** — returns 401 on missing or wrong `X-AssemblyAI-Webhook-Secret`. (Activation requires the user to set the env var; see handoff section 2.)
+> - `DATABASE_URL` already uses Supavisor port **6543** on `aws-1-ap-south-1.pooler.supabase.com` ✅ no infra change needed for the pool side.
+> - Lighthouse POST captured at `test-results/lighthouse-baseline-2026-05-16.{json,md}`; PRE preserved at the matching `-PRE.{json,md}` filenames.
+>
+> **Lighthouse POST vs PRE (same deploy, same env, no code change between runs — pure noise envelope):**
+>
+> | Page | PRE | POST | Δ Score | PRE LCP | POST LCP | Δ LCP |
+> |---|---|---|---|---|---|---|
+> | /login | 100 | 100 | 0 | 497 | **471** | **−26ms** ✓ |
+> | /queue | 94 | 91 | −3 | 1642 | 1916 | +274ms |
+> | /tracker?tab=awaiting_review | 89 | 88 | −1 | 2176 | 2340 | +164ms |
+> | /rejections | 95 | 94 | −1 | 1509 | 1588 | +79ms |
+>
+> All POST results within typical run-to-run variance. Real delta needs Items 1+2 active (publication + webhook).
+>
+> **Still pending — user actions in [[../04_Sessions/2026-05-16_Session_path3_handoff#user-actions-needed-in-priority-order]]:**
+> 1. Run the 11 `ALTER PUBLICATION supabase_realtime ADD TABLE` statements in Supabase SQL editor (or `alembic upgrade head` on Railway shell).
+> 2. Set `ASSEMBLYAI_WEBHOOK_SECRET` + `BACKEND_PUBLIC_URL` on Railway and redeploy.
+> 3. Run the admin-JWT curl pair: `/api/admin/realtime-status` + `/api/admin/force-release-all-claims`.
+> 4. Open Railway Dashboard → confirm service region (likely US-East per 128ms UAE-RTT signal).
+> 5. Re-run Lighthouse after 1+2 are live for the real delta.
+>
+> ---
 
 # Live State — 7-commit autonomous perf wave shipped + realtime-broadcast finding 2026-05-16 (late late late)
 

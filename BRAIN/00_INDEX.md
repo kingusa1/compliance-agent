@@ -24,7 +24,11 @@ tags: [index, brain]
 
 ## 🚨 Read FIRST when resuming a session
 
-**As of 2026-05-16 (3am-ish): tip `7ca50ec` on origin/main. Path 3 Realtime ACTIVATED (`NEXT_PUBLIC_USE_REALTIME=1` baked into Vercel `dpl_4dBUomuW65qCn4N5Dom5AG4GbMVs`). 6-item perf wave shipped autonomously. ONE BLOCKER: Supabase Realtime publication may not have applied yet — see action 1 below.**
+**As of 2026-05-17 (autonomous closeout): Path 3 is FULLY ACTIVE on prod. Realtime publication populated, AssemblyAI webhook live, claims drained. Two migration bugs were found and fixed during the run (`%I` paramstyle escape + `is_active`→`active` schema match). See [[04_Sessions/2026-05-17_Session_path3_closeout]] for the full play-by-play including 5 continuous-learning rules.**
+
+**Previous handoff (now obsolete — items closed):** [[04_Sessions/2026-05-16_Session_path3_handoff]]
+
+**Prior wave (still ground-truth on deploy):** tip `7ca50ec` on origin/main. Path 3 Realtime ACTIVATED (`NEXT_PUBLIC_USE_REALTIME=1` baked into Vercel `dpl_4dBUomuW65qCn4N5Dom5AG4GbMVs`). 6-item perf wave shipped autonomously. ONE BLOCKER: Supabase Realtime publication may not have applied yet — see action 1 below.
 
 **🎯 Immediate next-session actions (do these first, in order):**
 
@@ -45,7 +49,9 @@ tags: [index, brain]
 
 Read in order:
 
-1. [[04_Sessions/2026-05-16_Session_path3_close_perf_wave]] — **READ FIRST.** Autonomous run that shipped Items 1-6 + the realtime activation. Customer/Profile caches, claim_call async-via-to_thread, AssemblyAI webhook (with static-header auth NOT HMAC), Lighthouse baseline, region audit, `/api/admin/realtime-status` diagnostic. **Includes the Playwright finding that the Supabase publication may not have applied.**
+1. [[04_Sessions/2026-05-16_Session_path3_handoff]] — **READ FIRST.** Resume run (no commits). Verified webhook route 401-gated, DATABASE_URL on Supavisor :6543, Lighthouse POST captured. Two sandbox-blocked ops produced as user-runnable commands. **5-item action list at the bottom — start there.**
+
+2. [[04_Sessions/2026-05-16_Session_path3_close_perf_wave]] — Autonomous run that shipped Items 1-6 + the realtime activation. Customer/Profile caches, claim_call async-via-to_thread, AssemblyAI webhook (with static-header auth NOT HMAC), Lighthouse baseline, region audit, `/api/admin/realtime-status` diagnostic. **Includes the Playwright finding that the Supabase publication may not have applied.**
 
 2. [[04_Sessions/2026-05-16_Session_path3_realtime_overhaul]] — Earlier today: full RLS migration `2026_05_16_rls_realtime` (11 user-visible tables) + `is_active_reviewer()` SECURITY DEFINER helper + `useRealtimeInvalidate` hook + 3 page mounts + 5s deals poll killed. **The migration file is shipped at `9f10205` but verify it actually applied via action 1 above.**
 
