@@ -1,7 +1,31 @@
 ---
 created: 2026-05-10
 updated: 2026-05-16
-tags: [state, live, ground-truth, sse-push, metaphone-deal-linker, sidebar-audited]
+tags: [state, live, ground-truth, opus-mandate, trailing-tokens-uplift]
+---
+
+# Live State — Opus 4.7 mandate + trailing-tokens deal-linker 2026-05-16 (mid-day)
+
+> 🚀 **2026-05-16 (mid-day) — Tip `3e57545` on Railway (frontend unchanged on Vercel).**
+>
+> **Commits since the autonomous run:**
+> - `17a9895` — fix(llm): revert all detectors to Opus 4.7. Mohamed mandate: Sonnet 4.6 was returning unreliable transcripts on detect_supplier / detect_call_type / detect_names / detect_business_name. Set `openrouter_cheap_model = "anthropic/claude-opus-4.7"` defence-in-depth + flipped every callsite to `cheap=False`. Removed `supplier_hint` kwarg from `detect_business_name`.
+> - `3e57545` — feat(deal-linker): trailing-tokens shortcut. If last 2 non-stopword tokens match exactly between target and candidate names, drop fuzzy floor 0.80 → **0.40**. Catches AssemblyAI mis-transcription of the prefix while the brand suffix renders identically. Extended `_STOP_TOKENS` with "t a b d" so "T/A" and "D/B/A" remnants are filtered.
+>
+> **Awais 4-call retest under Opus 4.7 + trailing-tokens: 4 calls → 2 deals (3 collapsed onto same deal).**
+> Railway logs confirm the merge path:
+> ```
+> 🔗 PHONETIC_UPLIFT score=0.74 floor=0.40 trailing=True
+>    target='waste master t/a charles palace'
+>    cand='awais mustafa ta charles palace'
+> 🔗 DEAL MERGE stub=3aea383d → existing=6ac65bac score=0.74
+> ```
+> Final deals: `6ac65bac · 'Awais Mustafa Ta Charles Palace'` (3 calls) + `eb4f29ce · '(auto-detect pending 601091d7)'` (1 leadgen call where BUSINESS_DETECT returned None — AssemblyAI transcript didn't capture the brand on that short call; transcript-limited not code-limited).
+>
+> **Vercel CLEANUP**: deleted duplicate Vercel project `compliance-agent-feat-wave5-deploy` (`prj_odHT9GGOKAgca7MwDghOM6MTZ99p`) that was auto-deploying on every push and getting blocked with `COMMIT_AUTHOR_REQUIRED`. Only `compliance-agent` (`prj_eHIyIFyxusNdCd6mR9Ff469NrcKO`) remains. Future pushes won't trigger parallel blocked builds.
+>
+> Resume guide: [[../04_Sessions/2026-05-16_Session_six_hour_run]] + this Live_State header.
+
 ---
 
 # Live State — True SSE push + Metaphone deal-linker + sidebar audited 2026-05-16
