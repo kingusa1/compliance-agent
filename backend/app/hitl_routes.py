@@ -21,6 +21,7 @@ Every endpoint uses `Depends(current_reviewer)`; the JWT comes through
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -113,7 +114,7 @@ def _check_if_match(request: Request, call: Call) -> None:
 
 
 @hitl_router.post("/api/calls/{call_id}/claim")
-def claim_call(
+async def claim_call(
     call_id: str,
     request: Request,
     reviewer: dict = Depends(current_reviewer),
@@ -127,6 +128,30 @@ def claim_call(
     - Another reviewer holds a live lock → 409 with the holder's display name.
     - The lock is past its TTL → auto-release (mark session inactive with reason "idle_timeout"), then fall through to the first-time claim path.
     - Call id unknown → 404.
+
+    2026-05-16 audit Item 3: the body is sync SQLAlchemy + a row-level
+    SELECT FOR UPDATE — that DB transaction blocks the event loop if
+    invoked synchronously from an async handler. Offloading to a
+    threadpool via asyncio.to_thread() frees the event loop while
+    Postgres handles the lock contention. The threadpool itself
+    serialises per-row contention via FOR UPDATE, so concurrent claim
+    attempts on the same call_id still produce exactly one winner.
+    """
+    return await asyncio.to_thread(
+        _claim_call_sync, call_id, request, reviewer, db,
+    )
+
+
+def _claim_call_sync(
+    call_id: str,
+    request: Request,
+    reviewer: dict,
+    db: Session,
+):
+    """Sync body of claim_call. Runs in FastAPI's default threadpool so
+    the event loop is free to serve other requests during the FOR UPDATE
+    row-lock + commit. Identical semantics to the prior sync def — see
+    docstring above on claim_call for the contract.
     """
     # TOCTOU fix (audit 2026-05-16 P1-4): take a row-level lock on the
     # target Call BEFORE checking the existing ClaimLock + writing a new
