@@ -33,6 +33,7 @@ import {
 import { ApiError } from "@/lib/api";
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import { useUrlState } from "@/lib/hooks/useUrlState";
+import { useRealtimeInvalidate } from "@/lib/hooks/useRealtimeInvalidate";
 import { Pill } from "@/components/design/Pill";
 import { FilterChip } from "@/components/design/FilterChip";
 import { EmptyState } from "@/components/design/EmptyState";
@@ -628,6 +629,12 @@ export default function QueuePage() {
   // they confuse reviewers ("0% means nothing"). Toggle reveals them.
   const [showProcessing, setShowProcessing] = useState(false);
   const queue = useQueueQuery(filter);
+
+  // Supabase Realtime — any INSERT/UPDATE/DELETE on `calls` or `review_sessions`
+  // invalidates the queue + checkpoint queries. Feature-flagged on
+  // NEXT_PUBLIC_USE_REALTIME=1. Path 3 of the 2026-05-16 realtime overhaul.
+  useRealtimeInvalidate("calls", [["queue"]]);
+  useRealtimeInvalidate("review_sessions", [["queue"]]);
 
   const filteredCalls: QueueCall[] = useMemo(() => {
     let calls = queue.data?.calls ?? [];

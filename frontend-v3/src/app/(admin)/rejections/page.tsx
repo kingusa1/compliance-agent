@@ -21,6 +21,7 @@ import {
 } from "@/lib/queries/rejections";
 import { RejectionsTable } from "./RejectionsTable";
 import { RejectionDetailPanel } from "./RejectionDetailPanel";
+import { useRealtimeInvalidate } from "@/lib/hooks/useRealtimeInvalidate";
 
 const TABS: RejectionTab[] = ["active", "fixed", "dead", "archive"];
 
@@ -36,6 +37,11 @@ export default function RejectionsPage() {
   const sp = useSearchParams();
   const [tab, setTab] = useState<RejectionTab>("active");
   const [search, setSearch] = useState("");
+
+  // Supabase Realtime — any change on `rejections` (new auto-rejection,
+  // status flip, confirmed_by stamp) refreshes the list within ~50ms.
+  // Feature-flagged on NEXT_PUBLIC_USE_REALTIME=1. Path 3 of 2026-05-16.
+  useRealtimeInvalidate("rejections", [["rejections"]]);
   // 2026-05-15: hydrate ``selectedId`` from ``?id=<uuid>`` so other pages
   // can deep-link straight to a specific rejection (the /tracker side
   // panel and /calls/[id] both expose "View in rejections" links). The

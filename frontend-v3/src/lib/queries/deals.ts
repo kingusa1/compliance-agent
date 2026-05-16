@@ -32,6 +32,13 @@ export type DealCompositeVerdict = {
 };
 
 export function useDealCompositeVerdictQuery(dealId: string) {
+  // 2026-05-16 audit Wave 4 fix: the 5s refetchInterval ran 12 wasted
+  // requests per minute on every deal view. Replaced with passive query
+  // — the consuming page should mount useRealtimeInvalidate("calls",
+  // [["admin", "deal", dealId, "composite-verdict"]]) so any pipeline
+  // step transition pushes a Supabase Realtime / SSE event and
+  // invalidates this key on demand. Background safety-net via
+  // refetchOnWindowFocus stays on.
   return useQuery({
     queryKey: ["admin", "deal", dealId, "composite-verdict"],
     queryFn: () =>
@@ -39,6 +46,6 @@ export function useDealCompositeVerdictQuery(dealId: string) {
         `/api/deals/${encodeURIComponent(dealId)}/composite-verdict`,
       ),
     enabled: !!dealId,
-    refetchInterval: 5000, // refresh while calls are still being scored
+    staleTime: 30_000,
   });
 }

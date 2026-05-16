@@ -13,6 +13,7 @@ import {
   type TrackerTab,
 } from "@/lib/queries/tracker";
 import { UploadModal } from "@/app/(admin)/calls/UploadModal";
+import { useRealtimeInvalidate } from "@/lib/hooks/useRealtimeInvalidate";
 
 const TABS: TrackerTab[] = ["awaiting_review", "active", "fixed", "dead", "compliant"];
 
@@ -53,6 +54,16 @@ export default function TrackerPage() {
   const q = useTrackerRowsQuery(filters);
   const rows = q.data?.rows ?? [];
   const counts = q.data?.count ?? 0;
+
+  // Supabase Realtime — INSERT/UPDATE/DELETE on `calls`, `rejections`, or
+  // `customer_deals` invalidates the tracker query so the table refreshes
+  // within ~50ms of a DB write. Gated on NEXT_PUBLIC_USE_REALTIME=1; when
+  // off, the existing SSE-driven invalidation in useCallEvents handles
+  // updates (slower path, ~200-500ms). Path 3 of the 2026-05-16 realtime
+  // overhaul.
+  useRealtimeInvalidate("calls", [["admin", "tracker"]]);
+  useRealtimeInvalidate("rejections", [["admin", "tracker"]]);
+  useRealtimeInvalidate("customer_deals", [["admin", "tracker"]]);
 
   // 2026-05-15: re-sync ``selectedRow`` to the freshly-fetched row whenever
   // the query refetches (e.g. after the side-panel Save mutation invalidates
