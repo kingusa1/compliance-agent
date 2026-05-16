@@ -249,3 +249,38 @@ The list-view projection doesn't include deal_id. The full call detail endpoint 
 
 ### Agent page shows "no data" for Parat
 Parat has 1 completed call but **0 dead rejections**. The agent page's main tab is "Recent flags" which sources from `dead_rejections`. Empty list is correct, just looks empty. Could add an EmptyState component for clarity.
+
+---
+
+## 🚨 Human-review pipeline is cosmetic (2026-05-16)
+
+**Full evidence + fix sequence: [[../04_Sessions/2026-05-16_Session_queue_human_review_audit_verification]]**
+
+The aggregate-verdict Submit button is a prototype that `console.log`s a payload and never calls `POST /api/calls/{id}/verdict`. Backend endpoint exists and works at `hitl_routes.py:426`; frontend mutation `useSubmitVerdict()` exists at `reviewer.ts:203` but `VerdictTab.handleSubmit` doesn't import it.
+
+**Downstream symptoms that collapse the moment this is fixed:**
+- Reviewed tab on `/queue` stays at 0 (per-CP review never sets `reviewed_at`/`reviewed_by`; only `submit_verdict` does).
+- `/rejections` Active tab is permanently empty (`auto_create_rejection_for_verdict` never runs).
+- Compliant / Non-compliant pages show AI scores as if they were reviewer outcomes.
+- Sidebar "Human Review Queue · 4" badge never decrements.
+
+**Adjacent unwired flows on the same page:**
+- `useClaimCall()` / `useReleaseCall()` defined but never invoked — yellow "Reviewing" badge is cosmetic.
+- `require-double-review` + `GET /api/reviewers` orphaned backend-side.
+
+**Audit corrections (do NOT chase these):**
+- Per-CP review notes ARE persisted (mutation passes `?notes=...`, backend writes both `checkpoint_results` JSON + DB row at `routes.py:818,843,852`).
+- Queue tab→filter mismatch (`filter=today` → 422) was fixed at the wire boundary in [[../04_Sessions/2026-05-16_Session_six_hour_run]] commit `3ecd34c`.
+- Pending tab first-paint bug: not a state-binding bug — `useQueueQuery(filter)` is correctly bound.
+
+## 🐛 Tracker CATEGORY pill filters are decorative (2026-05-16)
+
+Pills (Admin error / Process failure / Verbal sales err / Compliance issue / etc.) apply orange highlight on click but **the table does not re-filter in real time**. They "wake up" only when another input changes (search box, MPAN box), at which point the previously-selected pill suddenly filters retroactively, creating phantom "0 rows" results while the tab badge still says `Awaiting review · 4`. The `Clear` button only clears the More-filters chips, not the CATEGORY pill. The More-filters chips (Supplier / Agent / Status / Verdict) DO work correctly.
+
+## 🐛 Edit-metadata modal silently corrupts customer names (2026-05-16)
+
+Modal pre-fills `customer_name` with the first token of the canonical name (`"Awais Mustafa Ta Charles Palace"` → `"Awais"`). Reviewer who clicks Save without touching the field destroys the canonical name. `Sales agent` field pre-fills with placeholder `"Sammy R."` regardless of the persisted agent, so a Save will overwrite the real agent (`"Ethan"`) too. Backend endpoint at `routes.py:2945-3014` has no length validation and no "don't overwrite with placeholder" guard.
+
+## 🐛 Rejections Fixed / Dead / Archive tabs stuck on "Loading rejections..." forever (2026-05-16)
+
+Active tab loads (empty, per the human-only contract). Fixed / Dead / Archive sub-tabs spin the skeleton forever — fetch likely returns 200 + empty array but the loading-state machine doesn't transition on empty result. Not yet inspected at code level.
