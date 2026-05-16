@@ -650,6 +650,28 @@ async def submit_verdict(
 
     db.commit()
 
+    # 2026-05-16 audit Bug 8 fix: push the verdict change onto the in-memory
+    # SSE pub/sub so OTHER open tabs (Tracker / Queue / Rejections in Tab B)
+    # invalidate their TanStack Query caches within 200ms. Previously only
+    # the `emit()` pg_notify path fired — pg_notify is consumed by nothing
+    # in this codebase (no asyncpg LISTEN bridge), so Tab B never saw the
+    # change. "score_ready" is a named event in the frontend's
+    # useCallEvents listener (frontend-v3/src/lib/hooks/useCallEvents.ts)
+    # that triggers queue + tracker + admin + intelligence invalidations.
+    try:
+        from app import realtime
+        realtime.publish(
+            call_id,
+            "score_ready",
+            {
+                "actor": "reviewer",
+                "verdict": verdict_action_norm,
+                "auto_rejection_id": auto_rejection_id,
+            },
+        )
+    except Exception:
+        logger.warning("realtime.publish on verdict failed", exc_info=True)
+
     # Task 30: emit event for downstream listeners (analytics, Slack, etc.)
     emit(db, "verdict.submitted", {
         "call_id": call_id,
@@ -1338,10 +1360,16 @@ def get_queue(
     # calls the AI flagged non-compliant ("agent failed X") and calls still
     # mid-pipeline. A reviewer-signed-off call leaves the queue when
     # review_status flips to "reviewed".
+    #
+    # 2026-05-16 audit Bug 4 fix: backlog must match the Pending tab's actual
+    # list filter (review_status == "unclaimed"). The prior `!= "reviewed"`
+    # predicate counted in-review (claimed) calls too, so the badge showed
+    # N while the list showed N-claimed. Separate in_review metric below
+    # tracks claimed-but-not-submitted.
     backlog = (
         db.query(Call)
         .filter(
-            Call.review_status != "reviewed",
+            Call.review_status == "unclaimed",
             Call.compliance_status.in_(("pending", "non_compliant")),
         )
         .count()

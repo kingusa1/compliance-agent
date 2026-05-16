@@ -469,7 +469,15 @@ def _maybe_merge_into_existing_deal(
 
     detected_supplier = (call.detected_supplier or "").strip()
     detected_customer = (override_customer_name or call.customer_name or "").strip()
-    if not detected_supplier or not detected_customer:
+    # 2026-05-16 audit Bug 5 fix: relax the supplier-required guard. Lead-gen
+    # calls with no script match end up with empty `detected_supplier`; the
+    # old guard bailed early and never merged them even when the customer
+    # name matched an existing deal. The per-candidate loop below has its
+    # own supplier filter (`if cand_supplier and cand_supplier != detected_supplier: continue`)
+    # which correctly handles the empty case — it permits cross-merge when
+    # ONE side is empty and the other matches. So the entry guard only
+    # needs the customer + deal_id requirements.
+    if not detected_customer:
         return
     if not call.deal_id:
         return
