@@ -44,7 +44,6 @@ import {
   useReviewCheckpoint,
   useRetryCheckpoint,
   useClaimCall,
-  useReleaseCall,
   type VerdictAction,
 } from "@/lib/mutations/reviewer";
 import { ApiError, apiFetch } from "@/lib/api";
@@ -319,7 +318,10 @@ export default function CallDetailPage({
   const reviewCheckpoint = useReviewCheckpoint();
   const retryCheckpoint = useRetryCheckpoint();
   const claimCall = useClaimCall();
-  const releaseCall = useReleaseCall();
+  // useReleaseCall intentionally NOT used here — we fire release via a
+  // direct fetch({ keepalive: true }) in the effect cleanup below. See
+  // the comment on releaseClaim below for the smoke-test evidence (2026-
+  // 05-16 T2) showing the mutation-hook path drops requests on unmount.
 
   // Claim lifecycle (2026-05-16 audit P0 #2). The page opens in
   // "Reviewing" mode visually — back this with a real claim so two
@@ -414,6 +416,38 @@ export default function CallDetailPage({
     c?.compliance_status === "compliant" ||
     c?.compliance_status === "non_compliant";
 
+  // releaseClaim fires a fire-and-forget release POST. We deliberately do
+  // NOT use the useReleaseCall mutation hook here because calling
+  // `mutate(...)` from inside a useEffect cleanup or a pagehide listener
+  // can drop the request — the mutation observer is torn down faster than
+  // TanStack Query queues the fetch. Direct fetch with `keepalive: true`
+  // lets the browser deliver the POST even after the document unloads
+  // (hard tab close, Next.js router navigation, page reload).
+  //
+  // The Authorization header is supplied via cookie (credentials: "include").
+  // No response handling — backend logs the release on its side; the UI
+  // doesn't need to wait for it.
+  const releaseClaim = useCallback((sessionId: string) => {
+    if (!sessionId) return;
+    const base = process.env.NEXT_PUBLIC_API_URL || "";
+    const url = `${base}/api/review-sessions/${encodeURIComponent(sessionId)}/release`;
+    try {
+      void fetch(url, {
+        method: "POST",
+        credentials: "include",
+        keepalive: true,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+    } catch {
+      // sendBeacon as ultimate fallback (no body, but the URL is enough
+      // for the backend to release the session).
+      if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+        navigator.sendBeacon(url);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     if (!id || claimedRef.current || terminalStatus) return;
     claimCall.mutate(
@@ -446,16 +480,34 @@ export default function CallDetailPage({
         },
       },
     );
-    return () => {
+
+    // pagehide handler: covers hard browser close + cross-origin nav.
+    // The useEffect cleanup below covers within-app router.push() nav.
+    const onPageHide = () => {
       const sid = claimSessionRef.current;
       if (sid) {
-        releaseCall.mutate({ sessionId: sid, silent: true });
+        releaseClaim(sid);
         claimSessionRef.current = null;
       }
     };
-    // We intentionally depend on id + terminalStatus only — claimCall/
-    // releaseCall identities change every render and we do NOT want to
-    // re-claim on every render.
+    window.addEventListener("pagehide", onPageHide);
+
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      const sid = claimSessionRef.current;
+      if (sid) {
+        // Direct fetch (not the mutation hook) so the request fires reliably
+        // when the cleanup runs during a router.push navigation — the smoke
+        // test 2026-05-16 T2 found that releaseCall.mutate() was being torn
+        // down before the fetch queued, leaving 30-min orphan locks on every
+        // call viewed by a reviewer who navigates away.
+        releaseClaim(sid);
+        claimSessionRef.current = null;
+      }
+    };
+    // We intentionally depend on id + terminalStatus only — claimCall
+    // identity changes every render and we do NOT want to re-claim on
+    // every render. releaseClaim is stable (useCallback with empty deps).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, terminalStatus]);
 
