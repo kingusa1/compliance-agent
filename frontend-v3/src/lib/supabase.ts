@@ -16,6 +16,17 @@ let _purgingStaleSession = false;
 function getSupabaseClient(): SupabaseClient {
   if (_supabaseInstance) return _supabaseInstance;
 
+  // Guard: do not call createClient() during Next.js SSR pre-rendering.
+  // When called from the Turbopack SSR worker, NEXT_PUBLIC_* env vars are
+  // not injected (they're browser-only) and createClient throws
+  // "supabaseUrl is required". Returning a dummy object is safe because
+  // SSR pre-renders only static shells — no auth API calls fire server-side.
+  if (typeof window === "undefined") {
+    // Return a minimal stub that satisfies the TypeScript type but does nothing.
+    // Auth pages are "use client" — the stub is never exercised in a real browser.
+    return {} as SupabaseClient;
+  }
+
   _supabaseInstance = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
