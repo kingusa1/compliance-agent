@@ -469,6 +469,12 @@ async def _maybe_merge_into_existing_deal(
     from difflib import SequenceMatcher
 
     detected_supplier = (call.detected_supplier or "").strip()
+    # Treat "Unknown" / placeholder values as "no supplier info" so the
+    # supplier-mismatch filter below doesn't block merges when the LLM
+    # couldn't pin down the supplier on a short / supplier-silent
+    # recording (typical for LOAs which don't repeat the supplier name).
+    if detected_supplier.lower() in ("unknown", "n/a", "none", "null", "-"):
+        detected_supplier = ""
     detected_customer = (override_customer_name or call.customer_name or "").strip()
     # 2026-05-16 audit Bug 5 fix: relax the supplier-required guard. Lead-gen
     # calls with no script match end up with empty `detected_supplier`; the
