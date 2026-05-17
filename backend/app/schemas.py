@@ -171,6 +171,43 @@ class CallResponse(BaseModel):
     # /audio-url endpoint in that case.
     audio_url: Optional[str] = None
 
+    # 2026-05-17 two-layer validation — Deepgram vs AssemblyAI
+    # agreement report. Surfaced on the call-detail Transcript tab as
+    # the divergence chip + side-by-side comparison drawer. Populated
+    # by ``pipeline._step_transcribe`` and stored on Call.meta. Null
+    # when only one engine returned a transcript or on legacy calls.
+    transcript_agreement: Optional[dict] = None
+
+    @field_validator("transcript_agreement", mode="before")
+    @classmethod
+    def _hydrate_transcript_agreement(cls, v, info):
+        # When ``CallResponse.model_validate(call, from_attributes=True)``
+        # runs, this validator pulls the report out of the JSONB ``meta``
+        # column on the ORM object. The caller can still pass it
+        # explicitly (e.g. tests).
+        if v is not None:
+            return v
+        meta = (info.data or {}).get("meta") if info and info.data else None
+        if isinstance(meta, dict):
+            return meta.get("transcript_agreement")
+        return None
+
+    # 2026-05-17 — surface which engine's diarization the transcript
+    # player is using and whether it had to fall back to single-speaker.
+    diarization: Optional[dict] = None
+
+    @field_validator("diarization", mode="before")
+    @classmethod
+    def _hydrate_diarization(cls, v, info):
+        if v is not None:
+            return v
+        meta = (info.data or {}).get("meta") if info and info.data else None
+        if isinstance(meta, dict):
+            return meta.get("diarization")
+        return None
+
+    meta: Optional[dict] = None
+
     @field_validator("risk_tags", mode="before")
     @classmethod
     def _risk_tags_default(cls, v):
@@ -330,3 +367,41 @@ class EditCallMetadataRequest(BaseModel):
     supplier: Optional[str] = None
     contract_length_months: Optional[int] = None
     notes: Optional[str] = None
+
+    # Length caps protect the DB columns + stop "200KB of nonsense pasted
+    # into the textarea" footguns. customer_name + agent_name also get
+    # whitespace-collapsed so "  Awais  " can't bypass the shrink guard
+    # that the route layer performs after this validator runs.
+    @field_validator("customer_name", "agent_name", mode="before")
+    @classmethod
+    def _normalise_short_text(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, str):
+            return v
+        # Collapse internal whitespace + strip — defends against
+        # accidental "tab-tab Save" pre-fills with hidden whitespace.
+        cleaned = " ".join(v.split())
+        if len(cleaned) > 200:
+            raise ValueError("name fields are capped at 200 characters")
+        return cleaned
+
+    @field_validator("mpan_or_mprn", "supplier", mode="before")
+    @classmethod
+    def _normalise_identifier(cls, v):
+        if v is None or not isinstance(v, str):
+            return v
+        cleaned = v.strip()
+        if len(cleaned) > 120:
+            raise ValueError("identifier fields are capped at 120 characters")
+        return cleaned
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def _cap_notes(cls, v):
+        if v is None or not isinstance(v, str):
+            return v
+        cleaned = v.strip()
+        if len(cleaned) > 4000:
+            raise ValueError("notes are capped at 4000 characters")
+        return cleaned

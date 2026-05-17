@@ -55,6 +55,10 @@ import { Waveform } from "@/components/design/Waveform";
 import { useCallEvents } from "@/lib/hooks/useCallEvents";
 import { CheckpointCard, parseCheckpointResults, type CheckpointVerdict } from "./CheckpointCard";
 import { TranscriptPlayer, type WordData } from "./TranscriptPlayer";
+import {
+  TranscriptAgreementChip,
+  type TranscriptAgreement,
+} from "./TranscriptAgreementChip";
 import { PricingMismatchBanner } from "./PricingMismatchBanner";
 import { ProcessingStepper } from "./ProcessingStepper";
 import { VerdictTab } from "./VerdictTab";
@@ -1394,6 +1398,16 @@ export default function CallDetailPage({
             {c ? (
               <div style={{ padding: "0 16px 12px" }}>
                 <PipelineTimeline call={c as never} />
+              </div>
+            ) : null}
+            {c?.transcript_agreement || c?.diarization ? (
+              <div style={{ padding: "0 16px 12px" }}>
+                <TranscriptAgreementChip
+                  agreement={
+                    (c.transcript_agreement ?? null) as unknown as TranscriptAgreement | null
+                  }
+                  diarization={c.diarization ?? null}
+                />
               </div>
             ) : null}
             {wordsForPlayer.length > 0 ? (

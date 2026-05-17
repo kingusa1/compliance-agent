@@ -414,9 +414,80 @@ async def _step_transcribe(call_id: str, audio_path: str, db: Session) -> dict:
         if not aai_text and isinstance(aai_md, dict):
             aai_text = aai_md.get("text") or ""
         call.assemblyai_transcript = aai_text
-        call.word_data = json.dumps(aai_result["words"])
         if aai_md:
             call.assemblyai_metadata = aai_md
+
+    # Diarization selector — pick the engine that produced ≥2 distinct
+    # speakers and write those words into ``call.word_data``. The legacy
+    # last-writer-wins pattern (Deepgram first, AAI overwrote) clobbered
+    # Deepgram's good diarization whenever AAI marked every word
+    # ``speaker="UNK"`` (happens on mono audio where AAI can't split).
+    # User-visible symptom: entire transcript rendered as one agent turn.
+    # Fix: choose whichever stream has the higher distinct-speaker count;
+    # AAI wins ties because its text is downstream-primary.
+    def _distinct_speakers(words) -> int:
+        if not words:
+            return 0
+        seen: set[str] = set()
+        for w in words:
+            s = w.get("speaker") if isinstance(w, dict) else None
+            if s is None:
+                continue
+            key = str(s)
+            if key in {"", "UNK", "unknown"}:
+                continue
+            seen.add(key)
+        return len(seen)
+
+    dg_words = dg_result.get("words") if isinstance(dg_result, dict) else None
+    aai_words = aai_result.get("words") if isinstance(aai_result, dict) else None
+    dg_spk = _distinct_speakers(dg_words)
+    aai_spk = _distinct_speakers(aai_words)
+
+    diarization_source = None
+    if aai_words and aai_spk >= 2 and aai_spk >= dg_spk:
+        call.word_data = json.dumps(aai_words)
+        diarization_source = "assemblyai"
+    elif dg_words and dg_spk >= 2:
+        call.word_data = json.dumps(dg_words)
+        diarization_source = "deepgram"
+    elif aai_words:
+        # Both engines failed to split speakers — keep AAI's single-speaker
+        # stream so downstream player still has word-level timings. UI
+        # will surface a "diarization fallback" chip via call.meta.
+        call.word_data = json.dumps(aai_words)
+        diarization_source = "assemblyai_single_speaker"
+    elif dg_words:
+        call.word_data = json.dumps(dg_words)
+        diarization_source = "deepgram_single_speaker"
+
+    # Stamp the choice on call.meta so the UI can render a chip
+    # explaining which engine's speakers the player is using. Critical
+    # for transparency when AAI's diarization fails on mono audio.
+    if diarization_source is not None:
+        try:
+            _meta = dict(call.meta) if isinstance(call.meta, dict) else {}
+            _meta["diarization"] = {
+                "source": diarization_source,
+                "deepgram_speakers": dg_spk,
+                "assemblyai_speakers": aai_spk,
+                "fallback": diarization_source.endswith("single_speaker"),
+            }
+            call.meta = _meta
+            if diarization_source.endswith("single_speaker"):
+                log.warning(
+                    f"⚠️ DIARIZATION_FALLBACK call_id={call_id} "
+                    f"dg_speakers={dg_spk} aai_speakers={aai_spk} — "
+                    f"both engines failed to split speakers; transcript "
+                    f"will render as one turn"
+                )
+            else:
+                log.info(
+                    f"🗣️ DIARIZATION source={diarization_source} "
+                    f"dg_speakers={dg_spk} aai_speakers={aai_spk}"
+                )
+        except Exception as e:
+            log.warning(f"diarization stamp failed: {type(e).__name__}: {e}")
 
     if aai_result:
         transcript = aai_result.get("transcript") or (aai_result.get("metadata") or {}).get("text") or ""
@@ -427,6 +498,57 @@ async def _step_transcribe(call_id: str, audio_path: str, db: Session) -> dict:
     else:
         transcript = deepgram_transcript
         source = "deepgram"
+
+    # Two-layer transcript validation: AssemblyAI is primary for
+    # downstream scoring, but Deepgram runs in parallel as an
+    # independent second opinion. The cross-validation module compares
+    # both transcripts and writes an agreement report onto
+    # ``call.meta["transcript_agreement"]`` so the reviewer UI can flag
+    # disagreement windows. Only fires when both engines returned text
+    # — single-engine calls get ``skipped_reason`` set.
+    aai_text_for_compare = (
+        aai_result.get("transcript")
+        or (aai_result.get("metadata") or {}).get("text")
+        or ""
+    ) if aai_result else ""
+    try:
+        from app.transcript_cross_validation import cross_validate, get_agreement_floor
+
+        agreement_floor = get_agreement_floor()
+        agreement_report = cross_validate(
+            deepgram_transcript=deepgram_transcript,
+            assemblyai_transcript=aai_text_for_compare,
+            agreement_floor=agreement_floor,
+        )
+        # Persist on call.meta — JSONB on Postgres, JSON-text on SQLite.
+        # SQLAlchemy needs the attribute reassigned (not mutated) to
+        # mark the JSONB column dirty.
+        existing_meta = dict(call.meta) if isinstance(call.meta, dict) else {}
+        existing_meta["transcript_agreement"] = agreement_report
+        call.meta = existing_meta
+        if agreement_report.get("below_floor"):
+            log.warning(
+                f"⚠️ TRANSCRIPT_DIVERGENCE call_id={call_id} "
+                f"agreement={agreement_report['agreement']} "
+                f"floor={agreement_report['floor']} "
+                f"samples={len(agreement_report.get('disagreement_samples') or [])}"
+            )
+            # Fire a realtime event so any open call-detail tab refreshes
+            # the divergence chip within 200ms — doctrine §1 "true real-
+            # time, always". Non-fatal on failure (SSE is local-process).
+            try:
+                from app.realtime import publish as _rt_publish
+
+                _rt_publish(call_id, "transcript_divergence", {
+                    "call_id": call_id,
+                    "agreement": agreement_report["agreement"],
+                    "floor": agreement_report["floor"],
+                    "sample_count": len(agreement_report.get("disagreement_samples") or []),
+                })
+            except Exception as rt_err:
+                log.debug(f"realtime publish skipped: {type(rt_err).__name__}: {rt_err}")
+    except Exception as e:
+        log.warning(f"transcript cross-validation failed: {type(e).__name__}: {e}")
 
     dg_lines = deepgram_transcript.count("\n") + 1
     gm_lines = gm_result.count("\n") + 1 if gm_result else 0
@@ -2089,6 +2211,40 @@ def _step_score(call_id: str, analysis: dict, db: Session) -> dict:
         # Even at sub-50% error rates, never claim full compliance with
         # missing data.
         call.compliant = False
+
+    # Two-layer validation enforcement: if Deepgram and AssemblyAI
+    # diverged below the floor, route to human review so a reviewer
+    # listens to the disagreement windows. Auto-passing on a transcript
+    # we can't trust is a doctrine §2 violation ("zero accuracy
+    # degradation"). Enterprise default ON; flip
+    # ``TRANSCRIPT_DIVERGENCE_FORCES_REVIEW=false`` to surface chip
+    # only without changing the verdict gate.
+    try:
+        from app.config import settings as _cfg
+
+        if _cfg.transcript_divergence_forces_review:
+            agreement = (
+                (call.meta or {}).get("transcript_agreement") if isinstance(call.meta, dict) else None
+            )
+            if isinstance(agreement, dict) and agreement.get("below_floor"):
+                if call.status != "needs_manual_review":
+                    call.status = "needs_manual_review"
+                call.compliant = False
+                if not call.reason or "transcript divergence" not in (call.reason or "").lower():
+                    pct = agreement.get("agreement")
+                    pct_label = f"{round(pct * 100)}%" if isinstance(pct, (int, float)) else "low"
+                    call.reason = (
+                        f"Manual review: Deepgram vs AssemblyAI transcript "
+                        f"agreement {pct_label} (below floor "
+                        f"{round((agreement.get('floor') or 0) * 100)}%). "
+                        + (call.reason or "")
+                    ).strip()
+                log.warning(
+                    f"TRANSCRIPT_DIVERGENCE forced manual review call_id={call_id}"
+                )
+    except Exception as e:
+        log.warning(f"transcript divergence enforcement skipped: {type(e).__name__}: {e}")
+
     db.commit()
     return {
         "score": call.score,

@@ -96,6 +96,38 @@ export interface Call {
   audio_url?: string | null;
   deal_id?: string | null;
   call_type?: string | null;
+  // 2026-05-17 two-layer validation — Deepgram vs AssemblyAI agreement
+  // report. Populated by ``pipeline._step_transcribe`` and surfaced on
+  // GET /api/calls/{id} so the call-detail page can render the
+  // divergence chip + comparison drawer. Null when only one engine
+  // returned a transcript or on legacy calls.
+  transcript_agreement?: {
+    agreement: number | null;
+    agreement_full: number | null;
+    deepgram_word_count: number;
+    assemblyai_word_count: number;
+    below_floor: boolean;
+    floor: number;
+    disagreement_samples: Array<{
+      tag: string;
+      deepgram: string | null;
+      assemblyai: string | null;
+      deepgram_only: string | null;
+      assemblyai_only: string | null;
+    }>;
+    skipped_reason: string | null;
+  } | null;
+  // 2026-05-17 — which engine's diarization is driving the transcript
+  // player's speaker labels. Populated by ``pipeline._step_transcribe``.
+  // ``fallback: true`` means both engines failed to split speakers
+  // (mono audio, very short recording, etc) and the transcript will
+  // render as one turn — the chip surfaces this loudly.
+  diarization?: {
+    source: string;
+    deepgram_speakers: number;
+    assemblyai_speakers: number;
+    fallback: boolean;
+  } | null;
 }
 
 export interface CallListResponse {

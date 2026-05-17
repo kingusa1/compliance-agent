@@ -138,5 +138,20 @@ class Settings(BaseSettings):
     # supplies API keys and confirms the new prompt against real audio.
     use_watt_prompt: bool = False
 
+    # ─── Two-layer transcript validation ──────────────────────────────
+    # AssemblyAI is the primary transcript for downstream scoring;
+    # Deepgram runs in parallel as an independent second opinion.
+    # ``app/transcript_cross_validation.py`` compares both transcripts
+    # and writes an agreement report onto ``Call.meta["transcript_agreement"]``.
+    # When agreement < floor, the call is routed to human review
+    # (not auto-passed) so a reviewer can listen to the disagreement
+    # windows. 0.85 is the empirical floor from the L9 benchmark
+    # briefing — tune per environment without code changes.
+    transcript_agreement_floor: float = Field(default=0.85, ge=0.0, le=1.0)
+    # Force human review when agreement is below floor. Default ON for
+    # enterprise safety; flip OFF to surface a UI chip only without
+    # changing the verdict gate.
+    transcript_divergence_forces_review: bool = True
+
 
 settings = Settings()

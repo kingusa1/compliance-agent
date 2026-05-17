@@ -3019,6 +3019,40 @@ def patch_call_metadata(
     deal = db.query(CustomerDeal).filter_by(id=call.deal_id).first() if call.deal_id else None
     customer = db.query(Customer).filter_by(id=deal.customer_id).first() if deal and deal.customer_id else None
 
+    # Shrink guard — block a stale modal "Save" from truncating the deal
+    # canonical name. The frontend dialog already warns the reviewer when
+    # the pre-fill is a strict leading-word prefix of the canonical, but
+    # the API needs defence-in-depth: any caller that sends a customer
+    # name that's a strict leading-word prefix of the current deal
+    # canonical gets a 422. The reviewer must type the full name (or
+    # something meaningfully different) to make the change stick.
+    # See [[BRAIN/05_State/Known_Issues#Edit-metadata-modal-silently-corrupts-customer-names]].
+    if (
+        payload.customer_name is not None
+        and payload.customer_name
+        and deal is not None
+        and deal.customer_name
+    ):
+        proposed = payload.customer_name.strip()
+        existing = deal.customer_name.strip()
+        if proposed and existing and proposed != existing:
+            proposed_tokens = proposed.split()
+            existing_tokens = existing.split()
+            is_leading_prefix = (
+                len(proposed_tokens) < len(existing_tokens)
+                and existing_tokens[: len(proposed_tokens)] == proposed_tokens
+            )
+            if is_leading_prefix:
+                raise HTTPException(
+                    422,
+                    (
+                        f"customer_name {proposed!r} is a leading-prefix of the "
+                        f"current canonical {existing!r} — saving would shrink it. "
+                        "Type the full canonical name (or clear the field first) "
+                        "to make the change stick."
+                    ),
+                )
+
     # Update Call (cols A overlay + G)
     if payload.customer_name is not None:
         call.customer_name = payload.customer_name or None
@@ -3111,3 +3145,113 @@ def patch_call_metadata(
             "legal_name": customer.legal_name if customer else None,
         } if customer else None,
     }
+
+
+# ── Two-layer transcript validation — admin observability ────────────────
+@router.get("/api/admin/transcript-agreement-stats")
+def admin_transcript_agreement_stats(
+    db: Session = Depends(get_db),
+    _admin=Depends(_require_admin),
+):
+    """Aggregate Deepgram-vs-AssemblyAI agreement stats across all calls.
+
+    Surfaces the population-level signal of the two-layer validation
+    system. Used by the admin observability dashboard + alert routing
+    when too many calls drop below the agreement floor.
+    """
+    rows = (
+        db.query(Call.id, Call.meta, Call.created_at)
+        .filter(Call.meta.isnot(None))
+        .all()
+    )
+    total = 0
+    with_report = 0
+    below_floor = 0
+    skipped = 0
+    diarization_fallbacks = 0
+    agreement_sum = 0.0
+    samples: list[dict] = []
+    for call_id, meta, created_at in rows:
+        total += 1
+        if not isinstance(meta, dict):
+            continue
+        agreement = meta.get("transcript_agreement")
+        if isinstance(agreement, dict):
+            with_report += 1
+            if agreement.get("skipped_reason"):
+                skipped += 1
+            elif isinstance(agreement.get("agreement"), (int, float)):
+                agreement_sum += float(agreement["agreement"])
+                if agreement.get("below_floor"):
+                    below_floor += 1
+                    samples.append({
+                        "call_id": str(call_id),
+                        "agreement": agreement.get("agreement"),
+                        "floor": agreement.get("floor"),
+                        "created_at": created_at.isoformat() if created_at else None,
+                    })
+        diarization = meta.get("diarization")
+        if isinstance(diarization, dict) and diarization.get("fallback"):
+            diarization_fallbacks += 1
+
+    scored = with_report - skipped
+    mean_agreement = (agreement_sum / scored) if scored > 0 else None
+    return {
+        "total_calls": total,
+        "calls_with_report": with_report,
+        "calls_below_floor": below_floor,
+        "calls_skipped": skipped,
+        "diarization_fallbacks": diarization_fallbacks,
+        "mean_agreement": (
+            round(mean_agreement, 4) if mean_agreement is not None else None
+        ),
+        "samples_below_floor": samples[:20],
+    }
+
+
+@router.post("/api/admin/recompute-transcript-agreement", status_code=200)
+def admin_recompute_transcript_agreement(
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    _admin=Depends(_require_admin),
+):
+    """Backfill ``call.meta["transcript_agreement"]`` for completed calls
+    that have both Deepgram and AssemblyAI transcripts but no report yet.
+
+    Use after first deploy of the two-layer validation feature to
+    populate the report on historical calls. Idempotent: re-running
+    overwrites with the latest scoring logic. Capped at ``limit`` calls
+    per call to avoid one operator click triggering a 10k-row write.
+    """
+    from app.transcript_cross_validation import cross_validate, get_agreement_floor
+
+    floor = get_agreement_floor()
+    rows = (
+        db.query(Call)
+        .filter(
+            Call.status == "completed",
+            Call.transcript.isnot(None),
+            Call.assemblyai_transcript.isnot(None),
+        )
+        .order_by(Call.created_at.desc())
+        .limit(max(1, min(limit, 1000)))
+        .all()
+    )
+    updated = 0
+    for call in rows:
+        try:
+            report = cross_validate(
+                deepgram_transcript=call.transcript or "",
+                assemblyai_transcript=call.assemblyai_transcript or "",
+                agreement_floor=floor,
+            )
+            existing = dict(call.meta) if isinstance(call.meta, dict) else {}
+            existing["transcript_agreement"] = report
+            call.meta = existing
+            updated += 1
+        except Exception as e:
+            log.warning(
+                f"recompute_agreement skipped call_id={call.id}: {type(e).__name__}: {e}"
+            )
+    db.commit()
+    return {"updated": updated, "considered": len(rows), "floor": floor}
