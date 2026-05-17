@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Any, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ScriptCheckpoint(BaseModel):
@@ -184,33 +184,25 @@ class CallResponse(BaseModel):
     # when only one engine returned a transcript or on legacy calls.
     transcript_agreement: Optional[dict] = None
 
-    @field_validator("transcript_agreement", mode="before")
-    @classmethod
-    def _hydrate_transcript_agreement(cls, v, info):
-        # When ``CallResponse.model_validate(call, from_attributes=True)``
-        # runs, this validator pulls the report out of the JSONB ``meta``
-        # column on the ORM object. The caller can still pass it
-        # explicitly (e.g. tests).
-        if v is not None:
-            return v
-        meta = (info.data or {}).get("meta") if info and info.data else None
-        if isinstance(meta, dict):
-            return meta.get("transcript_agreement")
-        return None
-
     # 2026-05-17 — surface which engine's diarization the transcript
     # player is using and whether it had to fall back to single-speaker.
     diarization: Optional[dict] = None
 
-    @field_validator("diarization", mode="before")
-    @classmethod
-    def _hydrate_diarization(cls, v, info):
-        if v is not None:
-            return v
-        meta = (info.data or {}).get("meta") if info and info.data else None
-        if isinstance(meta, dict):
-            return meta.get("diarization")
-        return None
+    @model_validator(mode="after")
+    def _hydrate_from_meta(self):
+        # Pull ``transcript_agreement`` + ``diarization`` out of the
+        # ``meta`` JSONB column when the caller hasn't already set them
+        # explicitly. ``field_validator(mode="before")`` was unreliable
+        # against ORM + ``from_attributes=True`` because ``info.data``
+        # is not populated incrementally with non-validated attributes.
+        # ``model_validator(mode="after")`` runs after every field is
+        # built, so ``self.meta`` is guaranteed populated.
+        if isinstance(self.meta, dict):
+            if self.transcript_agreement is None:
+                self.transcript_agreement = self.meta.get("transcript_agreement")
+            if self.diarization is None:
+                self.diarization = self.meta.get("diarization")
+        return self
 
     @field_validator("risk_tags", mode="before")
     @classmethod
