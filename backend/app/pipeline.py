@@ -745,6 +745,14 @@ async def _maybe_merge_into_existing_deal(
     canonical_name = (best.customer_name or "").strip()
     if canonical_name and not canonical_name.startswith("(auto-detect pending"):
         call.customer_name = canonical_name
+    # 2026-05-17: flush the call.deal_id update BEFORE deleting the stub.
+    # Postgres FK on calls.deal_id has ON DELETE SET NULL (from the
+    # 2026_05_16_hot_indexes migration). Without an explicit flush, the
+    # delete cascade sees the still-old deal_id and nulls it — even
+    # though we already reassigned to best.id in Python. Reanalyze
+    # smoke on the Josephs Leadgen reproduced this: the call ended up
+    # with deal_id=NULL even though merge logged the right target.
+    db.flush()
     # Stub had only this one call; delete it. If the stub still has
     # other calls attached we leave it alone — orphan Deals are safer
     # than accidentally clobbering an unrelated workflow.
