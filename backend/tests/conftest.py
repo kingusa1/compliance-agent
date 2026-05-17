@@ -118,20 +118,23 @@ def no_dev_admin(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _reset_dependency_overrides_after_test():
-    """Many test files install ``app.dependency_overrides[get_db]`` to point
-    at their own in-memory SQLite engine but never tear it down. That
-    pollutes downstream tests that expect to talk to the real Supabase
-    Postgres (e.g. test_deals_stub.py reads via SessionLocal directly and
-    sees rows missing because the route wrote to the leaked SQLite).
+    """Aggressively clear ``app.dependency_overrides`` after every test.
 
-    Snapshot the override dict before each test, restore the snapshot
-    after — this is the bullet-proof catch-all so individual files don't
-    each need a teardown."""
-    from app.main import app as _app
-    snapshot = dict(_app.dependency_overrides)
+    Many test files install ``app.dependency_overrides[get_db]`` to point
+    at their own in-memory SQLite engine inside an autouse fixture but
+    never tear it down. The earlier "snapshot + restore" implementation
+    captured the override DURING setup (when the test file's autouse
+    fixture had already installed it) and then "restored" the polluted
+    state — so the get_db override leaked into subsequent test files
+    that expected to hit the real Postgres (test_audit_coverage et al.).
+
+    Aggressive clear is safe because every test file's own autouse
+    ``clean_db`` (or equivalent) re-installs the override it needs on
+    each test's setup phase. The few tests that want NO override (e.g.
+    test_audit_coverage relies on real Postgres) get a clean slate."""
     yield
+    from app.main import app as _app
     _app.dependency_overrides.clear()
-    _app.dependency_overrides.update(snapshot)
 
 
 @pytest.fixture
