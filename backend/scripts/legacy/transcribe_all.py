@@ -22,10 +22,9 @@ from difflib import SequenceMatcher
 
 import httpx
 
-OPENROUTER_KEY = os.environ.get(
-    "OPENROUTER_API_KEY",
-    "REDACTED-LEAKED-OPENROUTER-KEY-ROTATED-2026-05-18",
-)
+OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY")
+if not OPENROUTER_KEY:
+    raise SystemExit("OPENROUTER_API_KEY env var required")
 MODEL = "google/gemini-2.5-flash"
 
 TRANSCRIPTION_PROMPT = """Transcribe this audio exactly word for word. This is a compliance call between an energy broker agent and a customer.
