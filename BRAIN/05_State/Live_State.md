@@ -1,8 +1,34 @@
 ---
 created: 2026-05-10
 updated: 2026-05-18
-tags: [state, live, ground-truth, two-layer-validation, diarization-fallback, opus-4-7, playwright-mcp-validated]
+tags: [state, live, ground-truth, public-repo, security-cleanup, two-layer-validation, ci-unblocked]
 ---
+
+# Live State — Repo public + history scrubbed + CI unblocked 2026-05-18
+
+> 🟢 **2026-05-18 — Tip `8bed1cb` on origin/main. Repository is PUBLIC. Coverage CI workflow GREEN. Two-layer transcript validation still live on prod.**
+>
+> **This wave (5 git ops + 3 commits):**
+> 1. `git filter-repo` rewrote all 239 commits — removed leaked OpenRouter key (`sk-or-v1-fcd5f2d5...`) + deleted README.md from every commit
+> 2. Force-pushed rewritten history to `origin/main`
+> 3. Flipped repo via `PATCH /repos/kingusa1/compliance-agent {private:false}` → public
+> 4. `f5e00c3` chore(security): legacy scripts hard-fail on missing OPENROUTER_API_KEY
+> 5. `2c929b4` fix(alembic): skip rls_realtime migration on vanilla Postgres (CI)
+> 6. `8bed1cb` fix(test): align email-preview test with a12b951 placeholder removal
+>
+> **CI status:**
+> - `coverage` workflow → **GREEN** (touched-tests + 50% coverage gate)
+> - `test` workflow → still has pre-existing pytest 401-failures (test_claim, test_compliance_*, etc.) that pre-date this session. Documented in 2026-05-18 session log as separate tech debt.
+>
+> **Two-layer chips still rendering on prod** (verified Playwright MCP): `transcript-agreement-skipped: "AssemblyAI transcript missing"` + `diarization-chip: "Diarization fallback — DG 1 · AAI 0 speakers"` on call `c9b3f559`.
+>
+> **🚨 Still pending user action (carried from 2026-05-17):**
+> - Set `ASSEMBLYAI_API_KEY` on Railway → AAI second engine activates → cross-validation chip switches from grey-skipped to green/amber.
+> - **STRONGLY RECOMMENDED:** rotate the leaked OpenRouter key at https://openrouter.ai/settings/keys → revoke `sk-or-v1-fcd5f2d5...` → update on Railway. History rewrite removed the key from every commit on origin, but any clone made before the rewrite still has it.
+>
+> Resume guide: [[../04_Sessions/2026-05-18_Session_public_repo_security_cleanup]].
+>
+> ---
 
 # Live State — Two-layer DG/AAI validation LIVE 2026-05-17 → 2026-05-18 (overnight)
 

@@ -6,6 +6,47 @@ tags: [state, issues, gotchas, stale-tests]
 
 # Known issues / gotchas
 
+## 🆕 2026-05-18 — Pre-existing pytest test-workflow failures (surfaced once Actions unblocked)
+
+When the repo went public + Actions started running again, the `test` workflow's pytest job revealed many failing tests that pre-date this session. The `coverage` workflow (touched-files + 50% gate) is GREEN because it skips full pytest unless backend Python files changed; the `test` workflow runs `pytest -v --tb=short` unconditionally and catches all the pre-existing failures.
+
+Failing tests (sample):
+- `test_agent_trace.py::test_get_trace_requires_auth`
+- `test_audit_coverage.py::test_edit_metadata_writes_audit`
+- `test_audit_coverage.py::test_hitl_claim_release_writes_audit`
+- `test_claim.py::test_claim_creates_session_and_lock` (+ 3 siblings)
+- `test_compliance_lists.py::test_without_auth_401`
+- `test_compliance_override.py::test_*` (×4)
+- `test_customer_email.py::test_401_without_auth`
+
+All auth-related (401 vs expected 200/404). Pattern documented in this file under "CI parity guardrail" — tests get 401 when `Depends(current_reviewer)` is added without test-side `app.dependency_overrides`.
+
+Fix recipe is per-test in CLAUDE.md, but applying it everywhere is a separate cleanup session. Tracker can park these because:
+- Coverage workflow GREEN (the meaningful gate)
+- All failures are pre-session — none introduced by 2026-05-17/18 work
+- Vitest also has 3 pre-existing `ReanalyzeButton` failures (missing `QueryClientProvider` wrapper) — same status
+
+## 🆕 2026-05-18 — Alembic migration must guard against vanilla Postgres
+
+`2026_05_16_rls_realtime` was failing CI's `alembic upgrade head` because it references `auth.uid()` and `supabase_realtime` publication — both Supabase managed-Postgres primitives. Fixed in `2c929b4`: `upgrade()` now detects the auth schema + realtime publication at start and bails gracefully when missing.
+
+**Future RLS migrations** must follow the same pattern. Template:
+
+```python
+def upgrade():
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        return  # SQLite tests
+
+    has_auth = bind.execute(
+        sa.text("SELECT 1 FROM information_schema.schemata WHERE schema_name = 'auth'")
+    ).first() is not None
+    if not has_auth:
+        return  # Vanilla Postgres (CI, self-hosted)
+
+    # ...rest of migration referencing auth.uid() etc.
+```
+
 ## 🚨 Stale-test pattern — CI red after CHECK / bucket-gate / auth-dep changes (2026-05-16)
 
 **Symptom**: GitHub Actions `coverage` workflow turns red within 1-2 commits of any production change that:
