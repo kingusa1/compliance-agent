@@ -1487,15 +1487,24 @@ def get_call_words(call_id: str, db: Session = Depends(get_db)):
 
     # Tag each word with AGENT / CUSTOMER. Only do work if there's >1
     # speaker — otherwise everything is the agent by default.
+    #
+    # 2026-05-18: speaker keys are stringified throughout so both Deepgram
+    # numeric ids ("0", "1") and AssemblyAI letters ("A", "B") flow through
+    # the same path. The earlier ``int(...)`` coercion silently mapped every
+    # AAI word to speaker 0 → whole transcript rendered as one AGENT turn
+    # whenever AAI won diarization. See _detect_agent_speaker docstring.
     from app.transcription import _detect_agent_speaker
 
-    agent_id: int | None = None
-    speaker_ids: set[int] = set()
+    agent_id: str | None = None
+    speaker_ids: set[str] = set()
     for w in words:
-        try:
-            speaker_ids.add(int(w.get("speaker", 0) or 0))
-        except (TypeError, ValueError):
+        raw = w.get("speaker")
+        if raw is None or raw == "":
             continue
+        spk_key = str(raw)
+        if spk_key in {"UNK", "unknown"}:
+            continue
+        speaker_ids.add(spk_key)
     if len(speaker_ids) >= 2:
         try:
             agent_id = _detect_agent_speaker(words)
@@ -1503,10 +1512,8 @@ def get_call_words(call_id: str, db: Session = Depends(get_db)):
             agent_id = None
 
     for w in words:
-        try:
-            spk = int(w.get("speaker", 0) or 0)
-        except (TypeError, ValueError):
-            spk = 0
+        raw = w.get("speaker")
+        spk_key = "" if raw is None or raw == "" else str(raw)
         if agent_id is None:
             # Single-speaker recording (or detector failed) — call it
             # AGENT so the colour is consistent with the broker-side
@@ -1514,7 +1521,7 @@ def get_call_words(call_id: str, db: Session = Depends(get_db)):
             # customer was the only voice on the line.
             w["role"] = "AGENT"
         else:
-            w["role"] = "AGENT" if spk == agent_id else "CUSTOMER"
+            w["role"] = "AGENT" if spk_key == agent_id else "CUSTOMER"
 
     return {
         "call_id": call_id,

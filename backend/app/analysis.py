@@ -722,6 +722,30 @@ def _title_case_name(raw: str) -> str:
     return " ".join(w[:1].upper() + w[1:].lower() for w in raw.split() if w)
 
 
+# PII redaction tokens emitted by Deepgram / AssemblyAI when their `redact`
+# feature fires — e.g. "[PERSON_NAME]", "[PHONE_NUMBER]", "[date_1]". The
+# extractor (regex or LLM) occasionally captures these verbatim, which used
+# to land in `Call.customer_name` / `Call.agent_name` as literal "[PERSON_NAME]"
+# strings (2026-05-18 audit, Crosby Grange call). This regex matches a
+# single redaction token; `_strip_pii_tokens` collapses to "Unknown" when the
+# whole value is a token and strips inline tokens otherwise.
+_PII_TOKEN_RE = re.compile(r"\[[a-zA-Z][a-zA-Z_]*(?:_\d+)?\]")
+
+
+def _strip_pii_tokens(name: str | None) -> str:
+    """Return ``name`` with any PII redaction tokens removed.
+
+    Returns "Unknown" when the value is empty, None, or collapses to empty
+    after token removal (the literal "[PERSON_NAME]" case). Tokens that are
+    embedded inside a real name are stripped in-place ("[PERSON_NAME] Doe"
+    → "Doe").
+    """
+    if not name:
+        return "Unknown"
+    cleaned = _PII_TOKEN_RE.sub("", name).strip().strip(",.;:'\"-").strip()
+    return cleaned or "Unknown"
+
+
 def _extract_agent_name_regex(transcript: str) -> str | None:
     """Return the first plausible agent-name candidate from canonical TPI
     self-introduction phrases in the transcript head, else None.
@@ -743,6 +767,11 @@ def _extract_agent_name_regex(transcript: str) -> str | None:
             if first.lower() in _NAME_STOPWORDS:
                 continue
             if not (2 <= len(first) <= 25):
+                continue
+            # Skip if the captured value is a PII redaction token like
+            # "[PERSON_NAME]" — the brackets keep \w-class out so this is
+            # defence-in-depth in case the regex grammar drifts.
+            if _PII_TOKEN_RE.fullmatch(first or "") or _PII_TOKEN_RE.fullmatch(second or ""):
                 continue
             # Accept the surname only when it looks like a name (not a stopword,
             # alphabetic, plausible length).
@@ -817,6 +846,13 @@ async def detect_names(transcript: str) -> tuple[str, str]:
             f"\u26a0\ufe0f DETECT names collision \u2192 agent=customer=\"{agent}\"; clearing agent"
         )
         agent = "Unknown"
+
+    # PII redaction tokens (e.g. "[PERSON_NAME]", "[date_1]") sometimes get
+    # captured verbatim by the LLM when the transcript was redacted at the
+    # transcription layer. Sanitize before returning so the persistence
+    # layer never sees a literal token in either name field.
+    agent = _strip_pii_tokens(agent)
+    customer = _strip_pii_tokens(customer)
 
     log.info(f"\U0001f464 DETECT names \u2192 agent=\"{agent}\", customer=\"{customer}\"")
     return agent, customer

@@ -270,13 +270,27 @@ export function TrackerFilterBar({
           />
 
           {/* Row 4 — status + verdict + deadline state */}
+          {/*
+            2026-05-18 audit: Status + Verdict pills are silently no-ops on
+            the awaiting_review tab — every row there carries the synthetic
+            status "AWAITING_REVIEW" + verdict_state "AI_PENDING", so the
+            filter has nothing to discriminate against. Backend
+            `_apply_call_advanced` correctly ignores both fields on that
+            tab; we hide them client-side to stop reviewers clicking pills
+            that look broken. Deadline state IS meaningful (deadline =
+            completed_at + 2 days) and the matching backend wiring was
+            added the same day, so it stays visible.
+          */}
           <div className="flex flex-wrap items-center gap-4">
-            <MultiSelectChips
-              label="Status"
-              options={[...STATUS_OPTIONS]}
-              selected={filters.statuses}
-              onChange={(v) => patch({ statuses: v })}
-            />
+            {filters.tab !== "awaiting_review" && (
+              <MultiSelectChips
+                label="Status"
+                options={[...STATUS_OPTIONS]}
+                selected={filters.statuses}
+                onChange={(v) => patch({ statuses: v })}
+              />
+            )}
+            {filters.tab !== "awaiting_review" && (
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
                 Verdict
@@ -305,6 +319,7 @@ export function TrackerFilterBar({
                 );
               })}
             </div>
+            )}
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
                 Deadline

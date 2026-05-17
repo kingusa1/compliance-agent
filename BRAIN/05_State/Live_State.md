@@ -4,6 +4,42 @@ updated: 2026-05-18
 tags: [state, live, ground-truth, aai-active, ci-both-workflows-green, test-isolation-fixed]
 ---
 
+# Live State — Audit fixes PR #1 awaiting merge 2026-05-18 (PM)
+
+> 🟠 **2026-05-18 (PM) — Tip `d34ab12` on branch `fix/audit-2026-05-18-tracker-pii-aai-speakers`. PR #1 open with all 5 fixes, awaiting CI green for merge. Prod still serves `edfc746`; the fixes are NOT live on Railway yet.**
+>
+> **5h autonomous validation session (this run):**
+> - Walked all 15 pages via Playwright MCP — full snapshot in [[../04_Sessions/2026-05-18_Session_5h_autonomous_audit]].
+> - Uploaded one real non-EON record lifecycle (Crosby Grange lead-gen, 336 KB) — pipeline ran clean end-to-end, propagated through customer/deal/tracker/queue/call-detail correctly. Wire-check passes.
+> - Caught 7 bugs (5 fixed, 2 deferred AI-quality issues).
+>
+> **Findings shipped in PR #1 (`d34ab12`):**
+> 1. Tracker awaiting_review tab silently ignored deadline_state/verdict_states/statuses filters — wired deadline_state into `_apply_call_advanced`; hid Status + Verdict pills on the awaiting tab.
+> 2. AAI 2-speaker diarization wins but transcript player rendered only AGENT (`int("A")` ValueError on AAI's letter speaker keys) — generalised speaker key handling to `str` throughout.
+> 3. `Call.customer_name` / `agent_name` / `Deal.customer_name` ingesting literal PII redaction tokens (`[PERSON_NAME]`, `[date_1]`, …) — added `_PII_TOKEN_RE` + `_strip_pii_tokens` in `app.analysis`, wired into `detect_names` + `_extract_agent_name_regex` + `detect_business_name`.
+> 4. Observability page showed completed calls as `running` for hours (synth-map missing `needs_manual_review` etc.) — extended the map + flipped default fallback from running → succeeded.
+> 5. Frontend: Status + Verdict pills on awaiting_review tab were silent no-ops — hidden via tab-conditional render.
+>
+> **Findings deferred:**
+> - #3 (agent regex captured "Is" from "My name is …") — long-standing AI-quality issue.
+> - #6 (agent_name=null on non-EON lead-gen) — acceptable failure mode.
+> - #7 (business name hallucination "Crosby Grenache" from "Crosby Grange") — backfilled the one call via `PATCH /api/calls/{id}/metadata`; long-term fix wants a phonetic-confusion filter.
+>
+> **Backfill applied this session:**
+> - `Call.customer_name` on `16f73fc7-…` cleared from `"[PERSON_NAME]"` → `"Crosby Grange Properties"` via the existing metadata route.
+>
+> **🚨 Resume order (next session):**
+> 1. `gh pr checks 1` — confirm both `coverage` + `test` workflows green.
+> 2. `gh pr merge 1 --squash` (or whatever merge style the repo prefers — global git rule says new commits, but PRs use squash here).
+> 3. Wait for Railway auto-deploy.
+> 4. Hit `/tracker?tab=awaiting_review` → Overdue pill → confirm row count narrows (Finding #1 verification).
+> 5. Hit `/calls/16f73fc7-…` → confirm transcript shows AGENT + CUSTOMER bubbles (Finding #2 verification).
+> 6. Hit `/observability` → confirm no completed calls show `running` (Finding #4 verification).
+>
+> Resume guide: [[../04_Sessions/2026-05-18_Session_5h_autonomous_audit]].
+>
+> ---
+
 # Live State — CI BOTH workflows GREEN 2026-05-18 (close-out)
 
 > 🟢 **2026-05-18 — Tip `edfc746` on origin/main. CI `coverage` + `test` workflows BOTH green for the first time this session. AAI-activated two-layer transcript validation still operational on prod.**
