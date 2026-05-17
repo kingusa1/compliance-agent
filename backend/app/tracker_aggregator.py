@@ -473,7 +473,17 @@ def build_tracker_rows(
             return []
 
     def _apply_call_advanced(q):
-        """Apply df/dt/suppliers/agents/meter-via-deals to a Call query."""
+        """Apply df/dt/suppliers/agents/deadline_state/meter-via-deals to a Call query.
+
+        2026-05-18 audit: ``deadline_state`` was a no-op on the awaiting_review
+        tab because filter wiring lived in ``_apply_rejection_advanced`` only.
+        Awaiting-review rows compute deadline = ``Call.completed_at + 2 days``
+        (matches ``_awaiting_review_row``); we mirror that arithmetic here.
+        ``verdict_state`` and ``status`` columns are hardcoded constants on
+        awaiting-review rows (AI_PENDING / AWAITING_REVIEW) so those filters
+        remain rejection-only by design — the frontend hides those pills on
+        the awaiting-review tab.
+        """
         if df:
             q = q.filter(func.date(Call.created_at) >= df)
         if dt:
@@ -482,6 +492,32 @@ def build_tracker_rows(
             q = q.filter(Call.detected_supplier.in_(suppliers))
         if agents:
             q = q.filter(Call.agent_name.in_(agents))
+        # Deadline = Call.completed_at + 2 days. Translate the user-selected
+        # state into a half-open interval on Call.completed_at so the filter
+        # works as an indexable predicate.
+        if deadline_state == "overdue":
+            # deadline < today  →  completed_at < today - 2 days
+            q = q.filter(Call.completed_at.isnot(None)).filter(
+                func.date(Call.completed_at) < today - timedelta(days=2)
+            )
+        elif deadline_state == "due_3d":
+            # today <= deadline <= today+3  →  today-2 <= completed_at <= today+1
+            q = q.filter(Call.completed_at.isnot(None)).filter(
+                func.date(Call.completed_at) >= today - timedelta(days=2),
+                func.date(Call.completed_at) <= today + timedelta(days=1),
+            )
+        elif deadline_state == "due_7d":
+            # today <= deadline <= today+7  →  today-2 <= completed_at <= today+5
+            q = q.filter(Call.completed_at.isnot(None)).filter(
+                func.date(Call.completed_at) >= today - timedelta(days=2),
+                func.date(Call.completed_at) <= today + timedelta(days=5),
+            )
+        elif deadline_state == "on_track":
+            # deadline > today  →  completed_at IS NULL OR completed_at > today-2
+            q = q.filter(or_(
+                Call.completed_at.is_(None),
+                func.date(Call.completed_at) > today - timedelta(days=2),
+            ))
         if restricted_deal_ids is not None:
             q = q.filter(Call.deal_id.in_(restricted_deal_ids))
         return q

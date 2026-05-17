@@ -400,14 +400,25 @@ async def list_runs(
                 .limit(min(limit, 100))
             ).all()
         )
+        # 2026-05-18 audit fix: missing entries fell through to default
+        # "running", which left calls that finished as needs_manual_review
+        # showing as a 4.7h-stuck pipeline run in the observability page.
+        # Anything terminal (completed, failed, reviewer-decided, cancelled)
+        # maps to a terminal pipeline state; only the actively-processing
+        # status maps to "running".
         synth_status_map = {
             "completed": "succeeded",
+            "needs_manual_review": "succeeded",
             "processing": "running",
+            "queued": "running",
+            "pending_audio": "running",
             "failed": "failed",
+            "processing_failed": "failed",
+            "cancelled": "cancelled",
         }
         runs_out = []
         for c in recent_calls:
-            cs = synth_status_map.get((c.status or "").lower(), "running")
+            cs = synth_status_map.get((c.status or "").lower(), "succeeded")
             if status and status != cs:
                 continue
             runs_out.append({

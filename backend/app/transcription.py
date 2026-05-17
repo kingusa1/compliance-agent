@@ -42,8 +42,9 @@ def _format_timestamp(seconds: float) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
-def _detect_agent_speaker(words: list[dict]) -> int:
-    """Heuristic-pick which Deepgram speaker id is the broker / agent.
+def _detect_agent_speaker(words: list[dict]) -> str:
+    """Heuristic-pick which speaker key (Deepgram int or AssemblyAI letter)
+    is the broker / agent.
 
     The static "speaker_0 = Agent" rule misfires whenever the customer is
     the one who picks up first ("hello?") — Deepgram assigns speaker 0 to
@@ -53,17 +54,32 @@ def _detect_agent_speaker(words: list[dict]) -> int:
     broker-side phrasing. The speaker whose text most strongly resembles
     sales / disclosure language is the agent. Pure regex / counts so this
     runs offline (no extra LLM call on the hot path).
+
+    2026-05-18 generalisation: the original signature returned ``int`` because
+    Deepgram emits numeric speaker ids. AssemblyAI emits letters ("A", "B"),
+    and the diarization selector now writes AAI's word list to
+    ``call.word_data`` when AAI wins. Coercing "A" via ``int()`` raised
+    ``ValueError``, the except branch fell to 0, every word landed on speaker
+    0, and the transcript player rendered the whole call as one AGENT turn.
+    Speaker keys are now strings throughout; callers compare via ``str(spk)``.
     """
     if not words:
-        return 0
+        return "0"
 
-    bags: dict[int, list[str]] = {}
+    bags: dict[str, list[str]] = {}
     for w in words:
-        spk = int(w.get("speaker", 0) or 0)
-        bags.setdefault(spk, []).append(str(w.get("word", "")).lower())
+        raw = w.get("speaker")
+        if raw is None or raw == "":
+            continue
+        spk = str(raw)
+        if spk in {"UNK", "unknown"}:
+            continue
+        bags.setdefault(spk, []).append(
+            str(w.get("word") or w.get("text") or "").lower()
+        )
 
     if len(bags) < 2:
-        return next(iter(bags), 0)
+        return next(iter(bags), "0")
 
     agent_signals = (
         # Self-introductions and broker-side framing.
@@ -82,7 +98,7 @@ def _detect_agent_speaker(words: list[dict]) -> int:
         "pozitive", "bgl", "british gas lite",
     )
 
-    scores: dict[int, int] = {}
+    scores: dict[str, int] = {}
     for spk, tokens in bags.items():
         text = " ".join(tokens)
         scores[spk] = sum(1 for s in agent_signals if s in text)
@@ -99,6 +115,9 @@ def format_diarized_transcript(words: list[dict]) -> str:
     if not words:
         return ""
 
+    # Speaker keys are stringified so Deepgram int ids ("0"/"1") and
+    # AssemblyAI letters ("A"/"B") flow through the same comparison path.
+    # See _detect_agent_speaker for the 2026-05-18 generalisation.
     agent_speaker = _detect_agent_speaker(words)
 
     lines = []
@@ -107,8 +126,9 @@ def format_diarized_transcript(words: list[dict]) -> str:
     current_start = 0.0
 
     for word_info in words:
-        speaker = word_info.get("speaker", 0)
-        word = word_info.get("word", "")
+        raw = word_info.get("speaker")
+        speaker = "" if raw is None or raw == "" else str(raw)
+        word = word_info.get("word") or word_info.get("text") or ""
         start = word_info.get("start", 0.0)
 
         if speaker != current_speaker:

@@ -106,3 +106,85 @@ def test_compliant_tab_returns_passing_calls(test_db):
     assert r["category"] is None
     assert r["rejection_id"] is None
     assert r["call_id"] == call_pass.id
+
+
+def test_awaiting_review_deadline_state_filters_calls(test_db):
+    """2026-05-18 audit: ``deadline_state`` was a silent no-op on the
+    awaiting_review tab because the filter wiring lived only in
+    ``_apply_rejection_advanced``. Awaiting-review rows derive a deadline
+    from ``Call.completed_at + 2 days``; the matching predicate must now
+    narrow the result set across all four states.
+    """
+    cust = Customer(id=uuid.uuid4(), legal_name="Gamma Ltd", slug="gamma")
+    deal = CustomerDeal(
+        id=uuid.uuid4(),
+        customer_id=cust.id,
+        customer_name="Gamma Ltd",
+        supplier="E.ON Next",
+        status="open",
+    )
+    today = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
+    # Three calls with deadline = completed_at + 2 days landing in distinct
+    # states relative to "today".
+    overdue_call = Call(
+        id=str(uuid.uuid4()),
+        filename="overdue.mp3",
+        file_path="/tmp/o.mp3",
+        deal_id=deal.id,
+        agent_name="A",
+        status="completed",
+        # deadline = today - 5d + 2d = today - 3d → overdue
+        completed_at=today - timedelta(days=5),
+        score="20/26",
+    )
+    due_soon_call = Call(
+        id=str(uuid.uuid4()),
+        filename="due_soon.mp3",
+        file_path="/tmp/d.mp3",
+        deal_id=deal.id,
+        agent_name="B",
+        status="completed",
+        # deadline = today - 1d + 2d = today + 1d → due ≤3d
+        completed_at=today - timedelta(days=1),
+        score="20/26",
+    )
+    on_track_call = Call(
+        id=str(uuid.uuid4()),
+        filename="on_track.mp3",
+        file_path="/tmp/t.mp3",
+        deal_id=deal.id,
+        agent_name="C",
+        status="completed",
+        # deadline = today + 5d + 2d = today + 7d → still on track
+        completed_at=today + timedelta(days=5),
+        score="20/26",
+    )
+    test_db.add_all([cust, deal, overdue_call, due_soon_call, on_track_call])
+    test_db.commit()
+
+    # Sanity: no filter → all three rows.
+    assert len(build_tracker_rows(test_db, tab="awaiting_review")) == 3
+
+    # Overdue → only the call whose deadline is before today.
+    overdue_rows = build_tracker_rows(
+        test_db, tab="awaiting_review", deadline_state="overdue"
+    )
+    assert len(overdue_rows) == 1
+    assert overdue_rows[0]["call_id"] == overdue_call.id
+
+    # Due ≤3d → the call whose deadline is today..today+3.
+    due_3d_rows = build_tracker_rows(
+        test_db, tab="awaiting_review", deadline_state="due_3d"
+    )
+    due_3d_ids = {r["call_id"] for r in due_3d_rows}
+    assert due_soon_call.id in due_3d_ids
+    assert overdue_call.id not in due_3d_ids
+    assert on_track_call.id not in due_3d_ids
+
+    # On track → only the call whose deadline is past today+3 (or null).
+    on_track_rows = build_tracker_rows(
+        test_db, tab="awaiting_review", deadline_state="on_track"
+    )
+    on_track_ids = {r["call_id"] for r in on_track_rows}
+    assert on_track_call.id in on_track_ids
+    assert overdue_call.id not in on_track_ids

@@ -12,7 +12,7 @@ from typing import NamedTuple
 
 from sqlalchemy.orm import Session
 
-from app.analysis import _call_llm
+from app.analysis import _PII_TOKEN_RE, _call_llm
 from app.logger import log
 from app.models import Customer
 
@@ -193,6 +193,10 @@ async def detect_business_name(transcript: str) -> str | None:
     # Strip a "Business name:" prefix the model occasionally leaks.
     if name.lower().startswith("business name:"):
         name = name.split(":", 1)[1].strip().strip('"').strip()
+    # Strip PII redaction tokens — see analysis._strip_pii_tokens for the
+    # rationale. Both Deepgram and AssemblyAI emit bracketed markers like
+    # "[PERSON_NAME]" / "[date_1]" that the LLM sometimes captures verbatim.
+    name = _PII_TOKEN_RE.sub("", name).strip().strip(",.;:'\"-").strip()
     if not name or name == "Unknown":
         return None
     if _looks_like_person_name(name):
