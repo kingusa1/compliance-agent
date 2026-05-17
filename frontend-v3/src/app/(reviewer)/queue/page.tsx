@@ -731,10 +731,20 @@ export default function QueuePage() {
           <FilterChip
             active={filter === "today"}
             onClick={() => setFilter("today")}
-            count={reviewedTodayCount + inReviewCount}
+            count={reviewedTodayCount}
           >
             Reviewed
           </FilterChip>
+          {inReviewCount > 0 ? (
+            <FilterChip
+              active={false}
+              onClick={() => setFilter("all")}
+              count={inReviewCount}
+              title="Currently being reviewed (claimed but not yet submitted). Click to see them in the All tab."
+            >
+              Reviewing
+            </FilterChip>
+          ) : null}
         </div>
         <div style={{ flex: 1 }} />
         <div

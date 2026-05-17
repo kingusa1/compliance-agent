@@ -9,17 +9,20 @@ export function FilterChip({
   active,
   count,
   onClick,
+  title,
   children,
 }: {
   active?: boolean;
   count?: number | null;
   onClick?: () => void;
+  title?: string;
   children: ReactNode;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      title={title}
       style={{
         display: "inline-flex",
         alignItems: "center",
