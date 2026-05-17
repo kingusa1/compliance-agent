@@ -15,8 +15,30 @@ client = TestClient(app)
 # in commit `5708bcf` (audit fix). Without overriding the auth dep, every
 # request returns 401 instead of the asserted 202/422/404. Autouse fixture
 # because conftest now aggressively clears overrides after each test.
+#
+# Also seeds a matching Profile row so the audit_log INSERT (which has an
+# actor_id FK to profiles.id) succeeds. Without the Profile seed the
+# reanalyze call would 500 with a FK violation.
 @pytest.fixture(autouse=True)
 def _override_auth():
+    from app.database import SessionLocal
+    from app.models import Profile
+
+    db = SessionLocal()
+    try:
+        existing = db.query(Profile).filter_by(id="test-reviewer").first()
+        if not existing:
+            db.add(Profile(
+                id="test-reviewer",
+                email="test@compliance-agent.local",
+                name="Test Reviewer",
+                role="admin",
+                active=True,
+            ))
+            db.commit()
+    finally:
+        db.close()
+
     app.dependency_overrides[current_reviewer] = lambda: {
         "id": "test-reviewer",
         "email": "test@compliance-agent.local",
