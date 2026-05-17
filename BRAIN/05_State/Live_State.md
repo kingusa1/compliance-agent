@@ -1,8 +1,52 @@
 ---
 created: 2026-05-10
-updated: 2026-05-16
-tags: [state, live, ground-truth, audit-shipped, verdict-wired, system-prompt-installed, path3-handoff]
+updated: 2026-05-17
+tags: [state, live, ground-truth, ai-deal-matcher, opus-4-7, cascade-race-fixed, playwright-mcp-validated]
 ---
+
+# Live State — AI deal-matcher LIVE 2026-05-17 (afternoon)
+
+> 🟢 **2026-05-17 — Tip `e7b0850` on origin/main. Railway SUCCESS at e7b0850. Vercel `4Luia2kpz` aliased to mu, at sha `2ec612b` (upload-redirect fix). Last 4 commits are backend-only — no Vercel redeploy needed.**
+>
+> **5 commits this session:**
+> - `13dde9a → f7663d8` (rebased) — fix(upload): dashboard / tracker UploadModal always redirects to /calls/{id}
+> - `3abc1e9` — fix(pipeline): canonical customer_name writeback on merge (call now mirrors deal)
+> - `f7245d6` — feat(pipeline): **AI deal-matcher (Opus 4.7)** + leading-prefix name promotion
+> - `26eb4ff` — fix(pipeline): "Unknown" supplier treated as no-preference
+> - `e7b0850` — fix(pipeline): db.flush() before stub-delete to avoid cascade-SET-NULL race
+>
+> **AI deal-matcher architecture (NEW module `backend/app/deal_matcher.py`):**
+> - Called from `_maybe_merge_into_existing_deal` (now async) when heuristics return no match AND caller passed `ai_transcript_excerpt`
+> - Opus 4.7 sees: target business name + supplier + transcript excerpt (700 word cap) + top-8 supplier-filtered candidates
+> - Returns matched `deal_id` or None; in-memory cache by (target, sorted candidate ids) to dedupe retries
+> - Only fires in the second-pass merge (after `detect_business_name`); first-pass merge at upload stays heuristic-only
+>
+> **Heuristic fast-path before AI:**
+> 1. Exact (post-normalise) match → score 1.0
+> 2. Substring containment either direction → 0.95
+> 3. Trailing-2-tokens match → floor 0.40
+> 4. Phonetic Metaphone or Jaccard ≥ 0.5 → floor 0.60
+> 5. SequenceMatcher ≥ 0.80
+> 6. **NEW**: Single-token candidate that's a leading-word prefix of multi-token target → promote deal name + Customer.legal_name
+> 7. **NEW**: AI tiebreaker if all above miss
+>
+> **Validation evidence (Playwright MCP, captured 2026-05-17 afternoon):**
+> - 3 Bob's Glazing files uploaded one-by-one → all 3 redirected to /calls/{id}, collapsed into 1 deal "Bob's Glazing Limited" with 3 calls ✓
+> - 3 Josephs Estate Agents files (Leadgen, LOA, Verbal) → after AI matcher + promotion + Leadgen reanalyze (+ one manual backfill of the cascade-race victim) → 1 customer "Joseph Estate Agents Limited", 1 deal, 3 calls ✓
+> - `/customers` page final: 5 customers, no orphaned "Mohammed Mugrabi" or "Joseph" person-named entries
+>
+> **Prod data backfill done this session:**
+> - 7 rows on `calls.customer_name` aligned to canonical deal name (Bob, Singh, Gurpreet Singh, Jay Shree, Jayanthi Swaminathan, Frank, Alister → Bob's Glazing / Clifton Rest Home / Awais)
+> - 1 row (Leadgen Joseph) re-linked to "Joseph Estate Agents Limited" deal after the cascade-race bug nulled its deal_id
+>
+> **Tests:**
+> - 9/9 merge-area tests pass (`tests/test_pipeline_merge.py` + `tests/test_deal_resolution.py`)
+> - 4 new tests added: prefix-promote, no-promote-when-not-prefix, AI-fires-on-miss, AI-skip-when-no-excerpt
+> - Pre-existing Windows teardown PermissionError flakes on temp DB cleanup — harmless, BRAIN already documents
+>
+> Resume guide: [[../04_Sessions/2026-05-17_Session_ai_deal_matcher]].
+>
+> ---
 
 # Live State — Realtime PROVEN end-to-end + upload-redirect fixed 2026-05-17
 

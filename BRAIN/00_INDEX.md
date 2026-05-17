@@ -24,9 +24,9 @@ tags: [index, brain]
 
 ## 🚨 Read FIRST when resuming a session
 
-**As of 2026-05-17 (full system fix + realtime e2e proof): Realtime is **PROVEN end-to-end** — `postgres_changes UPDATE` events on `calls` reach the browser WebSocket. Sync from HTTP commit → event arrival ~800ms. The user-reported "upload doesn't go to process screen" bug is FIXED: `/dashboard` UploadModal `onSuccess` was suppressing the default redirect. Full audit of all 8 admin pages passes — zero error pages. See [[04_Sessions/2026-05-17_Session_upload_redirect_and_realtime_proof]].**
+**As of 2026-05-17 (afternoon): AI deal-matcher LIVE on backend at tip `e7b0850`. Opus 4.7 judge backstops the heuristic merge when the upload's business name doesn't fuzzy-match any existing deal. Plus 4 supporting fixes (customer_name writeback, leading-prefix promotion, "Unknown" supplier normalisation, cascade-SET-NULL race). Validated end-to-end via Playwright MCP: 3 Joseph's Estate Agents files (Leadgen + LOA + Verbal) correctly collapsed to one deal "Joseph Estate Agents Limited" with 3 calls. See [[04_Sessions/2026-05-17_Session_ai_deal_matcher]].**
 
-**Previous (closed):** [[04_Sessions/2026-05-17_Session_path3_closeout]] · [[04_Sessions/2026-05-16_Session_path3_handoff]]
+**Earlier today (closed):** [[04_Sessions/2026-05-17_Session_upload_redirect_and_realtime_proof]] · [[04_Sessions/2026-05-17_Session_path3_closeout]] · [[04_Sessions/2026-05-16_Session_path3_handoff]]
 
 **Prior wave (still ground-truth on deploy):** tip `7ca50ec` on origin/main. Path 3 Realtime ACTIVATED (`NEXT_PUBLIC_USE_REALTIME=1` baked into Vercel `dpl_4dBUomuW65qCn4N5Dom5AG4GbMVs`). 6-item perf wave shipped autonomously. ONE BLOCKER: Supabase Realtime publication may not have applied yet — see action 1 below.
 
