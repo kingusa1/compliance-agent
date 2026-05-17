@@ -103,22 +103,26 @@ export function TranscriptAgreementChip({ agreement, diarization }: Props) {
           ? "AssemblyAI transcript missing"
           : "Cross-validation skipped";
     return (
-      <div
-        style={{
-          fontSize: 11,
-          padding: "4px 10px",
-          borderRadius: 999,
-          background: "rgba(120,120,120,0.18)",
-          color: "var(--text-muted)",
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 6,
-        }}
-        title="Cross-validation needs both Deepgram and AssemblyAI transcripts"
-        data-testid="transcript-agreement-skipped"
-      >
-        <span>ℹ</span>
-        <span>{reasonLabel}</span>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div
+          style={{
+            fontSize: 11,
+            padding: "4px 10px",
+            borderRadius: 999,
+            background: "rgba(120,120,120,0.18)",
+            color: "var(--text-muted)",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            width: "fit-content",
+          }}
+          title="Cross-validation needs both Deepgram and AssemblyAI transcripts"
+          data-testid="transcript-agreement-skipped"
+        >
+          <span>ℹ</span>
+          <span>{reasonLabel}</span>
+        </div>
+        {diarization ? <DiarizationChip diarization={diarization} /> : null}
       </div>
     );
   }
