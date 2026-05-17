@@ -63,6 +63,7 @@ Revises: 2026_05_16_hot_indexes
 
 from __future__ import annotations
 
+import sqlalchemy as sa
 from alembic import op
 
 
@@ -91,6 +92,28 @@ def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
         # SQLite + other test envs don't have RLS or supabase_realtime.
+        return
+
+    # CI runs against vanilla Postgres without Supabase's ``auth`` schema
+    # or ``supabase_realtime`` publication. The function body below
+    # references ``auth.uid()`` and the publication ADD statements
+    # require ``supabase_realtime`` to exist — both will hard-fail on
+    # plain Postgres. Skip the entire upgrade when those Supabase
+    # primitives aren't present so CI (and self-hosted vanilla-Postgres
+    # deployments) can still apply ``alembic upgrade head`` cleanly.
+    has_auth_schema = bind.execute(
+        sa.text(
+            "SELECT 1 FROM information_schema.schemata WHERE schema_name = 'auth'"
+        )
+    ).first() is not None
+    has_realtime_pub = bind.execute(
+        sa.text(
+            "SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime'"
+        )
+    ).first() is not None
+    if not has_auth_schema or not has_realtime_pub:
+        # Not on Supabase — RLS + realtime are runtime concerns of the
+        # managed Postgres only. Bail gracefully.
         return
 
     # ── Helper function: is_active_reviewer() ──────────────────────
