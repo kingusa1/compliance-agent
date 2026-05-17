@@ -1,8 +1,59 @@
 ---
 created: 2026-05-10
 updated: 2026-05-18
-tags: [state, live, ground-truth, public-repo, security-cleanup, two-layer-validation, ci-unblocked]
+tags: [state, live, ground-truth, aai-active, ci-both-workflows-green, test-isolation-fixed]
 ---
+
+# Live State — CI BOTH workflows GREEN 2026-05-18 (close-out)
+
+> 🟢 **2026-05-18 — Tip `edfc746` on origin/main. CI `coverage` + `test` workflows BOTH green for the first time this session. AAI-activated two-layer transcript validation still operational on prod.**
+>
+> **Commits this wave (7 code + 1 Railway env var):**
+> - `796bd06` fix(queue): Reviewed tab badge no longer sums in_review (badge equals list); new "Reviewing" chip surfaces in_review separately
+> - (Railway) `ASSEMBLYAI_API_KEY` set + service redeployed
+> - `8f4c3b2` fix(tests): conftest aggressive-clear of `app.dependency_overrides` (root cause of 25+ pre-existing pytest failures that surfaced once Actions unblocked)
+> - `9b8d5eb` fix(tests): test_calls_v2_shape + test_replay autouse fixtures for `current_reviewer` override; conftest `invalidate_profile_cache` after each test
+> - `c72aadc` fix(tests): seed test-reviewer Profile in test_replay so audit_log FK passes
+> - `edfc746` fix(test): wrap ReanalyzeButton tests in QueryClientProvider
+>
+> **Validated on prod (Playwright MCP):**
+> - Two-layer chips render correctly: amber "Transcription divergence: 82% agreement (floor 85%) DG 848 · AAI 877 ▼" + green "🗣 Speakers from assemblyai (DG 1 · AAI 2)"
+> - Queue tabs: `Pending: 10`, `Reviewed: 0` (matches reviewed_today=0), `Reviewing: 2` (new chip for in_review)
+> - Call c9b3f559 after AAI retry: 2 speakers diarized (vs 1 before), status forced to `needs_manual_review` due to <85% agreement
+>
+> **🚨 Still recommended user actions (defence-in-depth):**
+> - Rotate OpenRouter key at https://openrouter.ai/settings/keys (leaked in pre-public history)
+> - Rotate AssemblyAI key at https://www.assemblyai.com/app/account/api-keys (passed through chat history this session)
+>
+> Resume guide: [[../04_Sessions/2026-05-18_Session_aai_activation_queue_fix_ci_green]].
+>
+> ---
+
+# Live State — AAI activated end-to-end + Queue Reviewed badge fixed 2026-05-18 (earlier)
+
+> 🟢 **2026-05-18 — Tip `796bd06` on origin/main. ASSEMBLYAI_API_KEY now live on Railway. Two-layer transcript validation FULL END-TO-END operational.**
+>
+> **What flipped this session:**
+> - User set ASSEMBLYAI_API_KEY on Railway (key delivered via chat — should be rotated post-session per security best-practice).
+> - Triggered retry on call `c9b3f559`. Pipeline ran both Deepgram + AssemblyAI in parallel. AAI returned a transcript with 2 distinct speakers (DG only got 1 → diarization selector picked AAI). Cross-validation fired at **82.38% agreement** (below 0.85 floor) → status forced to `needs_manual_review`.
+> - Chip went from grey "AssemblyAI transcript missing" → amber **"Transcription divergence: 82% agreement (floor 85%) DG 848 · AAI 877 ▼"** with the side-by-side disagreement drawer working.
+> - Diarization chip went from amber-fallback → green **"🗣 Speakers from assemblyai (DG 1 · AAI 2)"**.
+> - The user-reported "transcript only showed the agent, didn't show the customer" bug is FIXED — the player now renders 2 speaker turns.
+>
+> **Queue Reviewed badge mismatch fix (`796bd06`):**
+> - Reviewed chip badge no longer sums `reviewed_today + in_review` (was inflating by claimed-but-not-submitted count).
+> - New "Reviewing" chip surfaces `in_review > 0` count separately (clicks routes to All tab so reviewers can see what's in progress).
+> - Verified live: `Reviewed: 0` ← matches list length 0, `Reviewing: 2` ← matches metrics.in_review 2.
+>
+> **Disagreement-sample insights from the first real cross-validation:**
+> - PII redaction strategies differ — Deepgram redacts to `date_1`/`person name`/`money_3`/`time_1`; AssemblyAI redacts to `[PERSON_NAME]` or keeps the raw spoken text. This alone accounts for most of the 18% disagreement.
+> - AssemblyAI often produces cleaner spoken-text where Deepgram produces nonsense ("434 open mpan" vs "money 3 over lumpia"; "past 11 am" vs "plus time 1"). Worth a future tuning pass to consider AAI's text as the downstream primary when both engines return.
+>
+> **Still recommended (defence-in-depth):** rotate the OpenRouter key (leaked in original history) AND the AssemblyAI key (delivered via chat). Both at https://openrouter.ai/settings/keys and https://www.assemblyai.com/app/account/api-keys.
+>
+> Resume guide: [[../04_Sessions/2026-05-18_Session_aai_activation_queue_fix]].
+>
+> ---
 
 # Live State — Repo public + history scrubbed + CI unblocked 2026-05-18
 
