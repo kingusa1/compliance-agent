@@ -24,7 +24,8 @@ def db(test_db) -> Session:
     return test_db
 
 
-def test_attach_to_existing_open_deal(db: Session):
+@pytest.mark.asyncio
+async def test_attach_to_existing_open_deal(db: Session):
     cust = Customer(id=uuid.uuid4(), legal_name="Acme Ltd", slug="acme")
     open_deal = CustomerDeal(
         id=uuid.uuid4(),
@@ -55,7 +56,7 @@ def test_attach_to_existing_open_deal(db: Session):
     db.add_all([cust, open_deal, stub_deal, call])
     db.commit()
 
-    _maybe_merge_into_existing_deal(call, db)
+    await _maybe_merge_into_existing_deal(call, db)
     db.commit()
     db.refresh(call)
     assert call.deal_id == open_deal.id

@@ -439,11 +439,12 @@ async def _step_transcribe(call_id: str, audio_path: str, db: Session) -> dict:
     return {"transcript": transcript, "source": source}
 
 
-def _maybe_merge_into_existing_deal(
+async def _maybe_merge_into_existing_deal(
     call: Call,
     db: Session,
     *,
     override_customer_name: str | None = None,
+    ai_transcript_excerpt: str | None = None,
 ) -> None:
     """After detect_metadata writes detected_supplier + customer_name,
     look for an existing open Deal under the same customer with the same
@@ -606,6 +607,64 @@ def _maybe_merge_into_existing_deal(
                     f"target={target_norm!r} cand={cand_norm!r}"
                 )
 
+    # ── AI tiebreaker ────────────────────────────────────────────────
+    # When the heuristic loop returns no match BUT we still have
+    # candidates with a non-trivial similarity (e.g. "Joseph" vs
+    # "Josephs Estate Agents Ltd" before the prefix-promote signal
+    # existed, or transcription drift like "St Peters" vs
+    # "St Peter's Benfleet Church"), ask Opus 4.7 to judge.
+    #
+    # Gated on: caller opted in by passing ai_transcript_excerpt (so the
+    # cheap first-pass at upload time doesn't burn an LLM call). The
+    # second-pass merge in _step_detect_metadata sets this.
+    if best is None and ai_transcript_excerpt is not None:
+        try:
+            from app.deal_matcher import DealCandidate, ai_match_deal
+            ai_candidates: list[DealCandidate] = []
+            for cand in candidates:
+                cand_supplier = (cand.supplier or "").strip()
+                # Same supplier-mismatch filter as the main loop above —
+                # don't ask the AI to choose between deals with different
+                # suppliers.
+                if cand_supplier and cand_supplier != detected_supplier:
+                    continue
+                cand_norm = _normalise_for_compare(cand.customer_name or "")
+                if not cand_norm:
+                    continue
+                # Skip placeholder stubs — they're not real deal names.
+                if (cand.customer_name or "").startswith("(auto-detect pending"):
+                    continue
+                sim = SequenceMatcher(None, target_norm, cand_norm).ratio()
+                ai_candidates.append(DealCandidate(
+                    deal_id=str(cand.id),
+                    customer_name=cand.customer_name or "",
+                    supplier=cand.supplier,
+                    similarity=sim,
+                ))
+            if ai_candidates:
+                ai_match_id = await ai_match_deal(
+                    target_name=detected_customer,
+                    target_supplier=detected_supplier or None,
+                    transcript_excerpt=ai_transcript_excerpt,
+                    candidates=ai_candidates,
+                )
+                if ai_match_id:
+                    ai_best = next(
+                        (c for c in candidates if str(c.id) == ai_match_id),
+                        None,
+                    )
+                    if ai_best is not None:
+                        log.info(
+                            f"\U0001f916 AI_DEAL_MERGE call_id={call.id} "
+                            f"stub={stub.id} → {ai_best.id} "
+                            f"target={detected_customer!r} "
+                            f"match={ai_best.customer_name!r}"
+                        )
+                        best = ai_best
+                        best_score = 0.99  # AI confidence proxy
+        except Exception as _ai_e:
+            log.warning(f"AI deal-merge tiebreaker skipped: {_ai_e}")
+
     if best is None:
         return
 
@@ -615,6 +674,60 @@ def _maybe_merge_into_existing_deal(
         f"target={detected_customer!r} match={best.customer_name!r}"
     )
     call.deal_id = best.id
+
+    # 2026-05-17: deal-name promotion. The first call of a deal sometimes
+    # only spoke the person's name in the audio ("Joseph", not "Josephs
+    # Estate Agents Ltd"). The stub-rename branch then named the deal
+    # after that person. When a later call (LOA, Verbal) finally surfaces
+    # the full business name, the substring-match merge fires and we
+    # land on the person-named deal. Promote the deal's customer_name
+    # (and the linked Customer.legal_name when that matches the short
+    # form) to the more specific business name so the /deals + /customers
+    # + Recent Calls UIs all upgrade together.
+    cand_canonical_norm = _normalise_for_compare(best.customer_name or "")
+
+    def _content_tokens(s: str) -> list[str]:
+        return [t for t in s.split() if t not in _STOP_TOKENS]
+
+    cand_tokens = _content_tokens(cand_canonical_norm)
+    target_tokens = _content_tokens(target_norm)
+    # Promote when the candidate is a strict prefix (single-token or
+    # leading-word) of a more specific target. Conservative: require the
+    # candidate to be the FIRST whole word of the target, not just any
+    # substring match. That blocks weird cases like "Apple" promoting to
+    # "Pineapple Co" while still catching the "Joseph" → "Josephs Estate
+    # Agents Ltd" pattern (post-normalisation, "joseph" is a leading-word
+    # prefix of "josephs estate agents").
+    is_strict_prefix = (
+        cand_canonical_norm
+        and target_norm != cand_canonical_norm
+        and (
+            target_norm.startswith(cand_canonical_norm + " ")
+            or (
+                len(cand_tokens) == 1
+                and target_tokens
+                and target_tokens[0].startswith(cand_tokens[0])
+            )
+        )
+    )
+    should_promote = (
+        detected_customer
+        and len(target_tokens) > len(cand_tokens)
+        and is_strict_prefix
+    )
+    if should_promote:
+        log.info(
+            f"\U0001f4c8 DEAL_NAME_PROMOTE deal={best.id} "
+            f"{best.customer_name!r} → {detected_customer!r}"
+        )
+        old_name = (best.customer_name or "").strip()
+        best.customer_name = detected_customer
+        if best.customer_id:
+            from app.models import Customer as _Cust
+            cust = db.query(_Cust).filter_by(id=best.customer_id).first()
+            if cust and (cust.legal_name or "").strip() == old_name:
+                cust.legal_name = detected_customer
+
     # 2026-05-17: align call.customer_name with the canonical deal name.
     # The per-call LLM detector reads the transcript and often surfaces a
     # PERSON name (the signatory, witness, or supervisor — e.g. "Singh" on
@@ -902,7 +1015,7 @@ async def _step_detect_metadata(
     # failure never breaks the pipeline; worst-case the stub Deal stays
     # and a human can merge later from /deals.
     try:
-        _maybe_merge_into_existing_deal(call, db)
+        await _maybe_merge_into_existing_deal(call, db)
     except Exception as e:
         log.warning(f"deal merge skipped: {e}")
 
@@ -938,8 +1051,16 @@ async def _step_detect_metadata(
             # ratio across transcripts.
             if business_name and call.deal_id:
                 try:
-                    _maybe_merge_into_existing_deal(
-                        call, db, override_customer_name=business_name
+                    # Pass the transcript to enable AI tiebreaker when
+                    # heuristics return no match. The AI judge sees the
+                    # detected business name + transcript context +
+                    # candidate deal names and decides whether any
+                    # existing deal is the same physical business.
+                    await _maybe_merge_into_existing_deal(
+                        call,
+                        db,
+                        override_customer_name=business_name,
+                        ai_transcript_excerpt=transcript,
                     )
                     # Re-load the (possibly relocated) deal so the rename
                     # branch below targets the right row.
