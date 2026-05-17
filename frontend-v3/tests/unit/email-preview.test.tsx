@@ -140,8 +140,9 @@ describe("buildEmailPreview", () => {
     expect(out.body).toContain("Hi team,"); // null agentName fallback
     expect(out.body).toContain("Your call (abc-123 for customer)"); // null fallbacks
     expect(out.subject).toBe("Compliance review — abc-123 — REVIEW");
-    // null reviewerEmail falls back to the default contact
-    expect(out.body).toContain("Reviewer: compliance@xaia.ae");
+    // 2026-05-16 (a12b951): hardcoded compliance@xaia.ae placeholder
+    // removed; null reviewerEmail now falls back to "unavailable".
+    expect(out.body).toContain("Reviewer: (reviewer email unavailable)");
   });
 
   it("emits 'None — all checkpoints passed.' when no per-CP issues", () => {
