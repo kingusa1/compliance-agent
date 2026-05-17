@@ -135,6 +135,17 @@ def _reset_dependency_overrides_after_test():
     yield
     from app.main import app as _app
     _app.dependency_overrides.clear()
+    # ``profile_cache._PROFILE_CACHE`` is module-level and persists across
+    # tests. Without invalidation, the first test to call
+    # ``get_profile_names`` populates the cache from its private SQLite;
+    # subsequent tests that re-seed Profile rows in their own SQLite see
+    # the cache return stale data → e.g. test_queue leaderboard returns
+    # IDs ("mo") instead of names ("Mo Ibrahim").
+    try:
+        from app.profile_cache import invalidate_profile_cache
+        invalidate_profile_cache()
+    except Exception:
+        pass
 
 
 @pytest.fixture

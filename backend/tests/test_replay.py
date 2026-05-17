@@ -1,12 +1,28 @@
 """Integration: POST /calls/{id}/reanalyze emits CALL_REANALYZE and writes audit row."""
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.reviewers import current_reviewer
 
 
 client = TestClient(app)
+
+
+# 2026-05-18: /api/calls/{id}/reanalyze gained ``Depends(current_reviewer)``
+# in commit `5708bcf` (audit fix). Without overriding the auth dep, every
+# request returns 401 instead of the asserted 202/422/404. Autouse fixture
+# because conftest now aggressively clears overrides after each test.
+@pytest.fixture(autouse=True)
+def _override_auth():
+    app.dependency_overrides[current_reviewer] = lambda: {
+        "id": "test-reviewer",
+        "email": "test@compliance-agent.local",
+        "role": "admin",
+    }
+    yield
 
 
 def test_reanalyze_returns_202_when_call_has_transcript(db_session_with_call_with_transcript):

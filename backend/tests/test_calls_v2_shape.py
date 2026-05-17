@@ -4,6 +4,7 @@ Uses a real call inserted via SQLAlchemy directly (fast, deterministic) instead
 of the full upload pipeline.
 """
 import uuid
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -11,15 +12,23 @@ from app.database import SessionLocal
 from app.models import Call, CustomerDeal
 from app.reviewers import current_reviewer
 
+client = TestClient(app)
+
+
 # Audit 2026-05-16 C7: GET /api/calls/{id} now requires auth (the endpoint
 # embeds a signed audio URL). Override the dep so these schema-shape tests
 # assert against 200/404 instead of the auth gate's 401.
-app.dependency_overrides[current_reviewer] = lambda: {
-    "id": "test-reviewer",
-    "email": "test@compliance-agent.local",
-    "role": "admin",
-}
-client = TestClient(app)
+# 2026-05-18: moved from module-load to autouse fixture so the conftest
+# aggressive-clear of dependency_overrides between tests doesn't strip
+# this override before the next test runs.
+@pytest.fixture(autouse=True)
+def _override_auth():
+    app.dependency_overrides[current_reviewer] = lambda: {
+        "id": "test-reviewer",
+        "email": "test@compliance-agent.local",
+        "role": "admin",
+    }
+    yield
 
 
 def _make_deal(customer_name: str = "ShapeCo") -> str:
