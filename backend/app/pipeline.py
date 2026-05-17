@@ -615,6 +615,17 @@ def _maybe_merge_into_existing_deal(
         f"target={detected_customer!r} match={best.customer_name!r}"
     )
     call.deal_id = best.id
+    # 2026-05-17: align call.customer_name with the canonical deal name.
+    # The per-call LLM detector reads the transcript and often surfaces a
+    # PERSON name (the signatory, witness, or supervisor — e.g. "Singh" on
+    # an LOA signed by Gurpreet Singh on behalf of Bob's Glazing Limited),
+    # which is wrong for the call-level "customer" display. Post-merge,
+    # the deal record is the source of truth for who this call is for, so
+    # propagate that name back to the Call row. Skip auto-pending stub
+    # labels — those aren't a name, they're a placeholder.
+    canonical_name = (best.customer_name or "").strip()
+    if canonical_name and not canonical_name.startswith("(auto-detect pending"):
+        call.customer_name = canonical_name
     # Stub had only this one call; delete it. If the stub still has
     # other calls attached we leave it alone — orphan Deals are safer
     # than accidentally clobbering an unrelated workflow.
