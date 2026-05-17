@@ -171,6 +171,12 @@ class CallResponse(BaseModel):
     # /audio-url endpoint in that case.
     audio_url: Optional[str] = None
 
+    # ``meta`` is declared BEFORE the derived fields below so the
+    # before-validators on ``transcript_agreement`` and ``diarization``
+    # can read ``info.data["meta"]`` — Pydantic v2 only populates
+    # ``info.data`` with fields validated in declaration order.
+    meta: Optional[dict] = None
+
     # 2026-05-17 two-layer validation — Deepgram vs AssemblyAI
     # agreement report. Surfaced on the call-detail Transcript tab as
     # the divergence chip + side-by-side comparison drawer. Populated
@@ -205,8 +211,6 @@ class CallResponse(BaseModel):
         if isinstance(meta, dict):
             return meta.get("diarization")
         return None
-
-    meta: Optional[dict] = None
 
     @field_validator("risk_tags", mode="before")
     @classmethod

@@ -311,8 +311,15 @@ async def _step_transcribe(call_id: str, audio_path: str, db: Session) -> dict:
     log.info(f"\U0001f399️ TRANSCRIBE start call_id={call_id} enabled={sorted(enabled)}")
     t0 = time.time()
 
+    # AAI failure sentinel — surfaced on call.meta so the divergence
+    # chip can say "AAI down, two-layer validation skipped" instead
+    # of silently returning a single-engine transcript. Reviewers
+    # otherwise have no way to know AAI failed on their call.
+    _aai_err_holder: dict[str, str] = {}
+
     async def _aai():
         if "assemblyai" not in enabled:
+            _aai_err_holder["reason"] = "disabled"
             return None
         try:
             # L9: supplier is detected AFTER transcribe (step 3), so we
@@ -320,7 +327,9 @@ async def _step_transcribe(call_id: str, audio_path: str, db: Session) -> dict:
             supplier_hint = None
             return await transcribe_audio_assemblyai(audio_path, supplier_hint=supplier_hint)
         except Exception as e:
-            log.warning(f"⚠️ ASSEMBLYAI failed: {type(e).__name__}: {e}")
+            err_msg = f"{type(e).__name__}: {e}"
+            log.warning(f"⚠️ ASSEMBLYAI failed: {err_msg}")
+            _aai_err_holder["reason"] = err_msg[:300]
             return None
 
     async def _dg():
@@ -472,6 +481,7 @@ async def _step_transcribe(call_id: str, audio_path: str, db: Session) -> dict:
                 "deepgram_speakers": dg_spk,
                 "assemblyai_speakers": aai_spk,
                 "fallback": diarization_source.endswith("single_speaker"),
+                "aai_error": _aai_err_holder.get("reason"),
             }
             call.meta = _meta
             if diarization_source.endswith("single_speaker"):
