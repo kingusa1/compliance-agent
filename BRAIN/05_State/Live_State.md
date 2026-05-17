@@ -1,8 +1,61 @@
 ---
 created: 2026-05-10
-updated: 2026-05-17
-tags: [state, live, ground-truth, ai-deal-matcher, opus-4-7, cascade-race-fixed, playwright-mcp-validated]
+updated: 2026-05-18
+tags: [state, live, ground-truth, two-layer-validation, diarization-fallback, opus-4-7, playwright-mcp-validated]
 ---
+
+# Live State — Two-layer DG/AAI validation LIVE 2026-05-17 → 2026-05-18 (overnight)
+
+> 🟢 **2026-05-17 evening → 2026-05-18 — Tip `935e032` on origin/main. Railway + Vercel both READY. Two-layer Deepgram/AssemblyAI transcript validation + diarization fallback shipped end-to-end + browser-verified on prod.**
+>
+> **4 commits this wave (all authored as `mohamedhisham735@gmail.com`):**
+> - `ced0662` feat(transcripts): two-layer DG/AAI validation + diarization fallback + metadata-edit hardening
+> - `f466a4c` fix(transcripts): hydrate from call.meta + capture AAI error sentinel
+> - `215ee56` fix(schemas): model_validator(after) replaces field_validator(before) for ORM-JSONB derivation
+> - `935e032` fix(ui): render diarization chip alongside skipped chip
+>
+> **What's live:**
+> - `app/transcript_cross_validation.py` — Deepgram vs AssemblyAI agreement on every upload via `_step_transcribe`. Floor 0.85 (env-configurable). Filler-aware tokenisation, 8 disagreement-window samples max, realtime publish on `below_floor`.
+> - Diarization selector — picks the engine with ≥2 distinct speakers; AAI ties to AAI; both-collapsed-to-one logs `DIARIZATION_FALLBACK` and stamps `call.meta["diarization"].fallback=true`.
+> - `_step_score` forces `needs_manual_review` when agreement is below floor (gated by `TRANSCRIPT_DIVERGENCE_FORCES_REVIEW=true` default).
+> - Admin endpoints: `GET /api/admin/transcript-agreement-stats` + `POST /api/admin/recompute-transcript-agreement`.
+> - Frontend chip on call detail — green / amber-with-drawer / grey-skipped + diarization fallback chip side-by-side. Both render correctly on prod (Playwright verified).
+>
+> **Edit-metadata hardening (bonus in `ced0662`):**
+> - Backend Pydantic length caps (200/120/4000) + whitespace collapse on customer_name/agent_name.
+> - Route-level 422 shrink-guard when reviewer would save a strict-prefix of the current canonical (Awais Mustafa Ta Charles Palace → Awais).
+>
+> ---
+>
+> ## 🚨 USER ACTION REQUIRED — `ASSEMBLYAI_API_KEY` not set on Railway
+>
+> Cross-validation is shipped + live, but Playwright validation against
+> prod call `c9b3f559` revealed AAI is failing on every call:
+>
+> ```
+> "aai_error": "ValueError: ASSEMBLYAI_API_KEY not set"
+> ```
+>
+> This is why the user's "Joseph Verbal" screenshot shows the whole
+> transcript as one AGENT turn — Deepgram's diarization collapsed all
+> 848 words to speaker 0, and there's no second engine to cross-check.
+>
+> **Fix:**
+> ```
+> railway variables --set "ASSEMBLYAI_API_KEY=<from-AAI-dashboard>"
+> ```
+> Or set in Railway dashboard → Service → Variables. Verify on next
+> upload that `assemblyai_transcript` is populated.
+>
+> Once AAI is wired, optionally backfill historical calls:
+> ```
+> curl -X POST -H "X-Admin-Key: <admin>" \
+>   "https://compliance-agent-production-690e.up.railway.app/api/admin/recompute-transcript-agreement?limit=100"
+> ```
+>
+> Resume guide: [[../04_Sessions/2026-05-17_Session_two_layer_transcript_validation]].
+>
+> ---
 
 # Live State — AI deal-matcher LIVE 2026-05-17 (afternoon)
 

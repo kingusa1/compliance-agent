@@ -24,7 +24,9 @@ tags: [index, brain]
 
 ## 🚨 Read FIRST when resuming a session
 
-**As of 2026-05-17 (afternoon): AI deal-matcher LIVE on backend at tip `e7b0850`. Opus 4.7 judge backstops the heuristic merge when the upload's business name doesn't fuzzy-match any existing deal. Plus 4 supporting fixes (customer_name writeback, leading-prefix promotion, "Unknown" supplier normalisation, cascade-SET-NULL race). Validated end-to-end via Playwright MCP: 3 Joseph's Estate Agents files (Leadgen + LOA + Verbal) correctly collapsed to one deal "Joseph Estate Agents Limited" with 3 calls. See [[04_Sessions/2026-05-17_Session_ai_deal_matcher]].**
+**As of 2026-05-18 (early morning): Two-layer Deepgram/AssemblyAI transcript validation + diarization fallback shipped to prod at tip `935e032`. Cross-validation module (`app/transcript_cross_validation.py`) + pipeline wire-up + chip on call detail + admin observability endpoints. PLUS browser-verified discovery: AAI is failing in prod with `ASSEMBLYAI_API_KEY not set` — set the env var on Railway and AAI starts producing transcripts. See [[04_Sessions/2026-05-17_Session_two_layer_transcript_validation]]. Edit-metadata hardening (Pydantic length caps + 422 shrink guard) bundled in same wave.**
+
+**Earlier 2026-05-17 (afternoon): AI deal-matcher LIVE on backend at tip `e7b0850`. Opus 4.7 judge backstops the heuristic merge when the upload's business name doesn't fuzzy-match any existing deal. Plus 4 supporting fixes (customer_name writeback, leading-prefix promotion, "Unknown" supplier normalisation, cascade-SET-NULL race). Validated end-to-end via Playwright MCP: 3 Joseph's Estate Agents files (Leadgen + LOA + Verbal) correctly collapsed to one deal "Joseph Estate Agents Limited" with 3 calls. See [[04_Sessions/2026-05-17_Session_ai_deal_matcher]].**
 
 **Earlier today (closed):** [[04_Sessions/2026-05-17_Session_upload_redirect_and_realtime_proof]] · [[04_Sessions/2026-05-17_Session_path3_closeout]] · [[04_Sessions/2026-05-16_Session_path3_handoff]]
 
