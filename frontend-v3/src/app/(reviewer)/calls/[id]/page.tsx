@@ -55,10 +55,11 @@ import { Waveform } from "@/components/design/Waveform";
 import { useCallEvents } from "@/lib/hooks/useCallEvents";
 import { CheckpointCard, parseCheckpointResults, type CheckpointVerdict } from "./CheckpointCard";
 import { TranscriptPlayer, type WordData } from "./TranscriptPlayer";
-import {
-  TranscriptAgreementChip,
-  type TranscriptAgreement,
-} from "./TranscriptAgreementChip";
+// 2026-05-18: TranscriptAgreementChip + diarization-fallback chip removed
+// per user request. The two chips ("Transcripts agree (90%)" and "Speakers
+// from <engine>") were visual noise; the underlying two-layer DG/AAI
+// cross-validation still runs and is observable via the admin endpoints
+// (`/api/admin/transcript-agreement-stats`).
 import { PricingMismatchBanner } from "./PricingMismatchBanner";
 import { ProcessingStepper } from "./ProcessingStepper";
 import { VerdictTab } from "./VerdictTab";
@@ -1400,16 +1401,8 @@ export default function CallDetailPage({
                 <PipelineTimeline call={c as never} />
               </div>
             ) : null}
-            {c?.transcript_agreement || c?.diarization ? (
-              <div style={{ padding: "0 16px 12px" }}>
-                <TranscriptAgreementChip
-                  agreement={
-                    (c.transcript_agreement ?? null) as unknown as TranscriptAgreement | null
-                  }
-                  diarization={c.diarization ?? null}
-                />
-              </div>
-            ) : null}
+            {/* 2026-05-18: transcript-agreement + diarization chips removed
+                from the reviewer surface per user request. */}
             {wordsForPlayer.length > 0 ? (
               <TranscriptPlayer
                 words={wordsForPlayer}

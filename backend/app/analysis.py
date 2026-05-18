@@ -560,8 +560,65 @@ async def _call_gemini(prompt: str, timeout: float) -> str:
     return content
 
 
+# 2026-05-18 Westbury audit: ASR/Deepgram occasionally drops the dot/space
+# in multi-word supplier names ("eonext" / "britishgas") and the LLM returns
+# "Unknown" even when the broker clearly named the target supplier nearby.
+# A deterministic regex pre-pass catches the unambiguous cases (broker target
+# context: "on behalf of <X>", "<X> energy supply", "agreed with <X>")
+# before we spend a full Opus call. More specific patterns first so
+# "e.on next" beats "e.on" / "eon" for the same window.
+_SUPPLIER_REGEX_PREPASS: tuple[tuple["re.Pattern[str]", str], ...] = (
+    (re.compile(r"\b(?:e\s*[.\-]?\s*on\s*next|eonext)\b", re.IGNORECASE), "E.ON Next"),
+    (re.compile(r"\bbritish\s*gas\s*lite\b", re.IGNORECASE), "BGL"),
+    (re.compile(r"\bbritish\s*gas\b", re.IGNORECASE), "British Gas"),
+    (re.compile(r"\bscottish\s*power\b", re.IGNORECASE), "Scottish Power"),
+    (re.compile(r"\bpozitive\b", re.IGNORECASE), "Pozitive"),
+    (re.compile(r"\bedf\b", re.IGNORECASE), "EDF"),
+    (re.compile(r"\bsmartest\b", re.IGNORECASE), "SmartestEnergy"),
+    (re.compile(r"\bopus\s+energy\b", re.IGNORECASE), "Opus Energy"),
+    (re.compile(r"\b(?:total\s+energies|totalenergies)\b", re.IGNORECASE), "Total Energies"),
+    (re.compile(r"\be\s*[.\-]?\s*on\b", re.IGNORECASE), "E.ON"),
+)
+
+
+def _supplier_regex_prepass(transcript: str) -> str | None:
+    """Return a canonical supplier label when the transcript names a known
+    supplier in a broker-target context, else None.
+
+    Distinguishes broker target supplier (the contract the agent is selling)
+    from the customer's departing supplier by requiring a target-cue phrase
+    near the supplier mention.
+    """
+    if not transcript:
+        return None
+    # Scan only the opening 2000 chars; the broker-target supplier is named
+    # in the third-party disclosure / verbal preamble, both early in the call.
+    head = transcript[:2000].lower()
+    target_cues = (
+        "on behalf of", "your contract is with", "your new contract is with",
+        "agreed with", "energy supply", "not directly employed by",
+        "the contract with", "from the contract with", "supply at",
+    )
+    for pattern, canonical in _SUPPLIER_REGEX_PREPASS:
+        m = pattern.search(head)
+        if not m:
+            continue
+        win_start = max(0, m.start() - 120)
+        win_end = min(len(head), m.end() + 120)
+        window = head[win_start:win_end]
+        if any(cue in window for cue in target_cues):
+            return canonical
+    return None
+
+
 async def detect_supplier(transcript: str) -> str:
-    # Send full transcript (up to 3000 words) — supplier name can appear anywhere
+    # 2026-05-18: deterministic regex pre-pass for the common spelled-together
+    # ASR variants ("eonext"). When it hits, skip the LLM entirely.
+    prepass = _supplier_regex_prepass(transcript)
+    if prepass:
+        log.info(f"\U0001f50d DETECT supplier regex pre-pass -> {prepass!r}")
+        return prepass
+    # Send full transcript (up to 3000 words)— supplier name can appear anywhere
     words = transcript.split()
     transcript_text = " ".join(words[:3000])
     prompt = DETECT_PROMPT.replace("{transcript_start}", transcript_text)
@@ -781,6 +838,29 @@ def _extract_agent_name_regex(transcript: str) -> str | None:
     return None
 
 
+# Job-title-shaped tokens that occasionally appear in mis-transcribed
+# interlocutor cues like "speaking to Art Engineer". When the LLM's agent
+# answer contains one of these, prefer the regex pre-pass result (which only
+# fires on canonical self-introductions).
+_AGENT_NAME_JOB_TITLE_STOPS: frozenset[str] = frozenset(
+    {
+        "engineer", "manager", "director", "supervisor", "representative",
+        "advisor", "adviser", "specialist", "consultant", "executive",
+        "officer", "assistant", "coordinator", "analyst", "operator",
+        "operative", "associate", "trainee",
+    }
+)
+
+
+def _llm_agent_smells_fabricated(name: str | None) -> bool:
+    """Return True when the LLM's agent answer looks like a glued-together
+    interlocutor cue ("Art Engineer") rather than a real self-intro."""
+    if not name or name == "Unknown":
+        return False
+    tokens = [t.strip().lower() for t in name.split() if t.strip()]
+    return any(t in _AGENT_NAME_JOB_TITLE_STOPS for t in tokens)
+
+
 async def detect_names(transcript: str) -> tuple[str, str]:
     """Extract (agent_name, customer_name) from a call transcript.
 
@@ -830,6 +910,20 @@ async def detect_names(transcript: str) -> tuple[str, str]:
         log.info(
             f"\U0001f464 DETECT names regex fallback \u2192 "
             f"agent={regex_agent!r} (LLM said Unknown)"
+        )
+        agent = regex_agent
+    elif regex_agent and _llm_agent_smells_fabricated(agent):
+        # 2026-05-18 Westbury audit: the LLM picked "Art Engineer" off a
+        # mis-transcribed interlocutor cue ("speaking to Art Engineer
+        # [PERSON_NAME]") and overwrote the regex's high-confidence
+        # "James" capture from "i am james calling from watt utilities".
+        # When the LLM's output is multi-word with a job-title-shaped
+        # token (engineer / manager / advisor / etc.), prefer the regex
+        # capture \u2014 the regex only fires on canonical self-intro phrases
+        # so its false-positive rate is bounded by _NAME_STOPWORDS.
+        log.warning(
+            f"\U0001f464 DETECT names regex preference \u2192 "
+            f"agent={regex_agent!r} (LLM gave job-title-shaped {agent!r})"
         )
         agent = regex_agent
 
