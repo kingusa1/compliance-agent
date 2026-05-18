@@ -2406,8 +2406,31 @@ async def admin_repair_broken_names(
         agent_broken = existing_agent.lower() in broken or not existing_agent
         customer_broken = existing_customer.lower() in broken or not existing_customer
 
-        want_agent = new_agent if (new_agent and new_agent != "Unknown" and agent_broken) else None
-        want_customer = new_customer if (new_customer and new_customer != "Unknown" and customer_broken) else None
+        # Reject low-quality candidates: contractions ("Who's", "What's"),
+        # placeholder leaks ("(auto-detect pending …)"), and tokens that
+        # ended up in the broken set themselves. Belt-and-suspenders on top
+        # of detect_names' own filtering.
+        def _looks_clean(candidate: str | None) -> bool:
+            if not candidate or candidate == "Unknown":
+                return False
+            s = candidate.strip()
+            if not s:
+                return False
+            if s.lower() in broken:
+                return False
+            # Placeholder leaks from auto-detect upload path
+            if s.startswith("(") or "auto-detect" in s.lower() or "pending" in s.lower():
+                return False
+            # Contractions ("Who's", "What's", "There's", "It's", "He's")
+            if "'s" in s.lower() or "'re" in s.lower() or "'ll" in s.lower() or "'ve" in s.lower():
+                return False
+            # Single-char or all-digits
+            if len(s) < 2 or s.isdigit():
+                return False
+            return True
+
+        want_agent = new_agent if (_looks_clean(new_agent) and agent_broken) else None
+        want_customer = new_customer if (_looks_clean(new_customer) and customer_broken) else None
 
         if not want_agent and not want_customer:
             continue
