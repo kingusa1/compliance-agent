@@ -182,6 +182,64 @@ uploads will be clean.
 
 ---
 
+## 2026-05-18 PM2 update — DEPLOYED + VALIDATED + REPAIRED
+
+PR #2 (`e8af5aa`) MERGED to main + Railway redeployed. Three follow-up
+commits shipped on top:
+
+- `dcac14f` — new `POST /api/admin/repair-broken-names` admin endpoint.
+  Re-runs detect_names + AAI retry + deal fallback on existing rows
+  whose agent or customer name is in the broken token set or empty.
+- `5710d8f` — hardened `_looks_clean` filter inside the repair endpoint
+  to reject contractions (`Who's`), `(auto-detect pending …)` deal
+  placeholder leaks, and broken-token re-introductions.
+
+### Repair endpoint outcome on the 5 broken rows
+
+```
+POST /api/admin/repair-broken-names?apply=true
+→ scanned=5 candidates=4 agent_updated=4 customer_updated=1
+```
+
+| call_id (head) | agent before | agent now | customer before | customer now |
+|---|---|---|---|---|
+| 563ae05f | Sort Of | **Alex Fitton** | null | **Anthony** |
+| 6e88ebfe | Art Engineer | **James** | null | — (filtered Who's) |
+| 16f73fc7 | null | Paris | Crosby Grange | unchanged |
+| c9b3f559 | **Is** | **Tom Kelly** | Muhammad Mukhtar | unchanged |
+| 601091d7 | Alyssa | unchanged | null | — (filtered placeholder) |
+
+### Playwright re-validation of the user-screenshot call (c9b3f559)
+
+| Metric | Before fix | After fix |
+|---|---|---|
+| `Is` AGENT speaker labels on page | 12 | **0** |
+| `Tom Kelly` AGENT labels | 0 | **13** |
+| `Muhammad` in customer transcript turns | 0 (was `[PERSON_NAME]`) | **13** |
+| Header reads | `... · agent Is · ...` | `... · agent Tom Kelly · ...` |
+
+Bug line from screenshot — *"Lovely stuff. Firstly, can you confirm
+your name for me please, **Is**?"* — now renders as *"Lovely stuff.
+Firstly, can you confirm your name for me please, **Tom**?"*. Both A7
+read-time substitution and the repaired `call.agent_name` contribute.
+
+### Playwright re-validation of /calls list (top 15)
+
+Zero rows show `Is` / `Sort Of` / `Art Engineer`. Remaining `customer=—`
+rows are CORRECTLY empty — the hardening filter rejected the bad
+candidates rather than writing them.
+
+### Open follow-ups (out of scope)
+
+- `Paris` on Crosby Grange = known phonetic-confusion hallucination
+  upstream; needs detect_business_name "phonetic-confused" filter.
+- 4 `[PERSON_NAME]` literals still in `c9b3f559` are inside checkpoint
+  evidence excerpts (LLM-quoted spans), not karaoke. A future A8 could
+  strip them from `Rejection.evidence` / `checkpoint.evidence` at read
+  time using the same speaker-aware substitution.
+
+---
+
 ## Continuous-learning rules captured
 
 1. **A name extractor must have BOTH a regex pre-pass AND an LLM
