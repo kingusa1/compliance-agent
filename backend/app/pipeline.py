@@ -914,6 +914,32 @@ async def _step_detect_metadata(
 
     try:
         det_agent, det_customer = await detect_names(transcript)
+
+        # 2026-05-18 audit "make the AI detect names smarter": when either
+        # slot is still Unknown after the primary (Deepgram) pass, retry
+        # against the AssemblyAI transcript. The two engines redact PII
+        # using different substitution patterns ("[PERSON_NAME]" vs
+        # "#####"), so a name lost on one stream is often intact on the
+        # other. Only retry when the AAI text exists and differs from
+        # the DG text to avoid duplicating LLM cost on identical content.
+        if det_agent == "Unknown" or det_customer == "Unknown":
+            aai_text = (getattr(call, "assemblyai_transcript", None) or "").strip()
+            if aai_text and aai_text != (transcript or "").strip():
+                try:
+                    aai_agent, aai_customer = await detect_names(aai_text)
+                    if det_agent == "Unknown" and aai_agent != "Unknown":
+                        det_agent = aai_agent
+                        log.info(
+                            f"\U0001f464 DETECT names AAI recovery → agent={aai_agent!r}"
+                        )
+                    if det_customer == "Unknown" and aai_customer != "Unknown":
+                        det_customer = aai_customer
+                        log.info(
+                            f"\U0001f464 DETECT names AAI recovery → customer={aai_customer!r}"
+                        )
+                except Exception as e:
+                    log.warning(f"detect_names AAI recovery skipped: {e}")
+
         if det_agent and det_agent != "Unknown":
             # Canonicalise transcription drift (Alex Fitton vs Alex Pitton,
             # Parat vs Paras, Afak vs Afaq). audit-late B8.
@@ -943,6 +969,36 @@ async def _step_detect_metadata(
                             cust.legal_name = det_customer
             except Exception as e:
                 log.warning(f"name backfill skipped: {e}")
+        else:
+            # 2026-05-18 audit Finding "customer never appears in transcript":
+            # If detect_names couldn't find a customer (truly silent caller,
+            # heavy PII redaction, single-sided audio), fall back to the
+            # linked Deal's customer_name OR Customer.legal_name so the UI
+            # still labels the customer turns by the real entity the call
+            # was about. Only fills when the slot is genuinely empty —
+            # never overwrites an existing AI/reviewer value.
+            try:
+                from app.models import Customer, CustomerDeal as _Deal
+                if (
+                    (not call.customer_name or call.customer_name.strip() == "")
+                    and call.deal_id
+                ):
+                    deal = db.query(_Deal).filter_by(id=call.deal_id).first()
+                    fallback = ""
+                    if deal and deal.customer_name and deal.customer_name.strip():
+                        fallback = deal.customer_name.strip()
+                    elif deal and deal.customer_id:
+                        cust = db.query(Customer).filter_by(id=deal.customer_id).first()
+                        if cust and cust.legal_name and cust.legal_name.strip():
+                            fallback = cust.legal_name.strip()
+                    if fallback:
+                        call.customer_name = fallback
+                        log.info(
+                            f"\U0001f464 DETECT names deal fallback → "
+                            f"customer={fallback!r} (from linked deal/customer)"
+                        )
+            except Exception as e:
+                log.warning(f"customer deal fallback skipped: {e}")
     except Exception as e:
         log.warning(f"\U0001f464 DETECT names skipped: {e}")
 
