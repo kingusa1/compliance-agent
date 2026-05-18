@@ -1523,6 +1523,38 @@ def get_call_words(call_id: str, db: Session = Depends(get_db)):
         else:
             w["role"] = "AGENT" if spk_key == agent_id else "CUSTOMER"
 
+    # 2026-05-18: read-time substitution of PII redaction markers.
+    # Existing calls have `[PERSON_NAME]` baked into word_data from the
+    # AAI redactor (`person_name` was in PII_POLICIES until this date).
+    # When we KNOW the resolved name for the speaker turn, swap the marker
+    # for the real name's first token so the karaoke transcript stops
+    # showing the redaction placeholder. The agent's full name lives on
+    # `call.agent_name` (and customer on `call.customer_name`) — both
+    # populated by detect_names + the deal-linker.
+    agent_first = ""
+    if call.agent_name and call.agent_name.strip() and call.agent_name.strip() != "Unknown":
+        agent_first = call.agent_name.strip().split()[0]
+    customer_first = ""
+    if call.customer_name and call.customer_name.strip() and call.customer_name.strip() != "Unknown":
+        customer_first = call.customer_name.strip().split()[0]
+    if agent_first or customer_first:
+        import re as _re
+        _pii_re = _re.compile(r"\[[a-zA-Z][a-zA-Z_]*(?:_\d+)?\]")
+        for w in words:
+            text = w.get("punctuated_word") or w.get("word") or ""
+            if "[" not in text:
+                continue
+            if not _pii_re.search(text):
+                continue
+            role = w.get("role", "")
+            sub_name = agent_first if role == "AGENT" else customer_first
+            if not sub_name:
+                continue
+            new_text = _pii_re.sub(sub_name, text)
+            if w.get("punctuated_word"):
+                w["punctuated_word"] = new_text
+            w["word"] = _pii_re.sub(sub_name, w.get("word") or "")
+
     return {
         "call_id": call_id,
         "word_count": len(words),

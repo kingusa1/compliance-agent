@@ -15,8 +15,6 @@ Covers the five smart-fixes shipped in this branch:
 """
 from __future__ import annotations
 
-import pytest
-
 from app.analysis import (
     _extract_agent_name_regex,
     _extract_customer_name_regex,
@@ -146,3 +144,28 @@ def test_customer_regex_handles_could_i_speak_to() -> None:
 def test_customer_regex_handles_please_confirm_your_name() -> None:
     t = "for the record, please confirm your name David Mitchell please"
     assert _extract_customer_name_regex(t) == "David Mitchell"
+
+
+# ── A6: AAI PII redaction policy ────────────────────────────────────────
+
+
+def test_aai_pii_policies_does_not_include_person_name() -> None:
+    """2026-05-18 screenshot bug: AAI was redacting person names, emitting
+    `[PERSON_NAME]` literals into the karaoke transcript. The compliance
+    review tool LITERALLY exists to audit who said what to whom, so name
+    redaction is anti-purpose. Policy must NOT include `person_name`."""
+    from app.assemblyai_transcription import PII_POLICIES
+    assert "person_name" not in PII_POLICIES, (
+        "person_name redaction emits [PERSON_NAME] tokens that defeat the "
+        "name detector AND make the karaoke transcript unreadable. "
+        "Internal compliance review tool — names must stay."
+    )
+
+
+def test_aai_pii_policies_retains_payment_redaction() -> None:
+    """Defensive: confirm we didn't accidentally drop banking/payment."""
+    from app.assemblyai_transcription import PII_POLICIES
+    assert "credit_card_number" in PII_POLICIES
+    assert "banking_information" in PII_POLICIES
+    assert "phone_number" in PII_POLICIES
+    assert "email_address" in PII_POLICIES
