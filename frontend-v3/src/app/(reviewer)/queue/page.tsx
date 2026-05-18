@@ -42,13 +42,18 @@ import { SavedViewsBar } from "./SavedViewsBar";
 
 import type { QueueCall } from "@/lib/api";
 
-// Visible filter values are simplified to {all, pending, reviewed}.
-// The backend still understands the legacy "unclaimed/in_review/today"
-// values; we map at the boundary so the API contract stays unchanged.
+// Visible filter values: {all, unclaimed, in_review, today}.
+// The backend understands the same set via /api/queue?filter=…
+// (with `today` → `reviewed_today` mapped in lib/api.ts).
+//
+// 2026-05-18: added "in_review" so the Reviewing tab can actually
+// filter to mid-review calls instead of falling back to "unclaimed"
+// every time parseQueueFilter runs against the URL.
 const QUEUE_FILTERS: readonly QueueFilter[] = [
   "all",
-  "unclaimed", // surfaced as "Pending"
-  "today",     // surfaced as "Reviewed"
+  "unclaimed",  // surfaced as "Pending"
+  "in_review",  // surfaced as "Reviewing"
+  "today",      // surfaced as "Reviewed"
 ] as const;
 
 function parseQueueFilter(raw: string): QueueFilter {
@@ -628,7 +633,12 @@ export default function QueuePage() {
   // Plan §5a: hide rows still mid-pipeline (score=null OR 0%) by default —
   // they confuse reviewers ("0% means nothing"). Toggle reveals them.
   const [showProcessing, setShowProcessing] = useState(false);
-  const queue = useQueueQuery(filter);
+  // 2026-05-18: when the user is searching, query the broader "all" set so
+  // a match in the Reviewed tab still surfaces while the user is on Pending.
+  // The visible tab still controls the active chip; only the dataset
+  // expands. Cleared the moment search empties.
+  const effectiveFilter: QueueFilter = debouncedSearch.trim() ? "all" : filter;
+  const queue = useQueueQuery(effectiveFilter);
 
   // Supabase Realtime — any INSERT/UPDATE/DELETE on `calls` or `review_sessions`
   // invalidates the queue + checkpoint queries. Feature-flagged on
@@ -638,7 +648,11 @@ export default function QueuePage() {
 
   const filteredCalls: QueueCall[] = useMemo(() => {
     let calls = queue.data?.calls ?? [];
-    if (!showProcessing) {
+    const hasSearch = !!debouncedSearch.trim();
+    // 2026-05-18: when searching, surface processing rows too — otherwise a
+    // call the reviewer is looking for stays hidden because the score isn't
+    // computed yet.
+    if (!showProcessing && !hasSearch) {
       calls = calls.filter((c) => {
         const sc = (c as QueueCall & { score?: string | null }).score;
         if (!sc) return false;
@@ -648,14 +662,19 @@ export default function QueuePage() {
         return true;
       });
     }
-    if (!debouncedSearch.trim()) return calls;
+    if (!hasSearch) return calls;
     const q = debouncedSearch.toLowerCase();
     return calls.filter(
       (c) =>
         (c.filename ?? "").toLowerCase().includes(q) ||
         (c.supplier ?? "").toLowerCase().includes(q) ||
         (c.customer_name ?? "").toLowerCase().includes(q) ||
-        (c.agent_name ?? "").toLowerCase().includes(q),
+        (c.agent_name ?? "").toLowerCase().includes(q) ||
+        // Also search the stage / segment labels so reviewers can type
+        // "Verbal" / "LOA" to narrow by call type.
+        (c.segments ?? []).some((s) =>
+          (STAGE_LABEL[s.stage] ?? s.stage).toLowerCase().includes(q),
+        ),
     );
   }, [queue.data?.calls, debouncedSearch, showProcessing]);
 
@@ -737,10 +756,10 @@ export default function QueuePage() {
           </FilterChip>
           {inReviewCount > 0 ? (
             <FilterChip
-              active={false}
-              onClick={() => setFilter("all")}
+              active={filter === "in_review"}
+              onClick={() => setFilter("in_review")}
               count={inReviewCount}
-              title="Currently being reviewed (claimed but not yet submitted). Click to see them in the All tab."
+              title="Currently being reviewed (claimed but not yet submitted)."
             >
               Reviewing
             </FilterChip>
