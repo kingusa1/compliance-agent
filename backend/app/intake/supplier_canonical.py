@@ -45,6 +45,9 @@ SUPPLIER_ALIASES: Dict[str, str] = {
     "eon next energy": SupplierEnum.EON_NEXT.value,
     "e on next": SupplierEnum.EON_NEXT.value,
     "e on next energy": SupplierEnum.EON_NEXT.value,
+    # 2026-05-18 Westbury audit: ASR collapses the space, gives "eonext".
+    "eonext": SupplierEnum.EON_NEXT.value,
+    "eonext energy": SupplierEnum.EON_NEXT.value,
     # British Gas — four distinct sub-products.
     "british gas core": SupplierEnum.BG_CORE.value,
     "bg core": SupplierEnum.BG_CORE.value,

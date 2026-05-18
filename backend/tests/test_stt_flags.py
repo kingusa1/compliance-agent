@@ -62,15 +62,24 @@ def test_word_boost_unknown_supplier_falls_back():
     assert set(load_supplier_glossary(None)) == base_set
 
 
-# ─── Gate 3: PII policy 5-tuple is the UK context set ──────────────────────
+# ─── Gate 3: PII policy 4-tuple is the UK context set ──────────────────────
+# 2026-05-18: `person_name` removed. Internal compliance review tool —
+# the system audits WHO said WHAT to WHOM, so redacting agent + customer
+# names actively defeats the workflow. Payment / banking / contact-PII
+# redaction remains.
 def test_pii_policies_present():
     assert set(PII_POLICIES) == {
-        "person_name",
         "phone_number",
         "email_address",
         "credit_card_number",
         "banking_information",
     }, f"unexpected PII policy set: {PII_POLICIES}"
+
+
+def test_pii_policies_excludes_person_name() -> None:
+    """Defence-in-depth: assert the explicit non-inclusion of person_name
+    so a future refactor can't silently re-add it without tripping CI."""
+    assert "person_name" not in set(PII_POLICIES)
 
 
 # ─── Gate 4: sentiment + entity flags preserved in submit payload ──────────

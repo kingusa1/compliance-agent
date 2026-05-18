@@ -31,8 +31,17 @@ ASSEMBLYAI_BASE = "https://api.assemblyai.com/v2"
 # AAI v2 valid policy names per https://www.assemblyai.com/docs/audio-intelligence/pii-redaction
 # `banking_information` is the correct UK-context superset (covers IBAN, sort
 # code, account number) per AAI docs. `credit_card_number` is the v2 spelling.
+#
+# 2026-05-18: `person_name` REMOVED. The system is an internal Watt
+# Utilities compliance review tool — the entire purpose is to audit who
+# the agent said what to. Redacting person names emits `[PERSON_NAME]`
+# tokens in the transcript text, which (a) defeat the AI name detector
+# (the LLM has no real name to extract), (b) make the karaoke transcript
+# unreadable for the reviewer, and (c) bypass the deal-linker (which
+# matches calls to customers BY NAME). The 2026-05-18 user-reported
+# "Sort Of" / missing-customer bug traces to this redactor. Names stay
+# in transcripts; payment / banking redaction remains.
 PII_POLICIES: list[str] = [
-    "person_name",
     "phone_number",
     "email_address",
     "credit_card_number",
