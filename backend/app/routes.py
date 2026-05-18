@@ -2307,6 +2307,138 @@ def admin_backfill_agent_names(
     }
 
 
+# Known-bad names that the broken detector emitted before the 2026-05-18
+# smart-name-detection wave. Calls with these in either slot are forced
+# through the new detector. Case-insensitive match.
+_BROKEN_NAME_TOKENS: set[str] = {
+    "is", "sort of", "art engineer", "kind of", "front runner",
+    "calling", "speaking", "regarding", "checking", "ringing",
+    # Tokens captured before the 2026-05-15 stopword expansion
+    "bounced", "fine",
+}
+
+
+@router.post("/api/admin/repair-broken-names", status_code=200)
+async def admin_repair_broken_names(
+    apply: bool = False,
+    only_broken: bool = True,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+):
+    """Repair Call.agent_name + Call.customer_name on EXISTING calls.
+
+    Re-runs the full 2026-05-18 ``detect_names`` (regex + LLM + AAI retry)
+    against the stored transcript, plus the linked-deal fallback for the
+    customer slot. Targets calls whose current values match the known-
+    broken token set (``Is`` / ``Sort Of`` / ``Art Engineer`` / etc.) or
+    where either slot is empty.
+
+    Query params:
+      apply=false       — dry run; reports proposed names without writing.
+      apply=true        — commits the changes.
+      only_broken=true  — only touch rows in the broken-token set OR with
+                          empty slots (default). Set false to re-evaluate
+                          every completed call (expensive — LLM per row).
+      limit=N           — process at most N rows per call (default 200).
+    """
+    from app.analysis import detect_names
+    from app.models import Customer, CustomerDeal as _Deal
+
+    broken = {t.lower() for t in _BROKEN_NAME_TOKENS}
+
+    q = db.query(Call).filter(Call.transcript.isnot(None))
+    if only_broken:
+        # Build OR-clause for: agent empty OR customer empty OR either is broken
+        from sqlalchemy import func, or_
+        broken_list = list(broken)
+        q = q.filter(
+            or_(
+                Call.agent_name.is_(None),
+                Call.agent_name == "",
+                func.lower(Call.agent_name).in_(broken_list),
+                Call.customer_name.is_(None),
+                Call.customer_name == "",
+                func.lower(Call.customer_name).in_(broken_list),
+            )
+        )
+    calls = q.order_by(Call.created_at.desc()).limit(limit).all()
+
+    proposals: list[dict] = []
+    updated_agent = 0
+    updated_customer = 0
+    for c in calls:
+        if not c.transcript:
+            continue
+        try:
+            new_agent, new_customer = await detect_names(c.transcript)
+        except Exception as e:
+            log.warning(f"repair-broken-names detect_names failed for {c.id}: {e}")
+            continue
+
+        # AAI fallback when DG pass left either Unknown.
+        if (new_agent == "Unknown" or new_customer == "Unknown") and getattr(c, "assemblyai_transcript", None):
+            try:
+                aai_text = (c.assemblyai_transcript or "").strip()
+                if aai_text and aai_text != (c.transcript or "").strip():
+                    aai_agent, aai_customer = await detect_names(aai_text)
+                    if new_agent == "Unknown" and aai_agent != "Unknown":
+                        new_agent = aai_agent
+                    if new_customer == "Unknown" and aai_customer != "Unknown":
+                        new_customer = aai_customer
+            except Exception:
+                pass
+
+        # Linked-deal fallback for the customer slot.
+        if new_customer == "Unknown" and c.deal_id:
+            try:
+                deal = db.query(_Deal).filter_by(id=c.deal_id).first()
+                if deal and deal.customer_name and deal.customer_name.strip():
+                    new_customer = deal.customer_name.strip()
+                elif deal and deal.customer_id:
+                    cust = db.query(Customer).filter_by(id=deal.customer_id).first()
+                    if cust and cust.legal_name and cust.legal_name.strip():
+                        new_customer = cust.legal_name.strip()
+            except Exception:
+                pass
+
+        existing_agent = (c.agent_name or "").strip()
+        existing_customer = (c.customer_name or "").strip()
+        agent_broken = existing_agent.lower() in broken or not existing_agent
+        customer_broken = existing_customer.lower() in broken or not existing_customer
+
+        want_agent = new_agent if (new_agent and new_agent != "Unknown" and agent_broken) else None
+        want_customer = new_customer if (new_customer and new_customer != "Unknown" and customer_broken) else None
+
+        if not want_agent and not want_customer:
+            continue
+
+        proposals.append({
+            "call_id": str(c.id)[:8],
+            "agent_was": existing_agent or None,
+            "agent_now": want_agent,
+            "customer_was": existing_customer or None,
+            "customer_now": want_customer,
+            "filename": (c.filename or "")[:80],
+        })
+        if apply:
+            if want_agent:
+                c.agent_name = want_agent
+                updated_agent += 1
+            if want_customer:
+                c.customer_name = want_customer
+                updated_customer += 1
+    if apply:
+        db.commit()
+    return {
+        "scanned": len(calls),
+        "candidates": len(proposals),
+        "agent_updated": updated_agent if apply else 0,
+        "customer_updated": updated_customer if apply else 0,
+        "applied": apply,
+        "proposals": proposals[:50],
+    }
+
+
 @router.post("/api/admin/normalize-checkpoint-results", status_code=200)
 def admin_normalize_checkpoint_results(
     call_id: str | None = None,
