@@ -88,3 +88,24 @@ def test_llm_agent_smells_fabricated_handles_falsy_values() -> None:
     assert _llm_agent_smells_fabricated(None) is False
     assert _llm_agent_smells_fabricated("") is False
     assert _llm_agent_smells_fabricated("Unknown") is False
+
+
+def test_llm_agent_smells_fabricated_catches_filler_phrase_sort_of() -> None:
+    """Westbury 2nd call (`563ae05f`) reproduced this exact failure: the LLM
+    saw "i'm the sort of the front runner" and wrote "Sort Of" into
+    agent_name. Filler tokens like "of" / "sort" must trip the smell test."""
+    assert _llm_agent_smells_fabricated("Sort Of") is True
+
+
+def test_llm_agent_smells_fabricated_catches_kind_of() -> None:
+    assert _llm_agent_smells_fabricated("Kind Of") is True
+
+
+def test_llm_agent_smells_fabricated_catches_front_runner() -> None:
+    assert _llm_agent_smells_fabricated("Front Runner") is True
+
+
+def test_llm_agent_smells_fabricated_allows_compound_names_without_fillers() -> None:
+    """A legitimate compound name should not trip the filter."""
+    assert _llm_agent_smells_fabricated("Anne Marie") is False
+    assert _llm_agent_smells_fabricated("Mary Jane") is False

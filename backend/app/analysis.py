@@ -229,27 +229,37 @@ TRANSCRIPT (first 2500 words):
 Answer:"""
 
 
-DETECT_NAMES_PROMPT = """Read the start of this energy brokerage call transcript and extract two names.
+DETECT_NAMES_PROMPT = """Read this energy brokerage call transcript and extract two names.
 
-A broker calls a business owner about their energy contract. Transcripts
-may or may not have `Agent:` / `Customer:` speaker labels — they are
-sometimes a single un-labelled paragraph. Use ALL textual cues to decide
-who is who.
+A broker calls a business owner about their energy contract.
+
+TRANSCRIPT FORMAT:
+The transcript is usually DIARIZED with `Agent:` / `Customer:` speaker
+labels and `[mm:ss]` timestamps — but the diarizer can mis-attribute
+turns, so DO NOT blindly trust the labels. Use the wording cues below to
+decide who is really who.
 
 EXTRACT:
-1. AGENT name — the broker / sales agent's OWN first (+ surname if given)
-   name. Look for self-introduction phrases the agent uses:
+
+1. AGENT name — the broker / sales agent's OWN first name (+ surname if
+   given). They self-introduce with one of:
      • "my name is X" / "my name's X"
      • "this is X calling/speaking"
      • "I'm X from …" / "I am X"
      • "you're through to X" / "you're speaking with X"
-     • "X here from …"
-   The agent is also the one who says "calls are recorded for monitoring",
-   "third party intermediary", "act on your behalf", "your supplier".
-2. CUSTOMER name — the person who OWNS or RUNS the business. Often
-   introduced by the agent ("speaking with X?", "is that X?") and confirmed
-   by the customer, or self-identified in response to "please confirm
-   your name".
+     • "X here from …" / "X speaking from …"
+   The agent is the one who reads compliance lines:
+   "calls are recorded for monitoring", "third party intermediary",
+   "act on your behalf", "your supplier".
+
+2. CUSTOMER name — the person who OWNS or RUNS the business. Found
+   either via the AGENT asking for confirmation OR the CUSTOMER
+   self-identifying:
+     • Agent: "am I speaking to X?" / "is that X?" / "are you X?"
+     • Agent: "could you confirm your name please?"
+     • Customer: "yes, this is X" / "yeah, it's X"
+     • Customer: "X speaking" (when answering the phone)
+     • Customer: "Hi this is X from <business>"
 
 CRITICAL RULES:
 - The two names MUST be different people. If only one name appears, fill
@@ -259,15 +269,20 @@ CRITICAL RULES:
   drift — accept them as names anyway. Do NOT reject as "Unknown" just
   because a name looks unfamiliar.
 - A name token contains only letters, hyphens and apostrophes. Reject
-  generic words ("calling", "speaking", "here", "third", "party").
+  generic words ("calling", "speaking", "here", "third", "party",
+  "engineer", "manager", "advisor", "sort", "kind").
+- Reject PII redaction markers like "[PERSON_NAME]" or "[PHONE_NUMBER]"
+  — they are NOT real names, they are placeholders. If the only name
+  candidate is a redaction marker, return "Unknown".
 - Full name if given (first + surname); first name alone if that's all
-  that's said.
+  that's said. Surname may be on a separate line right after the first
+  name ("yeah it's John… Smith here").
 - "Unknown" ONLY if truly unclear — never as a hedge.
 - Do NOT include titles (Mr, Mrs, Dr) or company names.
-- Re-read the transcript before answering. Names usually appear in the
-  first 30 seconds.
+- Read the WHOLE transcript before answering. Customer names often
+  appear after the agent's TPI preamble (60+ seconds in).
 
-TRANSCRIPT START:
+TRANSCRIPT:
 {transcript_start}
 
 Respond with ONLY two lines in this exact format (no JSON, no prose, no
@@ -768,6 +783,16 @@ _NAME_STOPWORDS = frozenset(
         "mate", "love", "darling", "pal", "bro", "dude",
         # Common UK supplier/customer noise after "this is" / "it's"
         "an", "a", "another", "one", "two", "three", "four", "five",
+        # 2026-05-18 audit Finding #3: "my name is Is" captured "Is" because
+        # the regex made the "is" optional and the speaker re-uttered it.
+        # Same rationale for the remaining intro tokens — they only ever
+        # appear as fragments, never as real first names.
+        "is", "am", "name", "names", "mine", "it", "that", "who",
+        "this", "these", "those", "myself", "yourself",
+        # Cue words after "this is" / "speaking" patterns
+        "calls", "call", "what", "where", "when", "why", "how",
+        "could", "would", "should", "can", "may", "might", "must",
+        "have", "has", "had", "do", "does", "did", "be", "been", "being",
     }
 )
 
@@ -801,6 +826,107 @@ def _strip_pii_tokens(name: str | None) -> str:
         return "Unknown"
     cleaned = _PII_TOKEN_RE.sub("", name).strip().strip(",.;:'\"-").strip()
     return cleaned or "Unknown"
+
+
+# ── Customer-side regex pre-pass ────────────────────────────────────────
+#
+# Agents reliably introduce the customer right after asking for verbal
+# confirmation. The cues below appear in 80%+ of the calls we've audited.
+# This is the customer counterpart to `_extract_agent_name_regex` (2026-05-18
+# audit Finding "customer never appears in transcript"). Triggers either:
+#   • the AGENT prompting the customer ("am I speaking to <name>", "is that
+#     <name>", "are you <name>", "<name>, is that right")
+#   • the CUSTOMER self-identifying ("yes this is <name>", "<name> speaking",
+#     "this is <name>", "speaking <name>")
+#
+# We scan the first 1500 chars (same window as the agent regex) plus a
+# secondary scan of the next 1500 chars because the customer often only
+# names themselves after the agent has finished their TPI preamble.
+_CUSTOMER_INTRO_AGENT_CUES = re.compile(
+    r"\b(?:"
+    r"am\s+i\s+(?:speaking\s+(?:to|with)|through\s+to|talking\s+(?:to|with))"
+    r"|(?:speaking|talking)\s+(?:to|with)"
+    r"|is\s+(?:that|this)"
+    r"|are\s+(?:you|i\s+speaking\s+(?:to|with))"
+    r"|(?:could|can)\s+i\s+(?:speak\s+(?:to|with)|have\s+the\s+name\s+of)"
+    r"|i'?m\s+(?:speaking\s+(?:to|with)|through\s+to)"
+    r"|(?:can|could)\s+you\s+confirm\s+(?:your\s+name|the\s+name)"
+    r"|please\s+confirm\s+(?:your\s+name|the\s+name)"
+    r"|what'?s\s+your\s+name"
+    r"|may\s+i\s+(?:ask|take|have)\s+(?:your\s+name|the\s+name)"
+    r")\s+([A-Za-z][A-Za-z\-']{1,25})(?:\s+([A-Za-z][A-Za-z\-']{1,25}))?",
+    re.IGNORECASE,
+)
+
+# Customer self-introduction patterns (the customer side of the turn).
+# Used when the regex sees the customer name AFTER one of these cues.
+_CUSTOMER_SELF_INTRO = re.compile(
+    r"\b(?:"
+    r"yes,?\s+(?:it'?s|this\s+is|i'?m)"
+    r"|(?:yeah|yep|that'?s\s+(?:me|right)),?\s+(?:it'?s|this\s+is|i'?m)"
+    r"|hello,?\s+(?:it'?s|this\s+is|i'?m)"
+    r"|this\s+is"
+    r")\s+([A-Za-z][A-Za-z\-']{1,25})(?:\s+([A-Za-z][A-Za-z\-']{1,25}))?",
+    re.IGNORECASE,
+)
+
+# "<name> speaking" — customer answers the phone with their own name.
+# Matches "John speaking" / "Sarah Hughes speaking" anywhere in the head.
+_CUSTOMER_SPEAKING_TRAIL = re.compile(
+    r"\b([A-Za-z][A-Za-z\-']{1,25})(?:\s+([A-Za-z][A-Za-z\-']{1,25}))?"
+    r"\s+speaking\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_customer_name_regex(
+    transcript: str, *, agent_name: str | None = None
+) -> str | None:
+    """Return the first plausible customer-name candidate from the
+    transcript, else None.
+
+    Scans the first 3000 chars because the customer is often only named
+    after the agent's TPI preamble (which can run 60+ seconds). When
+    ``agent_name`` is supplied we reject any capture that equals it
+    (collision guard — same speaker, not two people).
+    """
+    head = transcript[:3000].replace("\n", " ")
+    agent_lc = (agent_name or "").strip().lower()
+    # Union both stop sets when filtering candidate tokens. _NAME_STOPWORDS
+    # blocks intro fragments ("is", "the", "calling"); _AGENT_NAME_FILLER_TOKENS
+    # blocks prepositions / discourse markers ("on", "please", "today") that
+    # commonly follow a name in casual speech ("Margaret on the line").
+    name_stops = _NAME_STOPWORDS | _AGENT_NAME_FILLER_TOKENS
+    for regex in (
+        _CUSTOMER_INTRO_AGENT_CUES,
+        _CUSTOMER_SELF_INTRO,
+        _CUSTOMER_SPEAKING_TRAIL,
+    ):
+        for m in regex.finditer(head):
+            first = (m.group(1) or "").strip("'\"-,.;: ")
+            second = (m.group(2) or "").strip("'\"-,.;: ") if m.group(2) else ""
+            if not first:
+                continue
+            if first.lower() in name_stops:
+                continue
+            if not (2 <= len(first) <= 25):
+                continue
+            if _PII_TOKEN_RE.fullmatch(first or "") or _PII_TOKEN_RE.fullmatch(second or ""):
+                continue
+            candidate = first
+            if (
+                second
+                and 2 <= len(second) <= 25
+                and second.lower() not in name_stops
+                and not _PII_TOKEN_RE.fullmatch(second)
+            ):
+                candidate = f"{first} {second}"
+            if agent_lc and candidate.lower().split()[0] == agent_lc.split()[0]:
+                # Same first name as the agent — almost always a mis-capture
+                # of the agent re-introducing themselves. Skip.
+                continue
+            return _title_case_name(candidate)
+    return None
 
 
 def _extract_agent_name_regex(transcript: str) -> str | None:
@@ -851,14 +977,52 @@ _AGENT_NAME_JOB_TITLE_STOPS: frozenset[str] = frozenset(
     }
 )
 
+# Filler / discourse tokens the LLM has been observed gluing into names
+# when a fluent agent reads the script (Westbury 2nd call yielded
+# "Sort Of" from "i'm the sort of the front runner"; the LLM took the
+# capitalised "Sort Of" as if it were a person's name). The existing
+# _NAME_STOPWORDS catches single-word regex matches; this set is what we
+# apply to MULTI-WORD LLM outputs.
+_AGENT_NAME_FILLER_TOKENS: frozenset[str] = frozenset(
+    {
+        "sort", "kind", "type", "front", "back", "here", "there",
+        "this", "that", "the", "and", "or", "of", "for", "with",
+        "in", "on", "at", "to", "from", "by", "off", "up", "down",
+        "yes", "no", "yeah", "yep", "nope", "okay", "ok", "right",
+        "well", "now", "just", "very", "really", "actually", "literally",
+        "still", "more", "less", "all", "some", "any", "no", "none",
+        "calling", "speaking", "person", "people", "someone", "everybody",
+        # 2026-05-18: politeness / discourse markers that the customer
+        # regex occasionally pulled in as a surname (e.g. "Pete please",
+        # "Margaret today"). Adding here so both the agent smell test
+        # AND the customer regex's stop-union catch them.
+        "please", "thanks", "thank", "today", "tomorrow", "yesterday",
+        "again", "soon", "later", "sure", "alright",
+    }
+)
+
 
 def _llm_agent_smells_fabricated(name: str | None) -> bool:
-    """Return True when the LLM's agent answer looks like a glued-together
-    interlocutor cue ("Art Engineer") rather than a real self-intro."""
+    """Return True when the LLM's agent answer is suspect.
+
+    Two signals trigger rejection:
+      • Any token matches a known job-title suffix ("Art Engineer",
+        "Sam Manager") — the LLM glued a real name with a job title.
+      • Any token matches a filler / discourse marker ("Sort Of",
+        "Kind Of", "Front Runner") — the LLM picked filler text as
+        if it were a name.
+    Single-token first-name-only answers ("James", "Sarah") are
+    accepted unchanged (the regex stopword list already filtered
+    obvious non-names at the capture layer).
+    """
     if not name or name == "Unknown":
         return False
     tokens = [t.strip().lower() for t in name.split() if t.strip()]
-    return any(t in _AGENT_NAME_JOB_TITLE_STOPS for t in tokens)
+    if any(t in _AGENT_NAME_JOB_TITLE_STOPS for t in tokens):
+        return True
+    if any(t in _AGENT_NAME_FILLER_TOKENS for t in tokens):
+        return True
+    return False
 
 
 async def detect_names(transcript: str) -> tuple[str, str]:
@@ -880,8 +1044,14 @@ async def detect_names(transcript: str) -> tuple[str, str]:
     if regex_agent:
         log.info(f"\U0001f464 DETECT names regex pre-pass \u2192 agent={regex_agent!r}")
 
+    regex_customer = _extract_customer_name_regex(transcript, agent_name=regex_agent)
+    if regex_customer:
+        log.info(f"\U0001f464 DETECT names regex pre-pass \u2192 customer={regex_customer!r}")
+
+    # Feed the LLM 1200 words (was 600) because the customer name often
+    # arrives only after the agent's 60-second TPI preamble.
     words = transcript.split()
-    transcript_start = " ".join(words[:600])
+    transcript_start = " ".join(words[:1200])
     prompt = DETECT_NAMES_PROMPT.replace("{transcript_start}", transcript_start)
     try:
         # 2026-05-16 — Opus 4.7 mandate from Mohamed: name extraction is
@@ -889,8 +1059,8 @@ async def detect_names(transcript: str) -> tuple[str, str]:
         result = await _call_llm(prompt, timeout=20.0, cheap=False)
     except Exception as e:
         log.warning(f"\U0001f464 DETECT names LLM failed: {e}")
-        # Regex still wins for the agent when the LLM is down.
-        return (regex_agent or "Unknown"), "Unknown"
+        # Regex still wins for both slots when the LLM is down.
+        return (regex_agent or "Unknown"), (regex_customer or "Unknown")
 
     agent = "Unknown"
     customer = "Unknown"
@@ -927,6 +1097,19 @@ async def detect_names(transcript: str) -> tuple[str, str]:
         )
         agent = regex_agent
 
+    # \u2500\u2500 Regex fallback on the CUSTOMER slot \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # Same rule as the agent slot: only override the LLM when it gave up.
+    # 2026-05-18 audit "customer never appears in transcript": the customer
+    # cue regex catches "am I speaking to X" / "yes this is X" / "X
+    # speaking" which the LLM sometimes ignores when the call has a long
+    # TPI preamble between agent self-intro and customer reveal.
+    if regex_customer and customer == "Unknown":
+        log.info(
+            f"\U0001f464 DETECT names regex fallback \u2192 "
+            f"customer={regex_customer!r} (LLM said Unknown)"
+        )
+        customer = regex_customer
+
     # Sanity: if agent and customer collapsed to the same name (LLM
     # confusion), trust the customer (which gets cross-validated downstream
     # against the Customer table) and clear the agent so the reviewer
@@ -947,6 +1130,17 @@ async def detect_names(transcript: str) -> tuple[str, str]:
     # layer never sees a literal token in either name field.
     agent = _strip_pii_tokens(agent)
     customer = _strip_pii_tokens(customer)
+
+    # Last-chance regex recovery after PII strip \u2014 if PII-strip collapsed
+    # the LLM's answer to "Unknown" but the regex pre-pass already found a
+    # real name from a non-redacted earlier turn, surface that real name.
+    # 2026-05-18 Crosby Grange call reproduced this: LLM captured the
+    # literal "[PERSON_NAME]" marker (which strips to "Unknown") even
+    # though the agent's regex had a clean "James" hit from earlier.
+    if agent == "Unknown" and regex_agent:
+        agent = regex_agent
+    if customer == "Unknown" and regex_customer:
+        customer = regex_customer
 
     log.info(f"\U0001f464 DETECT names \u2192 agent=\"{agent}\", customer=\"{customer}\"")
     return agent, customer
