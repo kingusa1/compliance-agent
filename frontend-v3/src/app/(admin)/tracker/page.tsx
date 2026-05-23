@@ -98,7 +98,26 @@ export default function TrackerPage() {
     tab: "awaiting_review",
     // No filters — this is a pure backlog ping for the OTHER-tab badge.
   });
+  // Background counts for the inactive tabs so EVERY chip carries its
+  // backlog number, not just "Awaiting review". Each query is unfiltered
+  // and uses the same React-Query cache as the active tab's row query, so
+  // navigating between tabs reuses the cached payload instantly.
+  const activeBgQ = useTrackerRowsQuery({ tab: "active" });
+  const fixedBgQ = useTrackerRowsQuery({ tab: "fixed" });
+  const deadBgQ = useTrackerRowsQuery({ tab: "dead" });
+  const compliantBgQ = useTrackerRowsQuery({ tab: "compliant" });
   const awaitingCount = isOnAwaitingTab ? rows.length : (awaitingBgQ.data?.count ?? 0);
+  const tabCount = (t: TrackerTab): number | null => {
+    if (t === tab) return rows.length;
+    const q = ({
+      awaiting_review: awaitingBgQ,
+      active: activeBgQ,
+      fixed: fixedBgQ,
+      dead: deadBgQ,
+      compliant: compliantBgQ,
+    } as const)[t];
+    return q.data?.count ?? null;
+  };
 
   const setTab = (t: TrackerTab) => {
     const params = new URLSearchParams(sp.toString());
@@ -175,11 +194,17 @@ export default function TrackerPage() {
                     <path d="M12 8v4l3 3" />
                   </svg>
                 )}
-                {t === "awaiting_review" && `Awaiting review${awaitingCount > 0 ? ` · ${awaitingCount}` : ""}`}
-                {t === "active" && "Active"}
-                {t === "fixed" && "Fixed"}
-                {t === "dead" && "Dead"}
-                {t === "compliant" && "Compliant"}
+                {(() => {
+                  const labels: Record<TrackerTab, string> = {
+                    awaiting_review: "Awaiting review",
+                    active: "Active",
+                    fixed: "Fixed",
+                    dead: "Dead",
+                    compliant: "Compliant",
+                  };
+                  const n = tabCount(t);
+                  return n == null ? labels[t] : `${labels[t]} · ${n}`;
+                })()}
               </button>
             );
           })}
