@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -53,52 +54,49 @@ export function SavedViewsBar({
   return (
     <>
       <DropdownMenu>
-        {/* Base UI's Menu.Trigger element-form expects the rendered component
-            to use Base UI composition; passing a plain shadcn Button as render
-            with children alongside fired Base UI error #31 on click. The
-            function-form below merges the Trigger's accessibility props onto
-            the Button without that constraint. */}
-        <DropdownMenuTrigger
-          render={(props, _state) => (
-            <Button variant="outline" size="sm" {...props}>
-              <Bookmark className="mr-2 h-3.5 w-3.5" />
-              Saved views
-              <ChevronDown className="ml-1 h-3 w-3 opacity-60" />
-            </Button>
-          )}
-        />
+        <DropdownMenuTrigger render={<Button variant="outline" size="sm" />}>
+          <Bookmark className="mr-2 h-3.5 w-3.5" />
+          Saved views
+          <ChevronDown className="ml-1 h-3 w-3 opacity-60" />
+        </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-[220px]">
-          <DropdownMenuLabel>Your views</DropdownMenuLabel>
-          {items.length === 0 ? (
-            <DropdownMenuItem disabled>No saved views yet</DropdownMenuItem>
-          ) : (
-            items.map((v) => (
-              <DropdownMenuItem
-                key={v.id}
-                onSelect={() =>
-                  onApply({
-                    filter: (v.filters?.filter as QueueFilter | undefined) ?? "all",
-                    q: (v.filters?.q as string | undefined) ?? "",
-                  })
-                }
-                className="flex items-center justify-between gap-2"
-              >
-                <span className="flex-1 truncate">{v.name}</span>
-                <button
-                  type="button"
-                  aria-label={`Delete saved view ${v.name}`}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    del.mutate(v.id);
-                  }}
-                  className="rounded p-0.5 text-[var(--text-muted)] opacity-60 transition-opacity hover:bg-red-500/10 hover:text-red-400 hover:opacity-100"
+          {/* Base UI Menu.Label requires a Menu.Group parent
+              (DropdownMenuGroup). Without it, useMenuGroupRootContext()
+              throws Base UI error #31 ("MenuGroupRootContext is missing")
+              the moment the menu mounts. */}
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>Your views</DropdownMenuLabel>
+            {items.length === 0 ? (
+              <DropdownMenuItem disabled>No saved views yet</DropdownMenuItem>
+            ) : (
+              items.map((v) => (
+                <DropdownMenuItem
+                  key={v.id}
+                  onSelect={() =>
+                    onApply({
+                      filter: (v.filters?.filter as QueueFilter | undefined) ?? "all",
+                      q: (v.filters?.q as string | undefined) ?? "",
+                    })
+                  }
+                  className="flex items-center justify-between gap-2"
                 >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              </DropdownMenuItem>
-            ))
-          )}
+                  <span className="flex-1 truncate">{v.name}</span>
+                  <button
+                    type="button"
+                    aria-label={`Delete saved view ${v.name}`}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      del.mutate(v.id);
+                    }}
+                    className="rounded p-0.5 text-[var(--text-muted)] opacity-60 transition-opacity hover:bg-red-500/10 hover:text-red-400 hover:opacity-100"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </DropdownMenuItem>
+              ))
+            )}
+          </DropdownMenuGroup>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => setDialogOpen(true)}>
             <Save className="mr-2 h-3.5 w-3.5" />
