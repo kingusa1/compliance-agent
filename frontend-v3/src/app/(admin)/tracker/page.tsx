@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { TrackerTable } from "./TrackerTable";
+import { TrackerGroupedTable } from "./TrackerGroupedTable";
 import { TrackerSidePanel } from "./TrackerSidePanel";
 import { TrackerFilterBar } from "./TrackerFilterBar";
 import { CATEGORY_KEYS, CATEGORY_LABEL, CATEGORY_HEX } from "./CategoryChip";
@@ -297,6 +298,18 @@ export default function TrackerPage() {
                 + Upload Call
               </button>
             </div>
+          ) : tab === "active" || tab === "fixed" || tab === "dead" ? (
+            // 2026-05-23 redesign — rejection-driven tabs collapse the
+            // N-rows-per-call wall into expandable cards. One call =
+            // one card; expanding reveals every individual rejection
+            // with its reason + status. Awaiting + Compliant tabs are
+            // already 1 row per call so they keep the dense table.
+            <TrackerGroupedTable
+              rows={rows}
+              tab={tab}
+              selectedRowId={selectedRow ? (selectedRow.rejection_id ?? selectedRow.call_id) : null}
+              onSelect={setSelectedRow}
+            />
           ) : (
             <TrackerTable
               rows={rows}
