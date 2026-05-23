@@ -6,11 +6,18 @@ from app.config import settings
 engine = create_engine(
     settings.database_url,
     pool_pre_ping=True,
-    # Sized for Railway: 2 uvicorn workers + idle-sweeper + Inngest steps need
-    # headroom without bumping into Supabase pooler limits.
-    pool_size=15,
-    max_overflow=30,
+    # Sized for Railway Pro (24GB) + Supabase Supavisor transaction pooler.
+    # Pro plan has headroom for a larger warm-pool; LIFO checkout keeps the
+    # hottest connection at the top so consecutive requests reuse a primed
+    # TCP/TLS session and skip the cross-region handshake.
+    pool_size=25,
+    max_overflow=50,
     pool_recycle=1800,
+    pool_use_lifo=True,
+    # Default compiled-statement cache is 500; lift to 1200 so the hot
+    # query shapes (queue, tracker, calls, deals) stop falling out and
+    # paying the parse+plan cost on every request.
+    query_cache_size=1200,
     connect_args={
         "connect_timeout": 10,
         "keepalives": 1,
