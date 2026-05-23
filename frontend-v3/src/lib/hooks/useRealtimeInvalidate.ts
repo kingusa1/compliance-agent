@@ -75,9 +75,21 @@ export function useRealtimeInvalidate(
     if (!isRealtimeEnabled()) return;
     if (typeof window === "undefined") return; // SSR safety
 
-    // Channel name is namespaced with table + filter so two pages
-    // listening to the same table with different filters don't collide.
-    const channelName = `realtime:${schema}:${table}${filter ? `:${filter}` : ""}`;
+    // 2026-05-23 fix: when two components mount with the same (table,
+    // filter) pair — e.g. /queue, the sidebar badge, and a customer
+    // detail page all subscribing to `calls` — Supabase JS reuses the
+    // channel object behind `supabase.channel(name)`. The second mount
+    // then calls `.on()` after `.subscribe()` and Supabase throws
+    // "cannot add `postgres_changes` callbacks after subscribe()".
+    //
+    // Each hook now owns a unique channel by appending a high-entropy
+    // suffix. The underlying postgres CDC subscription is filterable
+    // server-side so the network impact is negligible (Supabase
+    // server-side dedupes the actual WAL listener).
+    const uid =
+      (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`)
+        .slice(0, 8);
+    const channelName = `realtime:${schema}:${table}${filter ? `:${filter}` : ""}:${uid}`;
 
     let cancelled = false;
     const channel = supabase
