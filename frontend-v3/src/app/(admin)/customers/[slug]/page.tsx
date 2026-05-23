@@ -123,14 +123,37 @@ function StatCard({
   );
 }
 
+type WorkflowCall = {
+  id?: string;
+  call_type?: string | null;
+  agent_name?: string | null;
+  score?: string | null;
+  compliant?: boolean | string | null;
+};
+
+function parseScorePct(score: string | null | undefined): number | null {
+  if (!score) return null;
+  const m = String(score).match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
+  if (m && parseFloat(m[2]) > 0) {
+    return Math.round((parseFloat(m[1]) / parseFloat(m[2])) * 100);
+  }
+  if (/^\d+%/.test(String(score))) return parseInt(String(score), 10);
+  return null;
+}
+
 function WorkflowBar({
   steps,
   current,
   supplier,
+  calls,
 }: {
   steps: string[];
   current: number;
   supplier?: string | null;
+  // 2026-05-23 — per-stage agent + score. Each call.call_type maps to
+  // a step; passing the deal's calls lets the chip render who handled
+  // each stage and whether it scored well.
+  calls?: WorkflowCall[];
 }) {
   const eon = isEonSupplier(supplier);
   const summary = supplier ? workflowSummary(supplier) : undefined;
@@ -140,6 +163,15 @@ function WorkflowBar({
   for (const s of steps) {
     const parent = SEGMENT_PARENT[s as SegmentStage];
     if (parent) groups[parent].push(s);
+  }
+
+  // Resolve per-step call metadata once so the chip render stays cheap.
+  const callByStep = new Map<string, WorkflowCall>();
+  for (const c of calls ?? []) {
+    const t = (c.call_type ?? "").toLowerCase();
+    if (t && steps.includes(t) && !callByStep.has(t)) {
+      callByStep.set(t, c);
+    }
   }
 
   return (
@@ -176,6 +208,19 @@ function WorkflowBar({
             : isLoaEon
               ? "inside Closer call"
               : null;
+          // 2026-05-23 — pull the call that landed in this stage (if any).
+          // Reviewer wants to see WHO handled it + how well it scored,
+          // without drilling into the call detail page.
+          const stageCall = callByStep.get(s);
+          const stagePct = parseScorePct(stageCall?.score);
+          // Failing call = call exists but compliant=false (or score <50%)
+          // — the chip stays "done" (call was submitted) but tints red to
+          // signal a problem that the green "done" colour would hide.
+          const failing =
+            done &&
+            stageCall &&
+            (stageCall.compliant === false ||
+              (stagePct !== null && stagePct < 50));
           return (
             <div key={s} style={{ display: "flex", alignItems: "center", flex: 1 }}>
               <div
@@ -183,26 +228,32 @@ function WorkflowBar({
                   display: "flex",
                   flexDirection: "column",
                   gap: 2,
-                  padding: "4px 8px",
-                  borderRadius: 4,
-                  background: done
-                    ? "var(--emerald-bg)"
-                    : active
-                      ? "var(--amber-bg)"
-                      : "var(--bg-elev3)",
-                  border: `1px solid ${
-                    done
-                      ? "var(--emerald-border)"
+                  padding: "5px 9px",
+                  borderRadius: 5,
+                  background: failing
+                    ? "var(--red-bg)"
+                    : done
+                      ? "var(--emerald-bg)"
                       : active
-                        ? "var(--amber-border)"
-                        : "var(--border-subtle)"
+                        ? "var(--amber-bg)"
+                        : "var(--bg-elev3)",
+                  border: `1px solid ${
+                    failing
+                      ? "var(--red-border)"
+                      : done
+                        ? "var(--emerald-border)"
+                        : active
+                          ? "var(--amber-border)"
+                          : "var(--border-subtle)"
                   }`,
                   fontSize: 11,
-                  color: done
-                    ? "var(--emerald-400)"
-                    : active
-                      ? "var(--amber-400)"
-                      : "var(--text-faint)",
+                  color: failing
+                    ? "var(--red)"
+                    : done
+                      ? "var(--emerald-400)"
+                      : active
+                        ? "var(--amber-400)"
+                        : "var(--text-faint)",
                   opacity: corrective && !done && !active ? 0.55 : 1,
                   flex: 1,
                   minWidth: 0,
@@ -222,18 +273,52 @@ function WorkflowBar({
                       width: 5,
                       height: 5,
                       borderRadius: "50%",
-                      background: done
-                        ? "var(--emerald)"
-                        : active
-                          ? "var(--amber)"
-                          : "var(--border-strong)",
+                      background: failing
+                        ? "var(--red)"
+                        : done
+                          ? "var(--emerald)"
+                          : active
+                            ? "var(--amber)"
+                            : "var(--border-strong)",
                       flexShrink: 0,
                     }}
                   />
                   <span style={{ whiteSpace: "nowrap" }}>
                     {PHASE_LABEL[s as keyof typeof PHASE_LABEL] ?? s}
                   </span>
+                  {stagePct != null && (
+                    <span
+                      style={{
+                        fontFamily: "var(--font-mono)",
+                        fontVariantNumeric: "tabular-nums",
+                        fontSize: 10.5,
+                        marginLeft: "auto",
+                        color: failing
+                          ? "var(--red)"
+                          : stagePct >= 80
+                            ? "var(--emerald-400)"
+                            : "var(--amber-400)",
+                      }}
+                    >
+                      {stagePct}%
+                    </span>
+                  )}
                 </div>
+                {/* Per-stage agent name once the call has been submitted. */}
+                {stageCall?.agent_name && (
+                  <span
+                    style={{
+                      fontSize: 10,
+                      color: "var(--text-muted)",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                    title={`Handled by ${stageCall.agent_name}`}
+                  >
+                    {stageCall.agent_name}
+                  </span>
+                )}
                 {subLabel && (
                   <span
                     style={{
@@ -996,32 +1081,80 @@ export default function CustomerDetailPage({
                       {deal.calls.length} of {supplierAwareSteps.length} steps · {stepIdx} done
                     </span>
                   </div>
-                  <WorkflowBar steps={supplierAwareSteps} current={stepIdx} supplier={deal.supplier} />
+                  <WorkflowBar
+                    steps={supplierAwareSteps}
+                    current={stepIdx}
+                    supplier={deal.supplier}
+                    calls={deal.calls}
+                  />
                   {/* What's next / submitted vs missing — surfaces the
                       reviewer's "what do I do on this deal?" without
-                      forcing a drill-in. */}
+                      forcing a drill-in. Now with a smart "+ Upload <next stage>"
+                      CTA that prefills the upload modal to the right stage. */}
                   {dealMissing.length > 0 ? (
                     <div
                       style={{
                         marginTop: 10,
-                        fontSize: 12,
-                        color: "var(--text-muted)",
                         display: "flex",
                         alignItems: "center",
-                        gap: 6,
+                        gap: 10,
+                        flexWrap: "wrap",
                       }}
                     >
-                      <Clock size={11} style={{ color: "var(--amber-400)" }} />
-                      <span>
-                        <strong style={{ color: "var(--amber-400)" }}>
-                          Not yet submitted:
-                        </strong>{" "}
-                        {dealMissing
-                          .map((p) =>
-                            (PHASE_LABEL as Record<string, string>)[p] ?? p,
-                          )
-                          .join(", ")}
-                      </span>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: "var(--text-muted)",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                          flex: 1,
+                          minWidth: 200,
+                        }}
+                      >
+                        <Clock size={11} style={{ color: "var(--amber-400)" }} />
+                        <span>
+                          <strong style={{ color: "var(--amber-400)" }}>
+                            Not yet submitted:
+                          </strong>{" "}
+                          {dealMissing
+                            .map((p) =>
+                              (PHASE_LABEL as Record<string, string>)[p] ?? p,
+                            )
+                            .join(", ")}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          // Stop the parent <Link> from navigating to the deal
+                          // detail; we want the upload modal to open instead.
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setUploadOpen(true);
+                        }}
+                        style={{
+                          height: 26,
+                          padding: "0 10px",
+                          fontSize: 11.5,
+                          fontWeight: 500,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 5,
+                          background: "var(--amber-400)",
+                          color: "#1f1300",
+                          borderRadius: 5,
+                          border: "none",
+                          cursor: "pointer",
+                          fontFamily: "inherit",
+                        }}
+                        title={`Upload the ${(PHASE_LABEL as Record<string, string>)[dealMissing[0]] ?? dealMissing[0]} call to advance this deal`}
+                      >
+                        + Upload{" "}
+                        {(PHASE_LABEL as Record<string, string>)[
+                          dealMissing[0]
+                        ] ?? dealMissing[0]}
+                      </button>
                     </div>
                   ) : (
                     <div
