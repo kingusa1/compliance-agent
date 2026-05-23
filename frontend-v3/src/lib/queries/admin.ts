@@ -115,6 +115,11 @@ export type AdminCallRow = {
   score: string | null;
   compliance_status: string | null;
   status: string;
+  // Boolean AI verdict — populated when the pipeline finishes scoring.
+  // Used as the authoritative signal for the Compliant column on /calls;
+  // `compliance_status` can drift (older calls were stamped before the
+  // pass/coaching → "compliant" mapping was added) so the boolean wins.
+  compliant?: boolean | string | null;
   created_at: string;
   deal_id?: string | null;
   deal_ref?: string | null;

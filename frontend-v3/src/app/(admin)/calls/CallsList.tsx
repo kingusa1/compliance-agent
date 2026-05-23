@@ -127,7 +127,9 @@ export function CallsList({ calls }: { calls: AdminCallRow[] }) {
                 {formatScorePercent(c.score)}
               </TableCell>
               <TableCell className="py-3">
-                <CompliancePill status={c.compliance_status ?? c.status} />
+                <CompliancePill
+                  status={deriveCompliancePillStatus(c)}
+                />
               </TableCell>
               <TableCell className="py-3 text-right">
                 <DeleteButton callId={c.id} customerName={c.customer_name ?? null} />
@@ -146,6 +148,38 @@ function Th({ children }: { children: React.ReactNode }) {
       {children}
     </TableHead>
   );
+}
+
+/**
+ * Resolve the Compliant column pill once per row.
+ *
+ * The DB has two parallel signals: `compliant` (boolean — current
+ * pipeline) and `compliance_status` (string — older taxonomy). They
+ * drifted: e.g. Sam Escrich (Bob's Glazing) has compliant=true but
+ * compliance_status="pending", and Bradley Clayton has compliant=true
+ * with compliance_status="non_compliant". Reading either alone gives
+ * the wrong pill for ~80% of rows.
+ *
+ * Rule once the pipeline has finished (status is terminal):
+ *   compliant === true   → "compliant"
+ *   compliant === false  → "non_compliant"
+ *   compliant === null   → fall back to compliance_status / status
+ * Mid-pipeline we trust the lifecycle field so the pill shows
+ * "processing" / "needs_manual_review" instead of guessing.
+ */
+function deriveCompliancePillStatus(c: AdminCallRow): string | null {
+  const terminal = c.status === "completed" || c.status === "needs_manual_review";
+  if (terminal) {
+    const compliantTruthy =
+      c.compliant === true ||
+      (typeof c.compliant === "string" && c.compliant.toLowerCase() === "true");
+    const compliantFalsy =
+      c.compliant === false ||
+      (typeof c.compliant === "string" && c.compliant.toLowerCase() === "false");
+    if (compliantTruthy) return "compliant";
+    if (compliantFalsy) return "non_compliant";
+  }
+  return c.compliance_status ?? c.status ?? null;
 }
 
 function CompliancePill({ status }: { status: string | null | undefined }) {
