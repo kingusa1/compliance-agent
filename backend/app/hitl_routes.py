@@ -1818,6 +1818,37 @@ def admin_realtime_status(
     except Exception as e:
         out["policy_count"] = f"error: {type(e).__name__}: {str(e)[:100]}"
 
+    # Composite hot-path indexes shipped by migration 2026_05_23_q_perf_idx.
+    # Reported here so the carry-over verification (rotate keys, confirm
+    # indexes applied, ship the bulk-fix UI) is a single read instead of
+    # an out-of-band psql round-trip. The endpoint stays the single
+    # diagnostic surface for "did the last migration land" plus "is the
+    # planner walking the indexes it should" — both are answered together.
+    expected_composite_indexes = [
+        "ix_calls_queue_lookup",
+        "ix_calls_deal_created_at",
+        "ix_calls_completed_with_transcript",
+    ]
+    try:
+        rows = db.execute(_sql_text(
+            "SELECT indexname, indexdef FROM pg_indexes "
+            "WHERE schemaname = 'public' AND tablename = 'calls' "
+            "AND indexname = ANY(:names) "
+            "ORDER BY indexname"
+        ), {"names": expected_composite_indexes}).all()
+        present = {r[0]: r[1] for r in rows}
+        out["composite_indexes"] = {
+            "expected": expected_composite_indexes,
+            "present": sorted(present.keys()),
+            "missing": [n for n in expected_composite_indexes if n not in present],
+            "definitions": present,
+        }
+    except Exception as e:
+        out["composite_indexes"] = {
+            "expected": expected_composite_indexes,
+            "error": f"{type(e).__name__}: {str(e)[:120]}",
+        }
+
     return out
 
 
