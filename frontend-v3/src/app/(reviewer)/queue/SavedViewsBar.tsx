@@ -53,11 +53,20 @@ export function SavedViewsBar({
   return (
     <>
       <DropdownMenu>
-        <DropdownMenuTrigger render={<Button variant="outline" size="sm" />}>
-          <Bookmark className="mr-2 h-3.5 w-3.5" />
-          Saved views
-          <ChevronDown className="ml-1 h-3 w-3 opacity-60" />
-        </DropdownMenuTrigger>
+        {/* Base UI's Menu.Trigger element-form expects the rendered component
+            to use Base UI composition; passing a plain shadcn Button as render
+            with children alongside fired Base UI error #31 on click. The
+            function-form below merges the Trigger's accessibility props onto
+            the Button without that constraint. */}
+        <DropdownMenuTrigger
+          render={(props, _state) => (
+            <Button variant="outline" size="sm" {...props}>
+              <Bookmark className="mr-2 h-3.5 w-3.5" />
+              Saved views
+              <ChevronDown className="ml-1 h-3 w-3 opacity-60" />
+            </Button>
+          )}
+        />
         <DropdownMenuContent align="end" className="min-w-[220px]">
           <DropdownMenuLabel>Your views</DropdownMenuLabel>
           {items.length === 0 ? (
