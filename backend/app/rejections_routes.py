@@ -281,6 +281,19 @@ class TransitionPayload(BaseModel):
     notes: str | None = None
 
 
+class BulkTransitionPayload(BaseModel):
+    """2026-05-24 — flip many rejections to the same status in one trip.
+
+    Powers the /rejections bulk-action bar + per-group "Mark all fixed".
+    Cap is 500 ids per request — enough to clear the largest single-call
+    group (49 today, headroom for growth) while keeping the transaction
+    bounded so the planner can hold the row locks without contention.
+    """
+    rejection_ids: list[str] = Field(min_length=1, max_length=500)
+    to_status: str
+    notes: str | None = None
+
+
 class PortalBatchSubmit(BaseModel):
     """W4.5 — admin-only batch submit. ``rejection_ids`` must all belong
     to ``supplier`` and currently sit in a FIXED-like status. The route
@@ -884,6 +897,126 @@ def transition_rejection(
     db.commit()
     db.refresh(r)
     return _serialize(r)
+
+
+@rejections_router.post("/api/rejections/bulk-transition")
+def bulk_transition_rejections(
+    payload: BulkTransitionPayload,
+    user: dict = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Flip many rejections to one status in a single transaction.
+
+    Used by the /rejections bulk-action bar + the per-group "Mark all
+    fixed" button on RejectionGroupCard. The per-id PATCH does the same
+    job one row at a time; this endpoint exists so the UI can clear a
+    49-row group with one request + one audit batch instead of 49
+    chatty round-trips.
+
+    Idempotent: rejections already in ``to_status`` are reported back
+    under ``ids_skipped`` instead of being re-written. Re-sending the
+    same payload twice produces the same end state with zero double
+    audit rows. Frontend can blind-retry on network errors.
+
+    Authorization: reviewer or higher (same gate as PATCH). Admin role
+    is not required — bulk-fixing is a routine reviewer action.
+    """
+    _validate_enum(payload.to_status, REJECTION_STATUSES, "to_status")
+
+    # De-dupe server-side; React Strict-Mode + retry races can resubmit
+    # the same id twice within one request without the client meaning
+    # to. Empty strings drop out so a stray "" from the UI doesn't 404.
+    ids = list({rid for rid in payload.rejection_ids if rid})
+    if not ids:
+        raise HTTPException(
+            status_code=400, detail="rejection_ids must contain at least one id"
+        )
+
+    # Coerce to UUID so the `in_()` filter binds correctly under both
+    # Postgres (PGUUID column) and the SQLite test engine. Malformed
+    # strings surface as ids_not_found instead of 400 — the bulk call
+    # may receive a stale id from a slow client and we'd rather report
+    # it back than reject the whole batch.
+    rejection_uuids: list[UUID] = []
+    bad_ids: list[str] = []
+    for raw in ids:
+        try:
+            rejection_uuids.append(UUID(raw))
+        except (ValueError, TypeError):
+            bad_ids.append(raw)
+
+    rows = (
+        db.query(Rejection).filter(Rejection.id.in_(rejection_uuids)).all()
+        if rejection_uuids
+        else []
+    )
+    found_ids = {str(r.id) for r in rows}
+    ids_not_found = [rid for rid in ids if rid not in found_ids]
+
+    now = utcnow()
+    ids_updated: list[str] = []
+    ids_skipped: list[str] = []
+
+    for r in rows:
+        if r.status == payload.to_status:
+            ids_skipped.append(str(r.id))
+            continue
+        prev_status = r.status
+        r.status = payload.to_status
+        if payload.to_status in TERMINAL_STATUSES and r.resolved_at is None:
+            r.resolved_at = now
+        db.add(
+            RejectionAuditLog(
+                id=uuid.uuid4(),
+                rejection_id=r.id,
+                actor_id=user["id"],
+                action="bulk_transitioned",
+                from_status=prev_status,
+                to_status=payload.to_status,
+                notes=payload.notes,
+                created_at=now,
+            )
+        )
+        ids_updated.append(str(r.id))
+
+    db.commit()
+
+    # Inngest fan-out so the realtime layer (and any downstream
+    # observability) sees a per-row event, not one aggregate. The
+    # /rejections + /tracker pages both invalidate on these.
+    try:
+        from app.workflows.events import REJECTION_STATUS_CHANGED
+        from app.workflows.observability import emit_event
+        for rid in ids_updated:
+            emit_event(REJECTION_STATUS_CHANGED, {
+                "rejection_id": rid,
+                "to_status": payload.to_status,
+                "actor_id": user["id"],
+                "bulk": True,
+                "batch_size": len(ids_updated),
+            })
+    except Exception:
+        # Log + continue: a flaky event sidecar must not fail the user
+        # action that already committed to the DB. Per LAW §5 we log
+        # the exception with context instead of swallowing it silently.
+        log.exception("bulk_transition_event_emit_failed")
+
+    log.info(
+        "REJECTION_BULK_TRANSITIONED "
+        f"actor={user['id']} to_status={payload.to_status} "
+        f"updated={len(ids_updated)} skipped={len(ids_skipped)} "
+        f"not_found={len(ids_not_found)}"
+    )
+
+    return {
+        "updated": len(ids_updated),
+        "skipped_already_in_state": len(ids_skipped),
+        "not_found": len(ids_not_found),
+        "ids_updated": ids_updated,
+        "ids_skipped": ids_skipped,
+        "ids_not_found": ids_not_found,
+        "to_status": payload.to_status,
+    }
 
 
 @rejections_router.get("/api/rejections/{rid}/audit-log")

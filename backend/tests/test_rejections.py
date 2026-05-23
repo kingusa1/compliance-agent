@@ -291,6 +291,153 @@ def test_patch_with_status_writes_audit_log(mock_jwks, seed_profiles_local, auth
     assert upd[0]["to_status"] == "IN_PROGRESS"
 
 
+def test_bulk_transition_flips_all_active_rejections(
+    mock_jwks, seed_profiles_local, auth
+):
+    """2026-05-24 — POST /api/rejections/bulk-transition flips many ids
+    to one status in a single trip. Verifies:
+      - every active rejection is updated
+      - resolved_at is set when to_status is terminal
+      - per-row audit log is written (action='bulk_transitioned')
+      - response surfaces updated / skipped / not_found correctly
+    """
+    ids: list[str] = []
+    for i in range(3):
+        body = _create(
+            {
+                "category": "ADMIN_ERROR",
+                "rejection_reason": f"bulk-seed-{i}",
+                "call_id": "test-call-bulk",
+            },
+            auth("zoe"),
+        )
+        ids.append(body["id"])
+
+    r = client.post(
+        "/api/rejections/bulk-transition",
+        json={
+            "rejection_ids": ids,
+            "to_status": "FIXED_AND_APPROVED",
+            "notes": "cleared in bulk",
+        },
+        headers=auth("sarah"),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["updated"] == 3
+    assert body["skipped_already_in_state"] == 0
+    assert body["not_found"] == 0
+    assert set(body["ids_updated"]) == set(ids)
+
+    # Every row now terminal + resolved_at populated; audit row recorded.
+    db = TestSessionLocal()
+    try:
+        rows = db.query(Rejection).all()
+        assert {r.status for r in rows} == {"FIXED_AND_APPROVED"}
+        assert all(r.resolved_at is not None for r in rows)
+        logs = (
+            db.query(RejectionAuditLog)
+            .filter(RejectionAuditLog.action == "bulk_transitioned")
+            .all()
+        )
+        assert len(logs) == 3
+        assert {log.to_status for log in logs} == {"FIXED_AND_APPROVED"}
+        assert {log.notes for log in logs} == {"cleared in bulk"}
+    finally:
+        db.close()
+
+
+def test_bulk_transition_is_idempotent(mock_jwks, seed_profiles_local, auth):
+    """Resending the same payload must report skipped_already_in_state
+    instead of double-writing audit rows. Safe to retry on network errors.
+    """
+    body = _create(
+        {"category": "ADMIN_ERROR", "rejection_reason": "idem", "call_id": "c-idem"},
+        auth("zoe"),
+    )
+    rid = body["id"]
+
+    first = client.post(
+        "/api/rejections/bulk-transition",
+        json={"rejection_ids": [rid], "to_status": "FIXED"},
+        headers=auth("sarah"),
+    )
+    assert first.status_code == 200
+    assert first.json()["updated"] == 1
+
+    second = client.post(
+        "/api/rejections/bulk-transition",
+        json={"rejection_ids": [rid], "to_status": "FIXED"},
+        headers=auth("sarah"),
+    )
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body["updated"] == 0
+    assert second_body["skipped_already_in_state"] == 1
+    assert second_body["ids_skipped"] == [rid]
+
+    db = TestSessionLocal()
+    try:
+        logs = (
+            db.query(RejectionAuditLog)
+            .filter(RejectionAuditLog.action == "bulk_transitioned")
+            .all()
+        )
+        assert len(logs) == 1, "second call must NOT write a second audit row"
+    finally:
+        db.close()
+
+
+def test_bulk_transition_reports_not_found_separately(
+    mock_jwks, seed_profiles_local, auth
+):
+    """Mix of real + missing ids: real ones move, missing ones surface
+    in ids_not_found. The endpoint must not 404 the whole request."""
+    body = _create(
+        {"category": "ADMIN_ERROR", "rejection_reason": "mix"}, auth("zoe")
+    )
+    real_id = body["id"]
+    ghost = "00000000-0000-0000-0000-000000000000"
+
+    r = client.post(
+        "/api/rejections/bulk-transition",
+        json={"rejection_ids": [real_id, ghost], "to_status": "FIXED"},
+        headers=auth("sarah"),
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["updated"] == 1
+    assert body["not_found"] == 1
+    assert body["ids_not_found"] == [ghost]
+
+
+def test_bulk_transition_rejects_invalid_status(
+    mock_jwks, seed_profiles_local, auth
+):
+    body = _create(
+        {"category": "ADMIN_ERROR", "rejection_reason": "x"}, auth("zoe")
+    )
+    r = client.post(
+        "/api/rejections/bulk-transition",
+        json={"rejection_ids": [body["id"]], "to_status": "BOGUS_STATUS"},
+        headers=auth("sarah"),
+    )
+    assert r.status_code == 400
+
+
+def test_bulk_transition_rejects_empty_list(
+    mock_jwks, seed_profiles_local, auth
+):
+    """min_length=1 on the Pydantic field — empty list must 422 before
+    the route body even runs."""
+    r = client.post(
+        "/api/rejections/bulk-transition",
+        json={"rejection_ids": [], "to_status": "FIXED"},
+        headers=auth("sarah"),
+    )
+    assert r.status_code == 422
+
+
 def test_transition_endpoint_sets_resolved_at_on_terminal(
     mock_jwks, seed_profiles_local, auth
 ):

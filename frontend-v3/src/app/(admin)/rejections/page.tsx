@@ -14,14 +14,15 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ChevronRight, AlertTriangle, Clock, Radio } from "lucide-react";
+import { ChevronRight, AlertTriangle, Clock, Radio, Check, X } from "lucide-react";
 import {
   useRejectionsGroupedQuery,
   useRejectionQuery,
   type RejectionTab,
   type RejectionGroup,
 } from "@/lib/queries/rejections";
-import type { Rejection } from "@/lib/schemas/rejections";
+import type { Rejection, RejectionStatus } from "@/lib/schemas/rejections";
+import { useBulkTransitionRejections } from "@/lib/mutations/rejections";
 import { RejectionDetailPanel } from "./RejectionDetailPanel";
 import { useRealtimeInvalidate } from "@/lib/hooks/useRealtimeInvalidate";
 
@@ -122,6 +123,44 @@ export default function RejectionsPage() {
       else next.add(callId);
       return next;
     });
+
+  // 2026-05-24 — multi-select for bulk-fix flow. Keyed by group.call_id
+  // because users think in "this whole call's rejections" units, not
+  // individual rejection ids; the bulk endpoint handles either shape.
+  const [selectedCallIds, setSelectedCallIds] = useState<Set<string>>(new Set());
+  const toggleSelect = (callId: string) =>
+    setSelectedCallIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(callId)) next.delete(callId);
+      else next.add(callId);
+      return next;
+    });
+  const clearSelection = () => setSelectedCallIds(new Set());
+
+  const bulkTransition = useBulkTransitionRejections();
+
+  const runBulkOnCallIds = (callIds: string[], to: RejectionStatus) => {
+    const ids = groups
+      .filter((g) => callIds.includes(g.call_id))
+      .flatMap((g) => g.rejections.map((r) => r.id));
+    if (ids.length === 0) return;
+    bulkTransition.mutate(
+      { rejection_ids: ids, to_status: to },
+      { onSuccess: () => clearSelection() },
+    );
+  };
+
+  const runBulkOnGroup = (group: RejectionGroup, to: RejectionStatus) => {
+    const ids = group.rejections.map((r) => r.id);
+    if (ids.length === 0) return;
+    bulkTransition.mutate({ rejection_ids: ids, to_status: to });
+  };
+
+  // Switching tabs invalidates the selection — selected calls likely
+  // won't appear in the new tab's groups.
+  useEffect(() => {
+    clearSelection();
+  }, [tab]);
 
   // Backend's list_rejections payload already includes a `counts` map with
   // every tab's count computed off the same base set, so the badges stay
@@ -278,11 +317,38 @@ export default function RejectionsPage() {
                         onToggle={() => toggleExpand(g.call_id)}
                         selectedId={selectedId}
                         onSelectRejection={selectRow}
+                        isChecked={selectedCallIds.has(g.call_id)}
+                        onToggleCheck={() => toggleSelect(g.call_id)}
+                        onMarkAllFixed={() =>
+                          runBulkOnGroup(g, "FIXED_AND_APPROVED")
+                        }
+                        bulkPending={bulkTransition.isPending}
+                        currentTab={tab}
                       />
                     ))}
               </div>
             )}
           </div>
+          {selectedCallIds.size > 0 && (
+            <BulkActionBar
+              count={selectedCallIds.size}
+              rejectionCount={groups
+                .filter((g) => selectedCallIds.has(g.call_id))
+                .reduce((sum, g) => sum + g.rejection_count, 0)}
+              currentTab={tab}
+              pending={bulkTransition.isPending}
+              onMarkFixed={() =>
+                runBulkOnCallIds(
+                  Array.from(selectedCallIds),
+                  "FIXED_AND_APPROVED",
+                )
+              }
+              onMarkDead={() =>
+                runBulkOnCallIds(Array.from(selectedCallIds), "DEAD")
+              }
+              onCancel={clearSelection}
+            />
+          )}
         </div>
 
         <div className="flex min-w-0 flex-col overflow-hidden bg-[var(--bg-elev1)]">
@@ -309,12 +375,22 @@ function RejectionGroupCard({
   onToggle,
   selectedId,
   onSelectRejection,
+  isChecked,
+  onToggleCheck,
+  onMarkAllFixed,
+  bulkPending,
+  currentTab,
 }: {
   group: RejectionGroup;
   expanded: boolean;
   onToggle: () => void;
   selectedId: string | null;
   onSelectRejection: (id: string | null) => void;
+  isChecked: boolean;
+  onToggleCheck: () => void;
+  onMarkAllFixed: () => void;
+  bulkPending: boolean;
+  currentTab: RejectionTab;
 }) {
   const deadline = relativeDeadline(group.oldest_deadline);
   const dominantCategory = Object.entries(group.category_mix).sort(
@@ -337,19 +413,48 @@ function RejectionGroupCard({
           ? "var(--amber)"
           : "var(--red)";
 
+  // 2026-05-24 — per-group "Mark all fixed" only appears on the Active
+  // tab; on Fixed/Dead/Archive the rejections are already terminal and
+  // a single bulk action would be a no-op (the backend would just skip).
+  const showMarkAllFixed = currentTab === "active";
+
   return (
     <article
       data-slot="rejection-group-card"
-      className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elev2)] transition-colors hover:border-[var(--border-strong)]"
+      className={`rounded-xl border bg-[var(--bg-elev2)] transition-colors hover:border-[var(--border-strong)] ${
+        isChecked
+          ? "border-[var(--emerald-border)] ring-2 ring-[var(--emerald-border)]"
+          : "border-[var(--border-subtle)]"
+      }`}
       style={{ borderLeft: `3px solid ${dominantColor}` }}
     >
-      {/* Header row — always visible */}
-      <button
-        type="button"
-        onClick={onToggle}
-        className="grid w-full grid-cols-[auto_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_auto_auto_auto] items-center gap-4 px-4 py-3 text-left"
-        aria-expanded={expanded}
-      >
+      {/* Header row — checkbox + expand body + mark-fixed CTA in 3 columns
+          so each target stays a separate interactive element (a11y) and
+          we don't have nested <button>s. */}
+      <div className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-stretch gap-2 px-3 py-2">
+        {/* Multi-select checkbox */}
+        <label
+          className="flex w-6 cursor-pointer items-center justify-center"
+          onClick={(e) => e.stopPropagation()}
+          title={`Select call ${group.customer_name ?? group.call_id} for bulk action`}
+        >
+          <input
+            type="checkbox"
+            checked={isChecked}
+            onChange={onToggleCheck}
+            disabled={bulkPending}
+            aria-label={`Select call ${group.customer_name ?? group.call_id} for bulk action`}
+            className="h-4 w-4 cursor-pointer accent-[var(--emerald-400)]"
+          />
+        </label>
+
+        {/* Expandable row body */}
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          className="grid w-full grid-cols-[auto_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_auto_auto_auto] items-center gap-4 px-1 py-1 text-left"
+        >
         <ChevronRight
           size={14}
           className={`text-[var(--text-faint)] transition-transform ${expanded ? "rotate-90" : ""}`}
@@ -460,7 +565,31 @@ function RejectionGroupCard({
               </span>
             ))}
         </div>
-      </button>
+        </button>
+
+        {/* 2026-05-24 — Per-group "Mark all fixed" CTA. Active tab only;
+            hidden on Fixed/Dead/Archive where the bulk would no-op. */}
+        <div className="flex items-center pr-1">
+          {showMarkAllFixed ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onMarkAllFixed();
+              }}
+              disabled={bulkPending}
+              title={`Mark all ${group.rejection_count} rejection${
+                group.rejection_count === 1 ? "" : "s"
+              } from this call as FIXED_AND_APPROVED`}
+              className="inline-flex h-7 items-center gap-1 rounded-md border border-[var(--emerald-border)] bg-[var(--emerald-bg)] px-2.5 text-[11.5px] font-medium text-[var(--emerald-400)] transition-colors hover:bg-[var(--emerald-bg-strong)] disabled:opacity-50"
+              data-slot="rejection-group-mark-fixed"
+            >
+              <Check size={11} />
+              Mark all {group.rejection_count} fixed
+            </button>
+          ) : null}
+        </div>
+      </div>
 
       {/* Expanded body — individual rejections */}
       {expanded && (
@@ -526,6 +655,94 @@ function RejectionGroupCard({
         </div>
       )}
     </article>
+  );
+}
+
+// ─── Sticky bulk-action bar ────────────────────────────────────────────
+
+function BulkActionBar({
+  count,
+  rejectionCount,
+  currentTab,
+  pending,
+  onMarkFixed,
+  onMarkDead,
+  onCancel,
+}: {
+  count: number;
+  rejectionCount: number;
+  currentTab: RejectionTab;
+  pending: boolean;
+  onMarkFixed: () => void;
+  onMarkDead: () => void;
+  onCancel: () => void;
+}) {
+  // Mirrors RejectionGroupCard.showMarkAllFixed: destructive actions
+  // only meaningful on the Active tab.
+  const allowFixed = currentTab === "active";
+  const allowDead = currentTab === "active";
+
+  return (
+    <div
+      data-slot="rejections-bulk-action-bar"
+      className="sticky bottom-0 z-10 flex items-center gap-3 border-t border-[var(--border-subtle)] bg-[var(--bg-elev2)] px-4 py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.18)]"
+      role="region"
+      aria-label="Bulk actions for selected rejections"
+    >
+      <span className="inline-flex items-center gap-2 text-[12.5px] text-[var(--text-primary)]">
+        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-[var(--emerald-bg-strong)] font-mono text-[11px] text-[var(--emerald-400)]">
+          {count}
+        </span>
+        <span>
+          {count === 1 ? "call" : "calls"} selected
+          <span className="ml-1 text-[var(--text-muted)]">
+            · {rejectionCount} rejection{rejectionCount === 1 ? "" : "s"}
+          </span>
+        </span>
+      </span>
+      <span className="flex-1" />
+      {allowFixed && (
+        <button
+          type="button"
+          onClick={onMarkFixed}
+          disabled={pending}
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--emerald-border)] bg-[var(--emerald-bg-strong)] px-3 text-[12.5px] font-medium text-[var(--emerald-400)] transition-colors hover:bg-[var(--emerald-bg)] disabled:opacity-50"
+          data-slot="bulk-action-mark-fixed"
+        >
+          <Check size={13} /> Mark fixed
+        </button>
+      )}
+      {allowDead && (
+        <button
+          type="button"
+          onClick={() => {
+            if (
+              window.confirm(
+                `Mark ${rejectionCount} rejection${
+                  rejectionCount === 1 ? "" : "s"
+                } across ${count} call${count === 1 ? "" : "s"} as DEAD? This terminal state is hard to reverse.`,
+              )
+            ) {
+              onMarkDead();
+            }
+          }}
+          disabled={pending}
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--red-border)] bg-[var(--red-bg)] px-3 text-[12.5px] font-medium text-[var(--red)] transition-colors hover:bg-[var(--red-bg-strong)] disabled:opacity-50"
+          data-slot="bulk-action-mark-dead"
+        >
+          <AlertTriangle size={13} /> Mark dead
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={onCancel}
+        disabled={pending}
+        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elev3)] px-3 text-[12.5px] text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-elev1)] disabled:opacity-50"
+        data-slot="bulk-action-cancel"
+      >
+        <X size={13} /> Cancel
+      </button>
+    </div>
   );
 }
 

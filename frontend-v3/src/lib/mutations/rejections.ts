@@ -141,6 +141,71 @@ export function useDeleteRejection() {
   });
 }
 
+// ── 2026-05-24 — bulk transition ──────────────────────────────────────
+
+export type BulkTransitionArgs = {
+  rejection_ids: string[];
+  to_status: RejectionStatus;
+  notes?: string;
+};
+
+export type BulkTransitionResponse = {
+  updated: number;
+  skipped_already_in_state: number;
+  not_found: number;
+  ids_updated: string[];
+  ids_skipped: string[];
+  ids_not_found: string[];
+  to_status: string;
+};
+
+/**
+ * Powers the /rejections bulk-action bar and the per-group "Mark all
+ * fixed" button on RejectionGroupCard. Idempotent server-side: a retry
+ * with the same payload reports skipped_already_in_state instead of
+ * double-writing audit rows. Safe to fire on user impatience.
+ */
+export function useBulkTransitionRejections() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: BulkTransitionArgs) =>
+      postJson<BulkTransitionResponse, BulkTransitionArgs>(
+        `/api/rejections/bulk-transition`,
+        args,
+      ),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: rejectionsKeys.all() });
+      const moved = data.updated;
+      const skipped = data.skipped_already_in_state;
+      const missing = data.not_found;
+      const target = data.to_status.replace(/_/g, " ").toLowerCase();
+      if (moved > 0) {
+        const tail =
+          skipped > 0 || missing > 0
+            ? ` (${[
+                skipped > 0 ? `${skipped} already ${target}` : null,
+                missing > 0 ? `${missing} not found` : null,
+              ]
+                .filter(Boolean)
+                .join(", ")})`
+            : "";
+        toast.success(
+          `Marked ${moved} rejection${moved === 1 ? "" : "s"} → ${target}${tail}`,
+        );
+      } else if (skipped > 0) {
+        toast.info(`Already ${target} — no change`);
+      } else if (missing > 0) {
+        toast.error(`Nothing matched — ${missing} id${missing === 1 ? "" : "s"} not found`);
+      }
+    },
+    onError: (err) => {
+      toast.error("Couldn’t bulk-update rejections", {
+        description: _errMessage(err, "Try again."),
+      });
+    },
+  });
+}
+
 // ── W4.5 — portal-batches submit ──────────────────────────────────────
 
 export type SubmitPortalBatchArgs = {
