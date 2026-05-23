@@ -319,7 +319,43 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
       >
         {/* Sprint Task B — composite Deal verdict donut + per-call breakdown.
             Weighted-avg of all calls in the deal; red below 80% threshold,
-            green at/above. See backend/app/deals_composite.py. */}
+            green at/above. See backend/app/deals_composite.py.
+            The block ALWAYS renders a card — loading skeleton, error
+            fallback, or the donut/table — so this section is never
+            silently absent from the page. */}
+        {compositeQuery.isLoading && (
+          <section
+            data-slot="composite-verdict-loading"
+            className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)] p-6"
+          >
+            <div className="flex items-center gap-8">
+              <div className="h-32 w-32 animate-pulse rounded-full bg-[var(--bg-elev2)]" />
+              <div className="space-y-3">
+                <div className="h-4 w-48 animate-pulse rounded bg-[var(--bg-elev2)]" />
+                <div className="h-4 w-40 animate-pulse rounded bg-[var(--bg-elev2)]" />
+                <div className="h-4 w-56 animate-pulse rounded bg-[var(--bg-elev2)]" />
+              </div>
+            </div>
+            <p className="mt-4 text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
+              Loading composite verdict…
+            </p>
+          </section>
+        )}
+        {compositeQuery.isError && (
+          <section
+            data-slot="composite-verdict-error"
+            role="alert"
+            className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)] p-6"
+          >
+            <div className="text-sm font-medium">
+              Composite verdict unavailable
+            </div>
+            <p className="mt-1 text-[12.5px] text-[var(--text-muted)]">
+              The deal-level rollup couldn&apos;t be computed.
+              Per-call scores are still visible in the breakdown table below.
+            </p>
+          </section>
+        )}
         {compositeQuery.data && (
           <section
             data-slot="composite-verdict"

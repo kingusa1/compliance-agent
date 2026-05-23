@@ -963,7 +963,11 @@ export default function CallDetailPage({
               textOverflow: "ellipsis",
             }}
           >
-            {[c?.detected_supplier, c?.agent_name && `agent ${c.agent_name}`, c?.filename]
+            {[
+              c?.detected_supplier ?? "supplier pending",
+              `agent ${c?.agent_name ?? "(no agent detected)"}`,
+              c?.filename,
+            ]
               .filter(Boolean)
               .join(" · ")}
           </span>

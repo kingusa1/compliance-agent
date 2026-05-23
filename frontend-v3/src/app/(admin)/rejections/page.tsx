@@ -81,14 +81,27 @@ export default function RejectionsPage() {
   const rejections = listQ.data?.rejections ?? [];
   const total = listQ.data?.total ?? 0;
 
+  // Backend's list_rejections payload already includes a `counts` map with
+  // every tab's count computed off the same base set, so the badges stay
+  // populated regardless of which tab is selected. Falling back to the
+  // active-tab `total` keeps the chip non-empty during the first paint.
+  const serverCounts = listQ.data?.counts ?? null;
   const tabCounts = useMemo<Record<RejectionTab, number | undefined>>(() => {
+    if (serverCounts) {
+      return {
+        active: serverCounts.active ?? 0,
+        fixed: serverCounts.fixed ?? 0,
+        dead: serverCounts.dead ?? 0,
+        archive: serverCounts.archive ?? 0,
+      };
+    }
     return {
       active: tab === "active" ? total : undefined,
       fixed: tab === "fixed" ? total : undefined,
       dead: tab === "dead" ? total : undefined,
       archive: tab === "archive" ? total : undefined,
     };
-  }, [tab, total]);
+  }, [serverCounts, tab, total]);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden">
