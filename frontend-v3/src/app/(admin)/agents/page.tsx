@@ -324,16 +324,16 @@ export default function AgentsPage() {
                         fontVariantNumeric: "tabular-nums",
                       }}
                     >
-                      {flags || "—"}
+                      {flags ?? 0}
                     </div>
                     <div
                       style={{
                         fontFamily: "var(--font-mono)",
-                        color: r.open_directives > 0 ? "var(--amber)" : "var(--text-faint)",
+                        color: (r.open_directives ?? 0) > 0 ? "var(--amber)" : "var(--text-faint)",
                         fontVariantNumeric: "tabular-nums",
                       }}
                     >
-                      {r.open_directives || "—"}
+                      {r.open_directives ?? 0}
                     </div>
                     <div
                       style={{
