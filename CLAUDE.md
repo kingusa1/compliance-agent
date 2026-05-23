@@ -1,6 +1,10 @@
 # Compliance Agent — Session Context
 
-> **What to read first when resuming a session.**
+> **🛑 BINDING DOCTRINE — read before any tool call:**
+> - [BRAIN/00_LAW_OF_ENTERPRISE_GRADE.md](BRAIN/00_LAW_OF_ENTERPRISE_GRADE.md) — every fix must meet the 12-line enterprise-grade checklist (schema, tests, observability, realtime, errors, idempotency, backwards-compat, UX, performance, security, audit, docs). A patch that misses any line is not done.
+> - [BRAIN/00_LAW_OF_SKILLS.md](BRAIN/00_LAW_OF_SKILLS.md) — skill-first execution; never code without selecting the right skill(s) from the catalogue.
+>
+> **Then session context:**
 > 1. [BRAIN/00_INDEX.md](BRAIN/00_INDEX.md) — vault map + "Read FIRST" pointer
 > 2. [BRAIN/05_State/Live_State.md](BRAIN/05_State/Live_State.md) — current tip commit, deploy URLs, DB state
 > 3. [BRAIN/06_Operations/Skill_Routing.md](BRAIN/06_Operations/Skill_Routing.md) — task→skill matrix (this file's source of truth)

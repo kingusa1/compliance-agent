@@ -186,6 +186,88 @@ def test_list_with_tab_filtering(mock_jwks, seed_profiles_local, auth):
     assert a["counts"] == {"active": 1, "fixed": 1, "dead": 1, "archive": 3}
 
 
+def test_grouped_endpoint_collapses_rejections_per_call(
+    mock_jwks, seed_profiles_local, auth
+):
+    """2026-05-23 redesign — /api/rejections/grouped collapses many
+    rejection rows from the same call into a single group. Verifies:
+      - one group per distinct call_id
+      - rejection_count + status_mix + category_mix correctly summed
+      - groups sorted by rejection_count DESC (worst call first)
+      - counts use distinct call_id (not row count)
+    """
+    # Seed: 3 rejections on call-A, 1 on call-B, 1 with no call_id (orphan).
+    base = {"rejection_reason": "seed"}
+    call_a = "test-call-a"
+    call_b = "test-call-b"
+    for cat in ("ADMIN_ERROR", "ADMIN_ERROR", "PRICING_ISSUE"):
+        _create(
+            {**base, "category": cat, "call_id": call_a},
+            auth("zoe"),
+        )
+    _create(
+        {**base, "category": "VERBAL_SALES_ERROR", "call_id": call_b},
+        auth("zoe"),
+    )
+    # Orphan: no call_id at all — must NOT appear in grouped view.
+    _create({**base, "category": "ADMIN_ERROR"}, auth("zoe"))
+
+    r = client.get("/api/rejections/grouped?tab=active", headers=auth("sarah"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    groups = body["groups"]
+    assert len(groups) == 2, "orphan rejection must be excluded from grouped view"
+
+    # Worst call (3 rejections) first.
+    a = groups[0]
+    assert a["call_id"] == call_a
+    assert a["rejection_count"] == 3
+    assert a["status_mix"] == {"NOT_STARTED": 3}
+    assert a["category_mix"] == {"ADMIN_ERROR": 2, "PRICING_ISSUE": 1}
+    assert len(a["rejections"]) == 3
+
+    b = groups[1]
+    assert b["call_id"] == call_b
+    assert b["rejection_count"] == 1
+
+    # `counts` reports distinct call_ids, not row count — there are 2
+    # calls in active state even though there are 4 active rejection rows.
+    assert body["counts"]["active"] == 2
+    # Total still tracks the underlying rejections, useful for hero counters.
+    assert body["total_rejections"] == 4
+
+
+def test_grouped_endpoint_respects_source_filter(
+    mock_jwks, seed_profiles_local, auth
+):
+    """source=reviewer must include only rejections with a confirmed_by;
+    the auto-created flat-list endpoint already does this — grouped
+    must do the same so the same Source chip works on both views."""
+    _create(
+        {
+            "category": "ADMIN_ERROR",
+            "rejection_reason": "human-confirmed",
+            "call_id": "call-with-reviewer",
+        },
+        auth("zoe"),  # zoe is admin → confirmed_by gets set by the factory
+    )
+    # The default factory creates with confirmed_by populated by the
+    # admin actor — both endpoints should agree on it.
+    r1 = client.get(
+        "/api/rejections?tab=active&source=reviewer", headers=auth("sarah")
+    )
+    r2 = client.get(
+        "/api/rejections/grouped?tab=active&source=reviewer",
+        headers=auth("sarah"),
+    )
+    assert r1.status_code == 200 and r2.status_code == 200
+    # Same population, different shape.
+    flat_call_ids = {x["call_id"] for x in r1.json()["rejections"]}
+    grouped_call_ids = {g["call_id"] for g in r2.json()["groups"]}
+    assert flat_call_ids == grouped_call_ids
+
+
 def test_patch_with_status_writes_audit_log(mock_jwks, seed_profiles_local, auth):
     body = _create(
         {"category": "ADMIN_ERROR", "rejection_reason": "x"}, auth("zoe")

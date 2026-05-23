@@ -37,6 +37,10 @@ export const rejectionsKeys = {
   all: () => ["rejections"] as const,
   list: (params?: RejectionsListParams) =>
     ["rejections", "list", params ?? {}] as const,
+  /** 2026-05-23 — call-grouped view. Same params shape as `list` so the
+   *  page can swap shapes without re-deriving filters. */
+  grouped: (params?: RejectionsListParams) =>
+    ["rejections", "grouped", params ?? {}] as const,
   detail: (id: string) => ["rejections", id] as const,
   auditLog: (id: string) => ["rejections", id, "audit-log"] as const,
   /** W4.6 — vocab + glosses for the Dead-tab filter chips. */
@@ -44,6 +48,36 @@ export const rejectionsKeys = {
   /** W4.5 — supplier-grouped FIXED rejections for the portal-batches page. */
   portalBatches: (supplier?: string) =>
     ["portal-batches", { supplier: supplier ?? null }] as const,
+};
+
+// 2026-05-23 — grouped-by-call view types. Mirror the backend payload
+// in `app/rejections_routes.py:list_rejections_grouped`.
+export type RejectionGroup = {
+  call_id: string;
+  customer_name: string | null;
+  customer_slug: string | null;
+  agent_name: string | null;
+  supplier: string | null;
+  score: string | null;
+  call_type: string | null;
+  compliance_status: string | null;
+  review_status: string | null;
+  completed_at: string | null;
+  external_watt_site_id: number | null;
+  rejection_count: number;
+  status_mix: Record<string, number>;
+  category_mix: Record<string, number>;
+  oldest_deadline: string | null;
+  first_rejected_at: string | null;
+  rejections: Rejection[];
+};
+
+export type RejectionsGroupedResponse = {
+  groups: RejectionGroup[];
+  total_groups: number;
+  total_rejections: number;
+  counts: { active: number; fixed: number; dead: number; archive: number };
+  tab: string;
 };
 
 function _qs(params: Record<string, unknown>): string {
@@ -59,6 +93,17 @@ export function fetchRejections(
   params: RejectionsListParams = {},
 ): Promise<RejectionsListResponse> {
   return apiFetch<RejectionsListResponse>(`/api/rejections${_qs(params as Record<string, unknown>)}`);
+}
+
+/** 2026-05-23 — call-grouped fetch. Backend collapses many rejections
+ *  from the same call into one group. Designed for the redesigned
+ *  /rejections page where each card represents a call, not a row. */
+export function fetchRejectionsGrouped(
+  params: RejectionsListParams = {},
+): Promise<RejectionsGroupedResponse> {
+  return apiFetch<RejectionsGroupedResponse>(
+    `/api/rejections/grouped${_qs(params as Record<string, unknown>)}`,
+  );
 }
 
 export function fetchRejection(id: string): Promise<Rejection> {
@@ -94,6 +139,24 @@ export function useRejectionsQuery(params: RejectionsListParams = {}) {
     placeholderData: keepPreviousData,
     // Cap retries so a hung backend doesn't leave the UI Loading
     // forever — show the error after one retry instead.
+    retry: 1,
+    retryDelay: 1500,
+  });
+}
+
+/** 2026-05-23 — call-grouped query. Same realtime contract as
+ *  useRejectionsQuery: page subscribes to rejections + calls realtime,
+ *  this stays Infinity-stale between events. */
+export function useRejectionsGroupedQuery(
+  params: RejectionsListParams = {},
+) {
+  return useQuery({
+    queryKey: rejectionsKeys.grouped(params),
+    queryFn: () => fetchRejectionsGrouped(params),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
+    placeholderData: keepPreviousData,
     retry: 1,
     retryDelay: 1500,
   });

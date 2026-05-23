@@ -135,6 +135,49 @@ def _compute_deadline(rejected_at: datetime) -> datetime:
     return rejected_at + timedelta(days=2)
 
 
+def _resolve_customer_names(
+    db: Session, call_ids: list[str]
+) -> dict[str, str]:
+    """Resolve a display name for every call_id, using a deterministic
+    fallback chain so the rejections list / grouped view never renders
+    a bare ``—`` when any source has the name.
+
+    Lookup order, per call_id:
+      1. Customer.legal_name via Call.deal_id → CustomerDeal.customer_id
+      2. CustomerDeal.customer_name (in case the customer_id link is null)
+      3. Call.customer_name (set directly by the pipeline's detect_names
+         step before the deal-linker fires)
+
+    Returns an empty mapping for any call_id that resolves to None at
+    every step — callers should fall back to ``customer_slug`` or "—".
+    """
+    if not call_ids:
+        return {}
+    from app.models import CustomerDeal as _Deal, Customer as _Customer, Call as _Call
+
+    out: dict[str, str] = {}
+    rows = (
+        db.query(
+            _Call.id,
+            _Call.customer_name,
+            _Deal.customer_name,
+            _Customer.legal_name,
+        )
+        .outerjoin(_Deal, _Deal.id == _Call.deal_id)
+        .outerjoin(_Customer, _Customer.id == _Deal.customer_id)
+        .filter(_Call.id.in_(call_ids))
+        .all()
+    )
+    for cid, call_name, deal_name, legal_name in rows:
+        # Customer.legal_name is the most authoritative; deal name is
+        # the linker's choice; call.customer_name is the detect_names
+        # output. First non-empty wins.
+        name = legal_name or deal_name or call_name
+        if name and str(name).strip():
+            out[cid] = str(name).strip()
+    return out
+
+
 def _serialize(r: Rejection, customer_name: str | None = None) -> dict[str, Any]:
     return {
         "id": str(r.id),
@@ -320,22 +363,12 @@ def list_rejections(
         .all()
     )
 
-    # Look up customer_name per row in one go so the rejection list can
-    # render the customer column without N+1.
-    from app.models import CustomerDeal as _Deal, Customer as _Customer, Call as _Call
-    customer_name_by_id: dict[str, str] = {}
+    # 2026-05-23 — use the shared customer-name resolver so the list
+    # falls through Customer → CustomerDeal → Call instead of just the
+    # Customer join (which was returning null for auto-created
+    # rejections where the deal had no customer_id).
     call_ids = [r.call_id for r in rows if r.call_id]
-    if call_ids:
-        deal_rows = (
-            db.query(_Call.id, _Customer.legal_name)
-            .outerjoin(_Deal, _Deal.id == _Call.deal_id)
-            .outerjoin(_Customer, _Customer.id == _Deal.customer_id)
-            .filter(_Call.id.in_(call_ids))
-            .all()
-        )
-        for cid, name in deal_rows:
-            if name:
-                customer_name_by_id[cid] = name
+    customer_name_by_id = _resolve_customer_names(db, call_ids)
 
     # Per-tab counts (always over the same base set, no other filters) so
     # the top-bar tabs can render a reliable badge regardless of which tab
@@ -357,6 +390,209 @@ def list_rejections(
         "tab": tab,
         "limit": limit,
         "offset": offset,
+    }
+
+
+@rejections_router.get("/api/rejections/grouped")
+def list_rejections_grouped(
+    tab: str = Query("active", regex="^(active|fixed|dead|archive)$"),
+    category: str | None = None,
+    search: str | None = None,
+    dead_reason: str | None = Query(None),
+    source: str = Query("all", regex="^(reviewer|ai|all)$"),
+    limit: int = Query(100, ge=1, le=500),
+    user: dict = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Group rejections by call so the /rejections page renders one
+    card per call instead of N cards per call.
+
+    Designed for the 2026-05-23 redesign: a single submitted verdict
+    produces 1 Rejection row per failing checkpoint, which means a
+    standard non-compliant call generates 30-50 rows in the list view.
+    The reviewer cares about the CALL — not each checkpoint failure in
+    isolation — so this endpoint pre-aggregates them.
+
+    Response shape::
+
+        {
+          "groups": [
+            {
+              "call_id": "...",
+              "customer_name": "Baba",            # via _resolve_customer_names
+              "agent_name": "Paige",
+              "supplier": "E.ON Next",
+              "score": "39/88",
+              "call_type": "lead_gen",
+              "rejection_count": 32,
+              "status_mix": {"NOT_STARTED": 32},  # how many in each status
+              "category_mix": {"COMPLIANCE_ISSUE": 12, ...},
+              "oldest_deadline": "2026-05-25T00:00:00",
+              "first_rejected_at": "2026-05-23T...",
+              "rejections": [ ...full _serialize() shape per row... ]
+            },
+            ...
+          ],
+          "total_groups": 7,
+          "total_rejections": 49,
+          "counts": {active, fixed, dead, archive}  # same per-call counts as list endpoint
+          "tab": "active"
+        }
+
+    Filtering semantics match ``list_rejections`` exactly so the same
+    Category / Search / Source chips drive both views. Sort: most-
+    rejected call first, then oldest_deadline ascending.
+    """
+    q = db.query(Rejection)
+    if tab == "active":
+        q = q.filter(Rejection.status.in_(ACTIVE_STATUSES))
+    elif tab == "fixed":
+        q = q.filter(Rejection.status.in_(FIXED_LIKE_STATUSES))
+    elif tab == "dead":
+        q = q.filter(Rejection.status == "DEAD")
+
+    if category:
+        _validate_enum(category, REJECTION_CATEGORIES, "category")
+        q = q.filter(Rejection.category == category)
+    if dead_reason:
+        _validate_enum(dead_reason, set(DEAD_REASONS.keys()), "dead_reason")
+        q = q.filter(Rejection.dead_reason == dead_reason)
+    if search:
+        like = f"%{search}%"
+        q = q.filter(
+            (Rejection.rejection_reason.ilike(like))
+            | (Rejection.supplier.ilike(like))
+            | (Rejection.customer_slug.ilike(like))
+            | (Rejection.sales_agent.ilike(like))
+        )
+    if source == "reviewer":
+        q = q.filter(Rejection.confirmed_by.isnot(None))
+    elif source == "ai":
+        q = q.filter(Rejection.confirmed_by.is_(None))
+
+    # 2026-05-23: orphan guard — only group rejections with a call_id.
+    # Detached rejections (no parent call) are surfaced separately by
+    # the flat list endpoint; they don't belong in the grouped view.
+    q = q.filter(Rejection.call_id.isnot(None))
+    rows = q.order_by(Rejection.rejected_at.desc()).limit(limit * 50).all()
+
+    # Resolve customer + call metadata in one bulk trip per the LAW's
+    # no-N+1 rule.
+    call_ids = list({r.call_id for r in rows if r.call_id})
+    customer_name_by_id = _resolve_customer_names(db, call_ids)
+
+    # Pull call metadata (agent_name, supplier, score, call_type) once.
+    from app.models import Call as _Call
+    call_meta_by_id: dict[str, dict[str, Any]] = {}
+    if call_ids:
+        for c in (
+            db.query(
+                _Call.id, _Call.agent_name, _Call.detected_supplier,
+                _Call.score, _Call.call_type, _Call.compliance_status,
+                _Call.review_status, _Call.completed_at,
+            )
+            .filter(_Call.id.in_(call_ids))
+            .all()
+        ):
+            call_meta_by_id[c.id] = {
+                "agent_name": c.agent_name,
+                "supplier": c.detected_supplier,
+                "score": c.score,
+                "call_type": c.call_type,
+                "compliance_status": c.compliance_status,
+                "review_status": c.review_status,
+                "completed_at": c.completed_at.isoformat() if c.completed_at else None,
+            }
+
+    # Group in Python — small N (max ~500 rejection rows per call after
+    # the limit fence). Each group's `rejections` list preserves
+    # insertion order so the frontend renders chronologically without
+    # re-sorting.
+    from collections import OrderedDict
+    groups: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+    for r in rows:
+        cid = r.call_id
+        if cid is None:
+            continue
+        g = groups.get(cid)
+        if g is None:
+            meta = call_meta_by_id.get(cid, {})
+            g = {
+                "call_id": cid,
+                "customer_name": (
+                    customer_name_by_id.get(cid)
+                    or r.customer_slug
+                    or None
+                ),
+                "customer_slug": r.customer_slug,
+                "agent_name": meta.get("agent_name") or r.sales_agent,
+                "supplier": meta.get("supplier") or r.supplier,
+                "score": meta.get("score"),
+                "call_type": meta.get("call_type"),
+                "compliance_status": meta.get("compliance_status"),
+                "review_status": meta.get("review_status"),
+                "completed_at": meta.get("completed_at"),
+                "external_watt_site_id": r.external_watt_site_id,
+                "rejection_count": 0,
+                "status_mix": {},
+                "category_mix": {},
+                "oldest_deadline": None,
+                "first_rejected_at": None,
+                "rejections": [],
+            }
+            groups[cid] = g
+
+        # Append serialized rejection.
+        g["rejections"].append(
+            _serialize(r, customer_name=customer_name_by_id.get(cid))
+        )
+        g["rejection_count"] = len(g["rejections"])
+
+        # Update status + category mix counts.
+        status = r.status or "UNKNOWN"
+        g["status_mix"][status] = g["status_mix"].get(status, 0) + 1
+        if r.category:
+            g["category_mix"][r.category] = g["category_mix"].get(r.category, 0) + 1
+
+        # Track oldest deadline (smallest = most urgent) + first rejection.
+        if r.deadline is not None:
+            iso = r.deadline.isoformat()
+            if g["oldest_deadline"] is None or iso < g["oldest_deadline"]:
+                g["oldest_deadline"] = iso
+        if r.rejected_at is not None:
+            iso = r.rejected_at.isoformat()
+            if g["first_rejected_at"] is None or iso < g["first_rejected_at"]:
+                g["first_rejected_at"] = iso
+
+    # Sort: most rejections first (worst calls bubble up); tiebreak
+    # by oldest_deadline ascending so deadline pressure breaks ties.
+    sorted_groups = sorted(
+        groups.values(),
+        key=lambda x: (
+            -x["rejection_count"],
+            x["oldest_deadline"] or "9999",
+        ),
+    )[:limit]
+
+    # Per-tab counts mirror the flat endpoint so the existing tab badges
+    # keep working — counting CALLS (distinct call_id), not Rejection rows.
+    base = db.query(Rejection).filter(Rejection.call_id.isnot(None))
+    counts = {
+        "active": base.filter(Rejection.status.in_(ACTIVE_STATUSES))
+        .with_entities(Rejection.call_id).distinct().count(),
+        "fixed": base.filter(Rejection.status.in_(FIXED_LIKE_STATUSES))
+        .with_entities(Rejection.call_id).distinct().count(),
+        "dead": base.filter(Rejection.status == "DEAD")
+        .with_entities(Rejection.call_id).distinct().count(),
+        "archive": base.with_entities(Rejection.call_id).distinct().count(),
+    }
+
+    return {
+        "groups": sorted_groups,
+        "total_groups": len(sorted_groups),
+        "total_rejections": sum(g["rejection_count"] for g in sorted_groups),
+        "counts": counts,
+        "tab": tab,
     }
 
 
