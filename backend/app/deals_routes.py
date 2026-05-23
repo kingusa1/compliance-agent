@@ -27,7 +27,7 @@ from app.auth import current_user
 from app.database import get_db
 from app.deal_lifecycle import derive_lifecycle_status
 from app.deal_verdict import DealVerdict, aggregate_deal_verdict
-from app.deals_composite import compute_composite_verdict
+from app.deals_composite import compute_composite_verdict, composite_from_calls
 from app.models import Call, CustomerDeal
 from app.schemas import CustomerDealCreate, CustomerDealOut
 
@@ -172,11 +172,30 @@ def list_deals(
     out_deals = []
     for r in rows:
         d = _serialise_deal(r)
+        deal_calls = calls_by_deal.get(r.id, [])
         try:
-            d["lifecycle_status"] = derive_lifecycle_status(r, calls_by_deal.get(r.id, []))
+            d["lifecycle_status"] = derive_lifecycle_status(r, deal_calls)
         except Exception:
             # Keep the stored value if derivation blows up — failure here
             # should never break the listing.
+            pass
+        # Composite score for the listing's Score column. The `final_score`
+        # column on customer_deals isn't written by the pipeline yet, so the
+        # listing always showed "—" even when the deal had a scored call.
+        # Compute the same weighted-avg the /deals/{id} detail page uses so
+        # the column carries the same number reviewers see when they drill in.
+        try:
+            comp = composite_from_calls(r.id, deal_calls)
+            d["composite_pct"] = comp["composite_pct"]
+            d["calls_scored"] = comp["calls_scored"]
+            d["calls_total"] = comp["calls_total"]
+            d["worst_action"] = comp["worst_action"]
+            d["threshold_met"] = comp["threshold_met"]
+            if d.get("final_score") is None and comp["composite_pct"] is not None:
+                d["final_score"] = comp["composite_pct"]
+        except Exception:
+            # Listing must never 500 — degrade silently if the composite
+            # math throws and let the row render its stored "—".
             pass
         out_deals.append(d)
 

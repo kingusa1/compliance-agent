@@ -622,8 +622,17 @@ def build_tracker_rows(
         return rows
 
     if tab == "compliant":
-        # Calls that completed AND have no Rejection row.
-        q = db.query(Call).filter(Call.status == "completed")
+        # Calls the AI scored as compliant AND with no Rejection row.
+        # 2026-05-23 fix: was "any completed call with no rejection", but
+        # after the 2026-05-12 reviewer-initiated-only switch, EVERY call
+        # qualifies until a reviewer files a Rejection — so the tab showed
+        # all 14 calls instead of the 5 the AI actually marked compliant.
+        # Aligns this tab with the /compliant audit page (Call.compliant
+        # === true) so reviewers see the same population in both surfaces.
+        q = db.query(Call).filter(
+            Call.status == "completed",
+            Call.compliant.is_(True),
+        )
         sub = db.query(Rejection.call_id).filter(Rejection.call_id == Call.id).exists()
         q = q.filter(~sub)
         if supplier:

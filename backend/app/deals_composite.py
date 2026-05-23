@@ -57,20 +57,11 @@ def _parse_score(s: str | int | float | None) -> float | None:
         return None
 
 
-def compute_composite_verdict(deal_id: Any, db: Session) -> dict[str, Any]:
-    """Composite verdict for a Deal — weighted-avg of its calls' scores."""
-    deal = db.query(CustomerDeal).filter_by(id=deal_id).first()
-    if deal is None:
-        return {
-            "deal_id": str(deal_id),
-            "composite_pct": None,
-            "calls_scored": 0,
-            "calls_total": 0,
-            "threshold_met": False,
-            "worst_action": "PENDING",
-            "per_call": [],
-        }
-    calls = db.query(Call).filter_by(deal_id=deal_id).all()
+def composite_from_calls(deal_id: Any, calls: list[Call]) -> dict[str, Any]:
+    """Pure composite calc — takes pre-fetched calls so a bulk caller (e.g.
+    ``list_deals``) can compute scores for many deals without an extra
+    per-deal DB hop. Same return shape as ``compute_composite_verdict``.
+    """
     per_call: list[dict[str, Any]] = []
     weighted_sum = 0.0
     weight_total = 0.0
@@ -103,8 +94,27 @@ def compute_composite_verdict(deal_id: Any, db: Session) -> dict[str, Any]:
         "composite_pct": round(composite_pct, 1) if composite_pct is not None else None,
         "threshold_pct": COMPOSITE_THRESHOLD_PCT,
         "threshold_met": composite_pct is not None and composite_pct >= COMPOSITE_THRESHOLD_PCT,
-        "worst_action": worst,
+        "worst_action": worst if scored > 0 else "PENDING",
         "calls_scored": scored,
         "calls_total": len(calls),
         "per_call": per_call,
     }
+
+
+def compute_composite_verdict(deal_id: Any, db: Session) -> dict[str, Any]:
+    """Composite verdict for a Deal — weighted-avg of its calls' scores."""
+    deal = db.query(CustomerDeal).filter_by(id=deal_id).first()
+    if deal is None:
+        return {
+            "deal_id": str(deal_id),
+            "composite_pct": None,
+            "calls_scored": 0,
+            "calls_total": 0,
+            "threshold_met": False,
+            "worst_action": "PENDING",
+            "per_call": [],
+        }
+    calls = db.query(Call).filter_by(deal_id=deal_id).all()
+    return composite_from_calls(deal_id, calls)
+
+

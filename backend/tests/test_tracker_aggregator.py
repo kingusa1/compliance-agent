@@ -94,12 +94,29 @@ def test_compliant_tab_returns_passing_calls(test_db):
         agent_name="Jack",
         status="completed",
         score="22/24",
+        # 2026-05-23: the compliant tab now matches /compliant page semantics
+        # (Call.compliant === true), not "any completed call with no
+        # rejection". A passing call must have compliant=True for the tab to
+        # surface it; failing-but-no-rejection calls belong on /non-compliant.
+        compliant=True,
     )
-    test_db.add_all([cust, deal, call_pass])
+    # Add a second call with the same shape but compliant=False to lock in
+    # the new semantics — it must NOT appear on the compliant tab.
+    call_fail = Call(
+        id=str(uuid.uuid4()),
+        filename="fail.mp3",
+        file_path="/tmp/f.mp3",
+        deal_id=deal.id,
+        agent_name="Jack",
+        status="completed",
+        score="5/24",
+        compliant=False,
+    )
+    test_db.add_all([cust, deal, call_pass, call_fail])
     test_db.commit()
 
     rows = build_tracker_rows(test_db, tab="compliant")
-    assert len(rows) == 1
+    assert len(rows) == 1, "compliant tab must surface ONLY Call.compliant=True"
     r = rows[0]
     assert r["customer_name"] == "Beta Ltd"
     assert r["score"] == "22/24"
