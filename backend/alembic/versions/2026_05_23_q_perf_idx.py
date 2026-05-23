@@ -37,7 +37,15 @@ the planner picks a worse path. Down-revision deletes all three so
 from alembic import op
 
 
-revision = "2026_05_23_queue_perf_composite_indexes"
+# NOTE 2026-05-23 — Postgres' `alembic_version.version_num` column is
+# `VARCHAR(32)`. Revision id MUST be ≤32 chars or every alembic upgrade
+# trips `psycopg2.errors.StringDataRightTruncation` on the UPDATE that
+# bumps the stored head. The original revision string
+# `2026_05_23_queue_perf_composite_indexes` was 39 chars and broke 7
+# consecutive CI runs from 15:35 UTC. The new id is 21 chars.
+# Filename was renamed to match. Filed in
+# [[BRAIN/00_LAW_OF_ENTERPRISE_GRADE]] checklist as a hard rule.
+revision = "2026_05_23_q_perf_idx"
 down_revision = "2026_05_16_rls_realtime"
 branch_labels = None
 depends_on = None
