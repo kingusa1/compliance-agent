@@ -7,15 +7,25 @@
  * Hero: back arrow + customer name + inline KPIs + +Upload primary button.
  * 6-stat strip · Deal cards (workflow progress bar) · Call timeline table.
  */
-import { use, useState } from "react";
+import { use, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import {
+  ArrowLeft,
+  ExternalLink,
+  AlertTriangle,
+  CheckCircle2,
+  Clock,
+  ListChecks,
+  Radio,
+  Sparkles,
+} from "lucide-react";
 
 import {
   useCustomerDetailQuery,
   useCustomerRollupQuery,
   useCustomerTimelineQuery,
 } from "@/lib/queries/admin";
+import { useRealtimeInvalidate } from "@/lib/hooks/useRealtimeInvalidate";
 import { Pill, type PillTone } from "@/components/design/Pill";
 import { WorkflowTypePill } from "@/components/design/WorkflowTypePill";
 import { UploadModal } from "@/app/(admin)/calls/UploadModal";
@@ -299,6 +309,24 @@ export default function CustomerDetailPage({
   const rollup = useCustomerRollupQuery(slug);
   const timeline = useCustomerTimelineQuery(slug);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [riskTagsExpanded, setRiskTagsExpanded] = useState(false);
+
+  // 2026-05-23 — full realtime wiring. The customer detail view is
+  // assembled from three queries (detail / rollup / timeline); every
+  // CDC event from calls, customer_deals, or rejections invalidates
+  // all three so the page stays live without polling. Matches the
+  // policy in BRAIN/00_SYSTEM_PROMPT.md §1.
+  const realtimeKeys = useMemo(
+    () => [
+      ["admin", "customer", slug],
+      ["admin", "customer", slug, "rollup"],
+      ["admin", "customer", slug, "timeline"],
+    ],
+    [slug],
+  );
+  useRealtimeInvalidate("calls", realtimeKeys);
+  useRealtimeInvalidate("customer_deals", realtimeKeys);
+  useRealtimeInvalidate("rejections", realtimeKeys);
 
   const customer = detail.data?.customer;
   const deals = detail.data?.deals ?? [];
@@ -334,6 +362,49 @@ export default function CustomerDetailPage({
   // Backend rollup returns ``risk_tag_aggregate`` keyed by canonical tag.
   const riskAgg = (rollupData.risk_tag_aggregate as Record<string, number> | undefined) ?? {};
   const riskTagTotal = Object.values(riskAgg).reduce((acc, n) => acc + (Number(n) || 0), 0);
+
+  // 2026-05-23 redesign — derived metrics for the new top sections.
+  // Everything below is read-only off existing data: no extra API
+  // calls, no schema changes. The Action Banner + Compliance Hero
+  // surface what the reviewer needs to act on in one glance.
+  const compliantRows = timelineRows.filter(
+    (r) => (r as { compliant?: unknown }).compliant === true,
+  );
+  const nonCompliantRows = timelineRows.filter(
+    (r) => (r as { compliant?: unknown }).compliant === false,
+  );
+  const scoredTotal = compliantRows.length + nonCompliantRows.length;
+  const compliancePct =
+    scoredTotal > 0
+      ? Math.round((compliantRows.length / scoredTotal) * 100)
+      : null;
+  // What's left for the reviewer to action.
+  const callsToReview = nonCompliantRows.length;
+  // Per-deal "missing phase" hints — what the supplier workflow expects
+  // vs what calls have been uploaded. Drives the "what's next" line on
+  // each deal card.
+  const dealsWithMissing = deals.map((deal) => {
+    const steps = workflowStepsFor(deal.supplier);
+    const seen = new Set(
+      deal.calls.map((c) => (c.call_type ?? "").toLowerCase()).filter(Boolean),
+    );
+    const missing = steps.filter((s) => !seen.has(s));
+    return { deal, steps, missing };
+  });
+  const totalMissingPhases = dealsWithMissing.reduce(
+    (acc, d) => acc + d.missing.length,
+    0,
+  );
+  // Top 6 risk tags by frequency for the expandable section. Sorted
+  // descending so the worst sit at the top.
+  const topRiskTags = Object.entries(riskAgg)
+    .filter(([, n]) => Number(n) > 0)
+    .sort(([, a], [, b]) => Number(b) - Number(a))
+    .slice(0, 6);
+  // The "Live" indicator only renders once at least one of the queries
+  // has returned — otherwise the user sees "Live" before any data has
+  // arrived which is misleading.
+  const dataLoaded = detail.isSuccess || rollup.isSuccess || timeline.isSuccess;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden", minWidth: 0 }}>
@@ -491,40 +562,352 @@ export default function CustomerDetailPage({
           padding: 24,
           display: "flex",
           flexDirection: "column",
-          gap: 24,
+          gap: 20,
           minHeight: 0,
         }}
         className="ca-scroll"
       >
-        {/* 6-stat strip */}
-        <div style={{ display: "flex", gap: 12 }}>
-          <StatCard label="Deals" value={dealCount} />
-          <StatCard label="Calls" value={callCount} />
+        {/* ─────────────────────────────────────────────────────────────
+            ACTION BANNER — what the reviewer should do next on this
+            customer. Only rendered when something is actionable so it
+            doesn't add visual noise on cleanly-passing accounts.
+            ───────────────────────────────────────────────────────────── */}
+        {(callsToReview > 0 || openDirs > 0 || totalMissingPhases > 0) && (
+          <div
+            data-slot="action-banner"
+            style={{
+              padding: "14px 18px",
+              borderRadius: 10,
+              background:
+                "linear-gradient(180deg, color-mix(in oklab, var(--amber) 14%, var(--bg-elev2)) 0%, var(--bg-elev2) 100%)",
+              border: "1px solid var(--amber-border)",
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "center",
+              gap: 14,
+            }}
+          >
+            <div
+              style={{
+                width: 32,
+                height: 32,
+                display: "grid",
+                placeItems: "center",
+                borderRadius: 8,
+                background: "var(--amber-bg)",
+                color: "var(--amber-400)",
+                flexShrink: 0,
+              }}
+            >
+              <AlertTriangle size={16} />
+            </div>
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: "var(--text-primary)",
+                  marginBottom: 2,
+                }}
+              >
+                Action queue — {heroLabel}
+              </div>
+              <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
+                {[
+                  callsToReview > 0 &&
+                    `${callsToReview} non-compliant call${callsToReview === 1 ? "" : "s"} need reviewer sign-off`,
+                  openDirs > 0 &&
+                    `${openDirs} open directive${openDirs === 1 ? "" : "s"} pending fix`,
+                  totalMissingPhases > 0 &&
+                    `${totalMissingPhases} workflow step${totalMissingPhases === 1 ? "" : "s"} missing across ${deals.length} deal${deals.length === 1 ? "" : "s"}`,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+              {callsToReview > 0 && (
+                <Link
+                  href={`/queue?filter=unclaimed&q=${encodeURIComponent(heroLabel)}`}
+                  style={{
+                    height: 30,
+                    padding: "0 12px",
+                    fontSize: 12.5,
+                    fontWeight: 500,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    background: "var(--amber-400)",
+                    color: "#1f1300",
+                    borderRadius: 6,
+                    textDecoration: "none",
+                  }}
+                >
+                  <ListChecks size={13} /> Review now
+                </Link>
+              )}
+              {openDirs > 0 && (
+                <Link
+                  href={`/rejections?source=reviewer&search=${encodeURIComponent(heroLabel)}`}
+                  style={{
+                    height: 30,
+                    padding: "0 12px",
+                    fontSize: 12.5,
+                    fontWeight: 500,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    background: "var(--bg-elev3)",
+                    color: "var(--text-primary)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: 6,
+                    textDecoration: "none",
+                  }}
+                >
+                  Open rejections →
+                </Link>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ─────────────────────────────────────────────────────────────
+            COMPLIANCE HERO — single big number reviewers care about,
+            plus a breakdown chip and a live status indicator. Renders
+            even when no calls are scored yet so the slot is never empty.
+            ───────────────────────────────────────────────────────────── */}
+        <div
+          data-slot="compliance-hero"
+          style={{
+            padding: 18,
+            borderRadius: 10,
+            background: "var(--bg-elev2)",
+            border: "1px solid var(--border-subtle)",
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            flexWrap: "wrap",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 16,
+              flex: 1,
+              minWidth: 280,
+            }}
+          >
+            <div
+              style={{
+                width: 84,
+                height: 84,
+                borderRadius: 12,
+                background:
+                  compliancePct == null
+                    ? "var(--bg-elev3)"
+                    : compliancePct >= 80
+                      ? "var(--emerald-bg)"
+                      : compliancePct >= 60
+                        ? "var(--amber-bg)"
+                        : "var(--red-bg)",
+                border: `1px solid ${
+                  compliancePct == null
+                    ? "var(--border-subtle)"
+                    : compliancePct >= 80
+                      ? "var(--emerald-border)"
+                      : compliancePct >= 60
+                        ? "var(--amber-border)"
+                        : "var(--red-border)"
+                }`,
+                display: "grid",
+                placeItems: "center",
+                flexShrink: 0,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 24,
+                  fontWeight: 700,
+                  color:
+                    compliancePct == null
+                      ? "var(--text-faint)"
+                      : compliancePct >= 80
+                        ? "var(--emerald-400)"
+                        : compliancePct >= 60
+                          ? "var(--amber-400)"
+                          : "var(--red)",
+                  fontVariantNumeric: "tabular-nums",
+                  letterSpacing: "-0.02em",
+                }}
+              >
+                {compliancePct == null ? "—" : `${compliancePct}%`}
+              </div>
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 11,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                  color: "var(--text-faint)",
+                  marginBottom: 4,
+                }}
+              >
+                Compliance rate
+              </div>
+              <div
+                style={{
+                  fontSize: 15,
+                  fontWeight: 500,
+                  color: "var(--text-primary)",
+                  marginBottom: 6,
+                }}
+              >
+                {compliancePct == null
+                  ? "No calls scored yet"
+                  : compliancePct >= 80
+                    ? "Healthy — keep an eye on outliers"
+                    : compliancePct >= 60
+                      ? "Mixed — review the failing calls first"
+                      : "Critical — most calls need reviewer action"}
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  flexWrap: "wrap",
+                  fontSize: 12,
+                }}
+              >
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                    color: "var(--emerald-400)",
+                  }}
+                >
+                  <CheckCircle2 size={12} /> {compliantRows.length} compliant
+                </span>
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                    color: "var(--red)",
+                  }}
+                >
+                  <AlertTriangle size={12} /> {nonCompliantRows.length} non-compliant
+                </span>
+                {customer?.last_seen && (
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 5,
+                      color: "var(--text-muted)",
+                    }}
+                  >
+                    <Clock size={12} /> Last call{" "}
+                    {new Date(customer.last_seen).toLocaleDateString()}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
+          >
+            {dataLoaded && (
+              <span
+                title="Updates push from Supabase Realtime — no refresh needed"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  fontSize: 11,
+                  color: "var(--emerald-400)",
+                  background: "var(--emerald-bg)",
+                  border: "1px solid var(--emerald-border)",
+                  padding: "3px 8px",
+                  borderRadius: 999,
+                }}
+              >
+                <Radio size={11} /> Live
+              </span>
+            )}
+            {(customer?.agents ?? []).length > 0 && (
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  fontSize: 11,
+                  color: "var(--text-muted)",
+                  background: "var(--bg-elev3)",
+                  border: "1px solid var(--border-subtle)",
+                  padding: "3px 8px",
+                  borderRadius: 999,
+                }}
+                title={(customer?.agents ?? []).join(", ")}
+              >
+                <Sparkles size={11} /> {(customer?.agents ?? []).length} agent
+                {(customer?.agents ?? []).length === 1 ? "" : "s"}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Stats strip — every tile carries explanatory subtext when the
+            value is 0/—, so reviewers know whether the slot is "no data
+            yet" or "intentionally empty". */}
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <StatCard
+            label="Deals"
+            value={dealCount}
+            sub={dealCount === 0 ? "none yet" : "tracked"}
+          />
+          <StatCard
+            label="Calls"
+            value={callCount}
+            sub={callCount === 0 ? "none yet" : "uploaded"}
+          />
           <StatCard
             label="£ Value"
             value={valueGbp != null ? `£${(valueGbp / 1000).toFixed(1)}k` : "—"}
-            sub="contracted"
+            sub={valueGbp != null ? "contracted" : "not extracted yet"}
           />
           <StatCard
             label="Open Directives"
             value={openDirs}
+            sub={openDirs === 0 ? "none assigned" : "pending fix"}
             tone={openDirs > 0 ? "var(--amber)" : undefined}
           />
           <StatCard
             label="Worst Action"
             value={worst || "—"}
+            sub={worst ? "AI verdict" : "no scored calls"}
             tone={worst ? `var(--${complianceTone(worst)})` : undefined}
           />
           <StatCard
             label="Open Rejections"
-            // 2026-05-14 audit fix: backend emits `dead_rejections_count`,
-            // not `open_rejections`. The label was always wrong-named but
-            // the value never matched it either — kept the old fallback so
-            // re-deploy order is safe.
             value={
               (rollupData.dead_rejections_count as number | undefined) ??
               (rollupData.open_rejections as number | undefined) ??
               0
+            }
+            sub={
+              ((rollupData.dead_rejections_count as number | undefined) ??
+                (rollupData.open_rejections as number | undefined) ??
+                0) === 0
+                ? "none filed"
+                : "in review"
             }
           />
         </div>
@@ -556,6 +939,9 @@ export default function CustomerDetailPage({
             {deals.map((deal) => {
               const supplierAwareSteps = workflowStepsFor(deal.supplier);
               const stepIdx = completedPhaseCount(deal, supplierAwareSteps);
+              const dealMissing = dealsWithMissing.find(
+                (d) => d.deal.id === deal.id,
+              )?.missing ?? [];
               return (
                 <Link
                   key={deal.id}
@@ -611,6 +997,47 @@ export default function CustomerDetailPage({
                     </span>
                   </div>
                   <WorkflowBar steps={supplierAwareSteps} current={stepIdx} supplier={deal.supplier} />
+                  {/* What's next / submitted vs missing — surfaces the
+                      reviewer's "what do I do on this deal?" without
+                      forcing a drill-in. */}
+                  {dealMissing.length > 0 ? (
+                    <div
+                      style={{
+                        marginTop: 10,
+                        fontSize: 12,
+                        color: "var(--text-muted)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      <Clock size={11} style={{ color: "var(--amber-400)" }} />
+                      <span>
+                        <strong style={{ color: "var(--amber-400)" }}>
+                          Not yet submitted:
+                        </strong>{" "}
+                        {dealMissing
+                          .map((p) =>
+                            (PHASE_LABEL as Record<string, string>)[p] ?? p,
+                          )
+                          .join(", ")}
+                      </span>
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        marginTop: 10,
+                        fontSize: 12,
+                        color: "var(--emerald-400)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      <CheckCircle2 size={11} />
+                      <span>All required calls submitted for this supplier workflow</span>
+                    </div>
+                  )}
                 </Link>
               );
             })}
@@ -666,14 +1093,14 @@ export default function CustomerDetailPage({
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "100px 130px 130px 130px 90px 110px 1fr",
+                gridTemplateColumns: "100px 130px 110px 130px 1fr 110px 130px 90px",
                 gap: 12,
                 padding: "10px 20px",
                 borderBottom: "1px solid var(--border-subtle)",
                 background: "var(--bg-elev3)",
               }}
             >
-              {["When", "Deal", "Call Type", "Agent", "Score", "Compliant", "Rejection"].map(
+              {["When", "Deal", "Call Type", "Agent", "Score", "Compliant", "Rejection", ""].map(
                 (h) => (
                   <div
                     key={h}
@@ -721,12 +1148,29 @@ export default function CustomerDetailPage({
                   (rowAny.rejection_category as string | undefined) ??
                   (rowAny.rejection as string | undefined) ??
                   null;
+                // Parse "20/88" → 22.7% for the inline ScoreBar.
+                const scoreStr = (row.score ?? "") as string;
+                const sm = scoreStr.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
+                let scorePct: number | null = null;
+                if (sm) {
+                  const num = parseFloat(sm[1]);
+                  const den = parseFloat(sm[2]);
+                  if (den > 0) scorePct = Math.round((num / den) * 100);
+                } else if (/^\d+%/.test(scoreStr)) {
+                  scorePct = parseInt(scoreStr, 10);
+                }
+                const tone =
+                  row.compliant === true
+                    ? "emerald"
+                    : row.compliant === false
+                      ? "red"
+                      : "neutral";
                 return (
                 <div
                   key={rowId ?? i}
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "100px 130px 130px 130px 90px 110px 1fr",
+                    gridTemplateColumns: "100px 130px 110px 130px 1fr 110px 130px 90px",
                     gap: 12,
                     alignItems: "center",
                     padding: "12px 20px",
@@ -759,12 +1203,55 @@ export default function CustomerDetailPage({
                   <div style={{ color: "var(--text-muted)" }}>{row.agent_name ?? "—"}</div>
                   <div
                     style={{
-                      fontFamily: "var(--font-mono)",
-                      color: "var(--text-primary)",
-                      fontVariantNumeric: "tabular-nums",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      minWidth: 0,
                     }}
                   >
-                    {row.score ?? "—"}
+                    <div
+                      style={{
+                        position: "relative",
+                        height: 6,
+                        flex: 1,
+                        background: "var(--bg-elev3)",
+                        borderRadius: 999,
+                        overflow: "hidden",
+                        minWidth: 60,
+                      }}
+                    >
+                      {scorePct != null && (
+                        <div
+                          style={{
+                            position: "absolute",
+                            top: 0,
+                            left: 0,
+                            bottom: 0,
+                            width: `${Math.min(100, Math.max(0, scorePct))}%`,
+                            background:
+                              tone === "emerald"
+                                ? "var(--emerald)"
+                                : tone === "red"
+                                  ? "var(--red)"
+                                  : "var(--amber)",
+                            transition: "width 200ms ease",
+                          }}
+                        />
+                      )}
+                    </div>
+                    <span
+                      style={{
+                        fontFamily: "var(--font-mono)",
+                        color: "var(--text-primary)",
+                        fontVariantNumeric: "tabular-nums",
+                        fontSize: 12,
+                        minWidth: 64,
+                        textAlign: "right",
+                      }}
+                      title={`Raw score: ${row.score ?? "n/a"}`}
+                    >
+                      {scorePct != null ? `${scorePct}%` : row.score ?? "—"}
+                    </span>
                   </div>
                   <div>
                     <Pill tone={complianceTone(row.compliant)} dot>
@@ -780,12 +1267,161 @@ export default function CustomerDetailPage({
                   <div style={{ color: "var(--text-faint)" }}>
                     {rowRejection ?? "—"}
                   </div>
+                  <div>
+                    {rowId && (
+                      <Link
+                        href={`/calls/${encodeURIComponent(rowId)}`}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          height: 24,
+                          padding: "0 9px",
+                          fontSize: 11.5,
+                          fontWeight: 500,
+                          background: "var(--bg-elev3)",
+                          color: "var(--text-primary)",
+                          border: "1px solid var(--border-subtle)",
+                          borderRadius: 5,
+                          textDecoration: "none",
+                        }}
+                      >
+                        Review →
+                      </Link>
+                    )}
+                  </div>
                 </div>
                 );
               })
             )}
           </div>
         </div>
+
+        {/* ─────────────────────────────────────────────────────────────
+            RISK TAGS — when the customer has critical / vulnerability /
+            mis-selling flags from the AI, surface them grouped + ranked
+            so the reviewer doesn't have to drill into each call. The
+            count chip in the hero links here on click.
+            ───────────────────────────────────────────────────────────── */}
+        {topRiskTags.length > 0 && (
+          <div data-slot="risk-tags-section">
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                marginBottom: 10,
+              }}
+            >
+              <h3
+                style={{
+                  fontSize: 16,
+                  fontWeight: 600,
+                  letterSpacing: "-0.014em",
+                  margin: 0,
+                  color: "var(--text-primary)",
+                }}
+              >
+                Risk tags
+              </h3>
+              <Pill tone="amber">{riskTagTotal}</Pill>
+              <span
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-faint)",
+                  marginLeft: 4,
+                }}
+              >
+                aggregated across all calls
+              </span>
+              <div style={{ flex: 1 }} />
+              {Object.keys(riskAgg).length > topRiskTags.length && (
+                <button
+                  type="button"
+                  onClick={() => setRiskTagsExpanded((v) => !v)}
+                  style={{
+                    fontSize: 12,
+                    color: "var(--text-muted)",
+                    background: "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                    textDecoration: "underline",
+                    textDecorationStyle: "dotted",
+                  }}
+                >
+                  {riskTagsExpanded
+                    ? "Show top 6"
+                    : `Show all ${Object.keys(riskAgg).length}`}
+                </button>
+              )}
+            </div>
+            <div
+              style={{
+                background: "var(--bg-elev2)",
+                border: "1px solid var(--border-subtle)",
+                borderRadius: 8,
+                padding: 12,
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}
+            >
+              {(riskTagsExpanded
+                ? Object.entries(riskAgg)
+                    .filter(([, n]) => Number(n) > 0)
+                    .sort(([, a], [, b]) => Number(b) - Number(a))
+                : topRiskTags
+              ).map(([tag, count]) => {
+                const pct =
+                  riskTagTotal > 0
+                    ? Math.round((Number(count) / riskTagTotal) * 100)
+                    : 0;
+                return (
+                  <div
+                    key={tag}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 100px 50px",
+                      alignItems: "center",
+                      gap: 12,
+                      padding: "6px 4px",
+                      fontSize: 12.5,
+                    }}
+                  >
+                    <span style={{ color: "var(--text-primary)" }}>{tag}</span>
+                    <div
+                      style={{
+                        height: 5,
+                        background: "var(--bg-elev3)",
+                        borderRadius: 999,
+                        overflow: "hidden",
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: `${pct}%`,
+                          height: "100%",
+                          background: "var(--amber)",
+                        }}
+                      />
+                    </div>
+                    <span
+                      style={{
+                        fontFamily: "var(--font-mono)",
+                        fontVariantNumeric: "tabular-nums",
+                        color: "var(--text-muted)",
+                        fontSize: 11.5,
+                        textAlign: "right",
+                      }}
+                    >
+                      {Number(count)} × ({pct}%)
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
