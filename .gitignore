@@ -51,6 +51,13 @@ frontend-v3/.env
 frontend-v3/.env.*
 !frontend-v3/.env.local.example
 
+# ── BRAIN/ is now LOCAL-ONLY (untracked 2026-05-23) ──────────────────────
+# Per the owner's call: the vault may hold credentials and session-private
+# context that must never leave the local disk. Pre-existing BRAIN history
+# (up to and including commit e7a0a35) is in the public repo and must be
+# treated as already-exposed for anything that was committed before today.
+BRAIN/
+
 # ── Logs ─────────────────────────────────────────────────────────────────
 *.log
 backend/*.log
