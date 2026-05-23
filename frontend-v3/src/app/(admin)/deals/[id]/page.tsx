@@ -8,7 +8,7 @@
  * calls-scored count, threshold. Banner at top describes lifecycle
  * status. Missing-calls chips when present. Per-call breakdown table.
  */
-import { use } from "react";
+import { use, useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, AlertTriangle, CheckCircle2, Plus, ExternalLink } from "lucide-react";
@@ -20,6 +20,8 @@ import {
 } from "@/lib/queries/aggregator";
 import { useDealCompositeVerdictQuery } from "@/lib/queries/deals";
 import { Pill, type PillTone } from "@/components/design/Pill";
+import { UploadModal } from "@/app/(admin)/calls/UploadModal";
+import { PHASE_LABEL } from "@/lib/workflow";
 
 /** W1.1 (v3-watt-coverage): build the Watt portal deep-link URL. */
 function wattPortalUrl(siteId: number | null | undefined): string | null {
@@ -137,6 +139,9 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
   const verdict = useQuery(getDealVerdictQuery(id));
   // Sprint Task B — composite Deal verdict (weighted-avg of call scores).
   const compositeQuery = useDealCompositeVerdictQuery(id);
+  // 2026-05-24 — same Smart Upload CTA as /customers/[slug]; prefill the
+  // supplier + customer name so the L7Form lands on the right deal lane.
+  const [uploadOpen, setUploadOpen] = useState(false);
 
   if (detail.isError || verdict.isError) {
     const e = (detail.error ?? verdict.error) as unknown;
@@ -277,7 +282,48 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
           {d?.deal_value_gbp != null && ` · £${Math.round(d.deal_value_gbp).toLocaleString()}`}
           {d?.created_at && ` · created ${new Date(d.created_at).toLocaleDateString()}`}
         </span>
+        {/* 2026-05-24 — Smart "+ Upload <next stage>" CTA in the top bar.
+            Mirrors the customer-detail page so users get the same one-
+            click flow whether they navigated to a customer or a deal. */}
+        {!locked && missing.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setUploadOpen(true)}
+            title={`Upload the ${
+              PHASE_LABEL[missing[0] as keyof typeof PHASE_LABEL] ?? missing[0]
+            } call to advance this deal`}
+            style={{
+              height: 28,
+              padding: "0 12px",
+              fontSize: 12,
+              fontWeight: 500,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              background: "var(--amber-400)",
+              color: "#1f1300",
+              borderRadius: 6,
+              border: "none",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              boxShadow: "var(--shadow-sm)",
+            }}
+            data-slot="deal-upload-next-stage"
+          >
+            <Plus size={12} />
+            Upload{" "}
+            {PHASE_LABEL[missing[0] as keyof typeof PHASE_LABEL] ?? missing[0]}
+          </button>
+        )}
       </div>
+
+      <UploadModal
+        open={uploadOpen}
+        onOpenChange={setUploadOpen}
+        prefill={
+          d?.customer_name ? { customer: { name: d.customer_name } } : undefined
+        }
+      />
 
       {/* Status banner */}
       {!isLoading && v && (
@@ -551,6 +597,11 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
                 <button
                   key={name}
                   type="button"
+                  onClick={() => setUploadOpen(true)}
+                  title={`Upload the ${
+                    PHASE_LABEL[name as keyof typeof PHASE_LABEL] ?? name
+                  } call to advance this deal`}
+                  data-slot="deal-missing-call-chip"
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -585,9 +636,11 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
                         fontFamily: "var(--font-mono)",
                       }}
                     >
-                      {name}
+                      {PHASE_LABEL[name as keyof typeof PHASE_LABEL] ?? name}
                     </div>
-                    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>missing</div>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                      missing — click to upload
+                    </div>
                   </div>
                   <span style={{ color: "var(--amber)", marginLeft: 4 }}>→</span>
                 </button>
