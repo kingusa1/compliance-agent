@@ -499,12 +499,24 @@ async def submit_verdict(
     # Task 33: gate on If-Match BEFORE any state changes.
     _check_if_match(request, call)
 
-    idx, cp = _find_checkpoint(call, payload.checkpoint_id)
-    if cp is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Checkpoint {payload.checkpoint_id} not found",
-        )
+    # 2026-05-23 fix: the VerdictTab's bottom "Submit verdict" button posts
+    # here with `checkpoint_id=""` to signal a call-level aggregate
+    # verdict (PASS / FAIL / REVIEW). The original handler treated that
+    # as "checkpoint not found" and 400'd, so every reviewer Non-Compliant
+    # submission failed silently — backlog moved but no compliance flip
+    # and no Rejection rows were created. Allow empty checkpoint_id and
+    # skip the per-CP write block below; the aggregate side effects at
+    # line ~601 still run.
+    is_call_level = not (payload.checkpoint_id or "").strip()
+    if is_call_level:
+        idx, cp = None, None
+    else:
+        idx, cp = _find_checkpoint(call, payload.checkpoint_id)
+        if cp is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Checkpoint {payload.checkpoint_id} not found",
+            )
 
     # Optional active session. Not required: tests and direct-API callers can
     # skip the /claim step. Pick the freshest active one if multiple exist.
@@ -515,72 +527,85 @@ async def submit_verdict(
         .first()
     )
 
-    _bootstrap_ai_history_if_missing(db, call, payload.checkpoint_id, cp)
+    # Per-checkpoint write block — skipped entirely on call-level submissions
+    # (empty checkpoint_id). The aggregate side effects further down still
+    # run so PASS / FAIL / REVIEW continue to flip Call.compliant, create
+    # Rejection rows, and send the customer email.
+    prior_verdict: str | None = None
+    new_row: VerdictHistory | None = None
+    ai_row: VerdictHistory | None = None
+    if not is_call_level:
+        _bootstrap_ai_history_if_missing(db, call, payload.checkpoint_id, cp)
 
-    prior = (
-        db.query(VerdictHistory)
-        .filter_by(
+        prior = (
+            db.query(VerdictHistory)
+            .filter_by(
+                call_id=call_id,
+                checkpoint_id=payload.checkpoint_id,
+                is_current=True,
+            )
+            .first()
+        )
+        prior_verdict = prior.verdict if prior else None
+        if prior:
+            prior.is_current = False
+
+        # Task 32: a reviewer override inherits the prompt_version from the most
+        # recent AI row for this checkpoint. This lets ops ask "what's the
+        # override rate for verdicts produced under prompt v X?" — the interesting
+        # dimension is the AI prompt the reviewer *disagreed with*, not the
+        # reviewer themselves. Fall back to the current supplier version if no
+        # AI row has been persisted yet (rare — bootstrap above ensures one).
+        ai_row = (
+            db.query(VerdictHistory)
+            .filter_by(
+                call_id=call_id,
+                checkpoint_id=payload.checkpoint_id,
+                actor_type="ai",
+            )
+            .order_by(VerdictHistory.created_at.desc())
+            .first()
+        )
+        inherited_version = (
+            ai_row.prompt_version if ai_row and ai_row.prompt_version
+            else version_for_supplier(call.detected_supplier)
+        )
+
+        new_row = VerdictHistory(
+            id=str(uuid.uuid4()),
             call_id=call_id,
             checkpoint_id=payload.checkpoint_id,
+            review_session_id=rs.id if rs else None,
+            actor_type=reviewer["role"],  # "reviewer" or "lead"
+            actor_id=reviewer["id"],
+            verdict=payload.verdict,
+            reasoning=payload.reasoning,
+            prompt_version=inherited_version,
             is_current=True,
         )
-        .first()
-    )
-    prior_verdict = prior.verdict if prior else None
-    if prior:
-        prior.is_current = False
+        db.add(new_row)
 
-    # Task 32: a reviewer override inherits the prompt_version from the most
-    # recent AI row for this checkpoint. This lets ops ask "what's the
-    # override rate for verdicts produced under prompt v X?" — the interesting
-    # dimension is the AI prompt the reviewer *disagreed with*, not the
-    # reviewer themselves. Fall back to the current supplier version if no
-    # AI row has been persisted yet (rare — bootstrap above ensures one).
-    ai_row = (
-        db.query(VerdictHistory)
-        .filter_by(
-            call_id=call_id,
-            checkpoint_id=payload.checkpoint_id,
-            actor_type="ai",
-        )
-        .order_by(VerdictHistory.created_at.desc())
-        .first()
-    )
-    inherited_version = (
-        ai_row.prompt_version if ai_row and ai_row.prompt_version
-        else version_for_supplier(call.detected_supplier)
-    )
+        # Mirror reviewer fields into the JSON so `/queue` + `/calls/{id}` don't
+        # need to join verdict_history. Keep AI-era keys intact so we have a
+        # "last known AI verdict" after the override.
+        cps = json.loads(call.checkpoint_results or "[]")
+        if idx is not None and 0 <= idx < len(cps):
+            cps[idx]["verdict"] = payload.verdict
+            cps[idx]["reviewer_verdict"] = payload.verdict
+            cps[idx]["reviewer_reasoning"] = payload.reasoning
+            cps[idx]["reviewer_id"] = reviewer["id"]
+            call.checkpoint_results = json.dumps(cps)
 
-    new_row = VerdictHistory(
-        id=str(uuid.uuid4()),
-        call_id=call_id,
-        checkpoint_id=payload.checkpoint_id,
-        review_session_id=rs.id if rs else None,
-        actor_type=reviewer["role"],  # "reviewer" or "lead"
-        actor_id=reviewer["id"],
-        verdict=payload.verdict,
-        reasoning=payload.reasoning,
-        prompt_version=inherited_version,
-        is_current=True,
-    )
-    db.add(new_row)
+        if rs:
+            rs.last_activity_at = utcnow()
 
-    # Mirror reviewer fields into the JSON so `/queue` + `/calls/{id}` don't
-    # need to join verdict_history. Keep AI-era keys intact so we have a
-    # "last known AI verdict" after the override.
-    cps = json.loads(call.checkpoint_results or "[]")
-    if 0 <= idx < len(cps):
-        cps[idx]["verdict"] = payload.verdict
-        cps[idx]["reviewer_verdict"] = payload.verdict
-        cps[idx]["reviewer_reasoning"] = payload.reasoning
-        cps[idx]["reviewer_id"] = reviewer["id"]
-        call.checkpoint_results = json.dumps(cps)
-
-    if rs:
-        rs.last_activity_at = utcnow()
-
-    # Task 33: bump revision since checkpoint_results mutated.
-    call.revision = (call.revision or 1) + 1
+        # Task 33: bump revision since checkpoint_results mutated.
+        call.revision = (call.revision or 1) + 1
+    else:
+        # Call-level: just keep the active session warm so the claim
+        # doesn't idle out mid-submit.
+        if rs:
+            rs.last_activity_at = utcnow()
 
     # Sprint TR-3 — multi-rejection FAIL: loop ALL FAIL/PARTIAL CallCheckpoint
     # rows for this call and create one Rejection per failure. Mirrors the
@@ -638,6 +663,18 @@ async def submit_verdict(
                     )
         except Exception as e:  # pragma: no cover — best-effort side effect
             logger.warning("FAIL-multi-rejection branch failed: %s", e)
+        # 2026-05-23 fix: stamp the call as non_compliant + reviewed so the
+        # /calls list pill, /tracker tabs, and the queue Reviewed counter
+        # all reflect the verdict immediately. Without this the FAIL/REVIEW
+        # branch only created Rejection rows; Call.compliance_status stayed
+        # at "pending" and the reviewer's call kept showing as Pending in
+        # the table.
+        call.compliance_status = "non_compliant"
+        call.compliant = False
+        call.review_status = "reviewed"
+        call.verdict_state = "HUMAN_CONFIRMED"
+        call.reviewed_at = utcnow()
+        call.reviewed_by = reviewer["id"]
 
     # Sprint A2 — fire the customer-confirmation email on PASS verdict
     # (compliance manual §8 mandate: every accepted verbal contract is
@@ -654,6 +691,13 @@ async def submit_verdict(
         # skipped this branch, leaving call.compliant unset and never
         # firing the customer confirmation email.
         call.compliant = True
+        # 2026-05-23 mirror: same lifecycle stamp on PASS so /calls and
+        # /tracker reflect the human sign-off without a refresh.
+        call.compliance_status = "compliant"
+        call.review_status = "reviewed"
+        call.verdict_state = "HUMAN_CONFIRMED"
+        call.reviewed_at = utcnow()
+        call.reviewed_by = reviewer["id"]
         try:
             from app.email_routes import send_customer_email_for_call
 
@@ -721,29 +765,32 @@ async def submit_verdict(
     except Exception:
         logger.warning("VERDICT_SUBMITTED emit_event failed", exc_info=True)
 
-    ai_verdict = ai_row.verdict if ai_row else _ai_verdict_of(cp)
+    # Learning loop fires only on per-CP submissions — there's no AI prior to
+    # disagree with when the reviewer is filing an aggregate call-level verdict.
     learning_triggered = False
-    if ai_verdict != payload.verdict:
-        try:
-            await abstract_and_store_review(
-                db=db,
-                supplier=call.detected_supplier or "Unknown",
-                checkpoint_name=cp.get("name") or payload.checkpoint_id,
-                transcript_excerpt=(cp.get("evidence") or call.transcript or "")[:2000],
-                agent_verdict=ai_verdict,
-                human_verdict=payload.verdict,
-                reviewer_notes=payload.reasoning,
-            )
-            learning_triggered = True
-        except Exception as e:
-            # feedback.py already swallows most failures, but belt-and-braces:
-            # a bad network or a malformed LLM response should never fail the
-            # reviewer's save.
-            logger.warning("Learning extraction failed: %s", e)
+    if not is_call_level and cp is not None:
+        ai_verdict = ai_row.verdict if ai_row else _ai_verdict_of(cp)
+        if ai_verdict != payload.verdict:
+            try:
+                await abstract_and_store_review(
+                    db=db,
+                    supplier=call.detected_supplier or "Unknown",
+                    checkpoint_name=cp.get("name") or payload.checkpoint_id,
+                    transcript_excerpt=(cp.get("evidence") or call.transcript or "")[:2000],
+                    agent_verdict=ai_verdict,
+                    human_verdict=payload.verdict,
+                    reviewer_notes=payload.reasoning,
+                )
+                learning_triggered = True
+            except Exception as e:
+                # feedback.py already swallows most failures, but belt-and-braces:
+                # a bad network or a malformed LLM response should never fail the
+                # reviewer's save.
+                logger.warning("Learning extraction failed: %s", e)
 
     return {
         "saved": True,
-        "verdict_history_id": new_row.id,
+        "verdict_history_id": (new_row.id if not is_call_level else None),
         "prior_verdict": prior_verdict,
         "learning_triggered": learning_triggered,
         "auto_rejection_id": auto_rejection_id,

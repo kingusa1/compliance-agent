@@ -178,8 +178,10 @@ function ScoreBar({ pct }: { pct: number }) {
   );
 }
 
-// Plan §5a columns: When · Customer · Supplier · Segments · Score · AI · Review
-const COL_TEMPLATE = "76px 1.3fr 1fr 1fr 100px 110px 110px";
+// Plan §5a columns: When · Customer · Agent · Supplier · Segments · Score · AI · Review
+// 2026-05-23: Agent column added so compliance can spot repeat offenders without
+// drilling into each call.
+const COL_TEMPLATE = "76px 1.3fr 1fr 1fr 1fr 100px 110px 110px";
 
 function QueueRow({
   row,
@@ -244,6 +246,17 @@ function QueueRow({
           {row.filename}
         </div>
       </div>
+      <div
+        style={{
+          color: row.agent_name ? "var(--text-primary)" : "var(--text-faint)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+        title={row.agent_name ?? "Agent not yet extracted"}
+      >
+        {row.agent_name ?? "—"}
+      </div>
       <div style={{ color: "var(--text-primary)" }}>{row.supplier ?? "—"}</div>
       <div
         style={{
@@ -307,10 +320,17 @@ function PreviewPanel({ row }: { row: QueueCall | null }) {
   // Build a 3-line transcript snippet from real backend data.
   // Prefer word-level data (preserves speaker + timestamps); fall back to
   // splitting raw transcript text on speaker prefixes; otherwise empty.
-  // Speaker labels are neutral ("Speaker 1" / "Speaker 2") to mirror the
-  // /calls/[id] detail page — diarisation can't reliably tell agent from
-  // customer, so we don't pretend.
+  // Speaker labels are resolved to the real agent / customer names from
+  // the call detail when available (matches the /calls/[id] page); falls
+  // back to "Agent" / "Customer" so diarisation can't show a blank chip.
   type SnippetLine = { t: string; who: string; speakerIdx: number; text: string };
+  const labelForSpeaker = (idx: number): string => {
+    const agentLabel = row.agent_name?.trim() || "Agent";
+    const customerLabel = row.customer_name?.trim() || "Customer";
+    if (idx === 1) return agentLabel;
+    if (idx === 2) return customerLabel;
+    return `Speaker ${idx}`;
+  };
   const words = wordsQuery.data?.words ?? [];
   const queueLetterToIdx = (sp: string | number | null | undefined): number => {
     const s = String(sp ?? "").toUpperCase().trim();
@@ -332,7 +352,7 @@ function PreviewPanel({ row }: { row: QueueCall | null }) {
           const startSec = Math.floor(curr[0]?.start ?? 0);
           lines.push({
             t: `${String(Math.floor(startSec / 60)).padStart(2, "0")}:${String(startSec % 60).padStart(2, "0")}`,
-            who: `Speaker ${currIdx}`,
+            who: labelForSpeaker(currIdx),
             speakerIdx: currIdx,
             text: curr.map((x) => x.word || "").join(" ").trim().slice(0, 140),
           });
@@ -360,7 +380,7 @@ function PreviewPanel({ row }: { row: QueueCall | null }) {
       const idx = (i % 2) + 1;
       return {
         t: `00:${String(i * 10).padStart(2, "0")}`,
-        who: `Speaker ${idx}`,
+        who: labelForSpeaker(idx),
         speakerIdx: idx,
         text: c.replace(/^(AGENT|CUSTOMER|SPEAKER\s*\d+)[: ]+/i, "").slice(0, 140),
       };
@@ -606,7 +626,7 @@ function SkeletonRow() {
         borderBottom: "1px solid var(--border-subtle)",
       }}
     >
-      {[60, 180, 110, 100, 80, 90].map((w, i) => (
+      {[60, 180, 110, 110, 100, 80, 90, 90].map((w, i) => (
         <div
           key={i}
           style={{
@@ -872,6 +892,7 @@ export default function QueuePage() {
             >
               <HeaderCell>When</HeaderCell>
               <HeaderCell>Customer</HeaderCell>
+              <HeaderCell>Agent</HeaderCell>
               <HeaderCell>Supplier</HeaderCell>
               <HeaderCell>Segments</HeaderCell>
               <HeaderCell>Score</HeaderCell>

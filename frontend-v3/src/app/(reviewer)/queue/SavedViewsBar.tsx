@@ -53,15 +53,11 @@ export function SavedViewsBar({
   return (
     <>
       <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <Button variant="outline" size="sm">
-              <Bookmark className="mr-2 h-3.5 w-3.5" />
-              Saved views
-              <ChevronDown className="ml-1 h-3 w-3 opacity-60" />
-            </Button>
-          }
-        />
+        <DropdownMenuTrigger render={<Button variant="outline" size="sm" />}>
+          <Bookmark className="mr-2 h-3.5 w-3.5" />
+          Saved views
+          <ChevronDown className="ml-1 h-3 w-3 opacity-60" />
+        </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-[220px]">
           <DropdownMenuLabel>Your views</DropdownMenuLabel>
           {items.length === 0 ? (
