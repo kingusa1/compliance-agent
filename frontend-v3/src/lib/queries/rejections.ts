@@ -77,10 +77,14 @@ export function useRejectionsQuery(params: RejectionsListParams = {}) {
   return useQuery({
     queryKey: rejectionsKeys.list(params),
     queryFn: () => fetchRejections(params),
-    // Window-focus + reconnect refresh only. No background polling
-    // (was re-rendering operational pages on a 3 s loop and breaking
-    // audio playback on call detail). True push-based updates need SSE.
-    staleTime: 15_000,
+    // 2026-05-23 — /rejections subscribes to Supabase Realtime on the
+    // rejections table (see app/(admin)/rejections/page.tsx). Every
+    // INSERT/UPDATE/DELETE invalidates this key, so the list stays
+    // fresh without window-focus or interval polling — and reviewers
+    // no longer see the "page refreshes itself" flicker.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
     // 2026-05-16 perf — keep the previous tab's rows visible while the
     // new tab fetches. Without this, Fixed/Dead/Archive tab switches show
     // a permanent "Loading rejections..." skeleton because each new
@@ -100,6 +104,9 @@ export function useRejectionQuery(id: string | null | undefined) {
     queryKey: rejectionsKeys.detail(id ?? ""),
     queryFn: () => fetchRejection(id as string),
     enabled: !!id,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 }
 
@@ -182,6 +189,12 @@ export function usePortalBatchesQuery(supplier?: string) {
   return useQuery({
     queryKey: rejectionsKeys.portalBatches(supplier),
     queryFn: () => fetchPortalBatches(supplier),
-    staleTime: 10_000,
+    // 2026-05-23 — /portal-batches subscribes to Realtime on the
+    // rejections table at the page level (added below). Once a row's
+    // status flips to FIXED / BATCHED_TO_PORTAL the realtime event
+    // invalidates this key. No polling needed.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 }

@@ -288,15 +288,19 @@ export type SegmentCardsProps = {
 };
 
 export function SegmentCards({ callId, cpCards = [], cpFilter = "all", innerProps }: SegmentCardsProps) {
+  // 2026-05-23 — segments cache is invalidated by useCallEvents(id) on every
+  // pipeline step transition (see app/(reviewer)/calls/[id]/page.tsx
+  // mounting useCallEvents). The previous 3s poll was a pre-SSE safety
+  // net that now duplicates work and re-renders the segment list on a
+  // 3-second cadence while the reviewer is reading — exactly the
+  // "page auto-refreshing" symptom the owner called out.
   const q = useQuery({
     queryKey: ["call", callId, "segments"] as const,
     queryFn: () => apiFetch<Resp>(`/api/calls/${encodeURIComponent(callId)}/segments`),
     enabled: !!callId,
-    refetchInterval: (query) => {
-      const data = query.state.data as Resp | undefined;
-      if (data && data.segments.some((s) => s.bucket)) return false;
-      return 3000;
-    },
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 
   const segments = q.data?.segments ?? [];

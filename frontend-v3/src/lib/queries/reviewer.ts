@@ -206,12 +206,15 @@ export function useQueueQuery(filter: QueueFilter = "all") {
   return useQuery({
     queryKey: reviewerKeys.queue(filter),
     queryFn: () => fetchQueue(filter),
-    // 2026-05-16: SSE drives real-time invalidation via useCallEvents("*")
-    // mounted at the page level. Keep a slow background safety-net poll
-    // (60s) so a torn EventSource still recovers within a minute.
-    staleTime: 30_000,
-    refetchInterval: 60_000,
-    refetchIntervalInBackground: false,
+    // 2026-05-23 — /queue subscribes to Supabase Realtime on calls +
+    // review_sessions (see app/(reviewer)/queue/page.tsx). Every
+    // postgres_changes event invalidates this key, so polling is
+    // pure waste + caused the visible refresh flicker the owner
+    // called out. refetchOnReconnect (inherited from QueryProvider)
+    // covers the rare case of a websocket drop.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 }
 
@@ -220,11 +223,12 @@ export function useCallDetailQuery(id: string) {
     queryKey: reviewerKeys.callDetail(id),
     queryFn: () => fetchCallDetail(id),
     enabled: !!id,
-    // 2026-05-16: in-flight refresh is now driven by useCallEvents(id) SSE
-    // subscription. No refetchInterval here — that was the root cause of
-    // the audio-reset bug (page re-rendered every 1.5s while processing,
-    // re-mounting <audio> and clearing playback position). React Query's
-    // window-focus refresh remains active.
+    // 2026-05-23 — driven by useCallEvents(id) SSE. Every pipeline
+    // step + reviewer action publishes a `score_ready` / `step_started`
+    // event that invalidates this key. Static between events.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 }
 
@@ -233,7 +237,11 @@ export function useCallWordsQuery(id: string) {
     queryKey: reviewerKeys.callWords(id),
     queryFn: () => fetchCallWords(id),
     enabled: !!id,
-    staleTime: 5 * 60 * 1000, // word data is immutable per call revision
+    // Word data is immutable per call revision; refresh only via explicit
+    // invalidation when the pipeline writes new word_data.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
     retry: (count) => count < 1, // word file is 404 until pipeline completes
   });
 }
@@ -243,9 +251,13 @@ export function useCallCheckpointsQuery(id: string) {
     queryKey: reviewerKeys.callCheckpoints(id),
     queryFn: () => fetchCallCheckpoints(id),
     enabled: !!id,
-    // 2026-05-16: SSE-driven (see useCallEvents on the call detail page).
-    // No refetchInterval — every pipeline-step transition pushes an
-    // invalidation, so checkpoint cards fill in live without polling.
+    // 2026-05-23 — SSE drives invalidation on every pipeline-step
+    // transition (see useCallEvents on the call detail page). No
+    // window-focus / interval polling — the checkpoint cards already
+    // fill in live and the polling caused mid-review re-render.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 }
 

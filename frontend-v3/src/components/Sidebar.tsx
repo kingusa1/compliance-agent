@@ -15,6 +15,7 @@ import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 
 import { useQuery } from "@tanstack/react-query";
 import { fetchQueue } from "@/lib/queries/reviewer";
+import { useRealtimeInvalidate } from "@/lib/hooks/useRealtimeInvalidate";
 import {
   Inbox,
   Users,
@@ -126,12 +127,19 @@ export function Sidebar() {
   const items = NAV_ITEMS.filter((it) => it.roles.includes(role));
   const active = activeKey(path);
 
-  // Live queue count badge — refreshes every 30s, like the queue page itself.
+  // 2026-05-23 — Sidebar queue badge driven by Supabase Realtime instead of
+  // the previous 30s poll. Every change on calls or review_sessions
+  // invalidates this key, so the badge updates within ~200ms of any
+  // upload / verdict / claim without the visible "page is auto-refreshing"
+  // flicker the owner reported.
+  useRealtimeInvalidate("calls", [["sidebar", "queue-backlog"]]);
+  useRealtimeInvalidate("review_sessions", [["sidebar", "queue-backlog"]]);
   const queueQ = useQuery({
     queryKey: ["sidebar", "queue-backlog"],
     queryFn: () => fetchQueue("unclaimed"),
-    staleTime: 10_000,
-    refetchInterval: 30_000,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
   const queueBadge = queueQ.data?.metrics?.backlog ?? null;
 

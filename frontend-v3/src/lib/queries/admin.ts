@@ -200,12 +200,17 @@ export function useAdminCallsQuery(params: { limit?: number; offset?: number } =
   return useQuery({
     queryKey: adminKeys.calls(params),
     queryFn: () => fetchAdminCalls(params),
-    // 2026-05-16: SSE-driven via useCallEvents("*") mounted in ScreenFrame.
-    // Drop the 5s in-flight refetchInterval — every pipeline transition
-    // pushes an invalidation, so /calls fills in live without polling.
-    staleTime: 30_000,
-    refetchInterval: 60_000,
-    refetchIntervalInBackground: false,
+    // 2026-05-23 — /calls is realtime-driven via useCallEvents("*") (SSE
+    // from `app/realtime_routes.py`) mounted in ScreenFrame + the
+    // `useRealtimeInvalidate("calls", [["admin-calls"]])` hook on the
+    // /tracker page (which shares this query key). The previous 60s
+    // refetchInterval was a stale safety net from before SSE shipped
+    // and caused the visible "page refreshes itself" flicker on
+    // /calls + /tracker. Realtime is the contract; this query
+    // stays Infinity-stale until invalidated.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 }
 

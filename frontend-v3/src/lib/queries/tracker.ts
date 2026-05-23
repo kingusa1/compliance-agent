@@ -161,11 +161,20 @@ export function useTrackerRowsQuery(filters: TrackerFilters) {
       if (filters.deadline_state) qs.set("deadline_state", filters.deadline_state);
       return apiFetch<TrackerResponse>(`/api/tracker/rows?${qs.toString()}`);
     },
-    // /tracker — fresh on window focus + reconnect (inherits QueryProvider
-    // defaults). No background polling: the user reported aggressive
-    // refetch caused visible re-render flashes elsewhere. Tracker
-    // updates land when the reviewer clicks back into the tab.
-    staleTime: 15_000,
+    // 2026-05-23 — /tracker subscribes to Supabase Realtime on calls +
+    // rejections + customer_deals (see app/(admin)/tracker/page.tsx). Any
+    // server-side change pushes a postgres_changes event that invalidates
+    // this query within ~200ms. So polling is redundant AND wrong — it
+    // re-fetches the same rows when no event fired and causes the visible
+    // "page is refreshing" flicker the owner called out.
+    //   - staleTime Infinity: data is fresh until realtime invalidates.
+    //   - refetchOnWindowFocus / refetchOnMount OFF: realtime is the
+    //     single source of truth.
+    //   - refetchOnReconnect inherits from QueryProvider (true) as the
+    //     safety net for events missed during a websocket disconnect.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
     gcTime: 5 * 60 * 1000,
     // 2026-05-16 audit Bug 2 fix: every filter keystroke / pill toggle
     // creates a NEW queryKey (because `filters` is the third element).
