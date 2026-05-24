@@ -254,6 +254,28 @@ export default function AgentsPage() {
                   ))}
                 </div>
               ))
+            : filtered.length === 0
+            ? (
+                /* 2026-05-24 Playwright audit — /agents was rendering only the
+                   table header on an empty rollup (no rows + no empty state).
+                   Reviewers thought the page was broken. */
+                <div
+                  style={{
+                    padding: "48px 24px",
+                    textAlign: "center",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  <div style={{ fontSize: 15, fontWeight: 500, color: "var(--text-primary)", marginBottom: 6 }}>
+                    No agents yet
+                  </div>
+                  <div style={{ fontSize: 13, maxWidth: 440, margin: "0 auto" }}>
+                    Agent rollups populate once the pipeline has scored at least
+                    one call. Upload a call from the Dashboard or the Tracker to
+                    seed the leaderboard.
+                  </div>
+                </div>
+              )
             : filtered.map((r) => {
                 const flags = r.recent_non_compliant_30d ?? 0;
                 return (

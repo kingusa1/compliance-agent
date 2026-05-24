@@ -172,7 +172,7 @@ export default function TrackerPage() {
                 invalidation still happens silently in the background;
                 the table updates in place without the visual flicker. */}
             <p className="text-[11px] text-[var(--text-muted)]">
-              {counts} rows · mirrors Watt&apos;s compliance tracker
+              {counts} {counts === 1 ? "row" : "rows"} · mirrors Watt&apos;s compliance tracker
             </p>
           </div>
           <div className="flex items-center gap-2">
