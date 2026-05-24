@@ -159,11 +159,21 @@ export function useEditCallMeta() {
   >({
     mutationFn: patchCallMeta,
     onSuccess: () => {
-      // Invalidate both the tracker (so the awaiting-review row refreshes)
-      // and the underlying calls view, since the same edits surface on
-      // /calls/[id] header chips.
+      // Invalidate every cache that renders fields touched by call-meta.
+      // 2026-05-24: the backend now dual-writes customer_name onto the
+      // linked CustomerDeal too, so the /deals list + /deals/[id] +
+      // /customers caches need to drop or they keep showing the old
+      // "(pending audio upload)" placeholder after Save resolves.
       qc.invalidateQueries({ queryKey: ["admin", "tracker"] });
       qc.invalidateQueries({ queryKey: ["calls"] });
+      qc.invalidateQueries({ queryKey: ["deals"] });          // /deals list
+      qc.invalidateQueries({ queryKey: ["deal"] });           // /deals/[id]
+      // 2026-05-24 code-review CRITICAL fix: the composite-verdict donut
+      // on /deals/[id] is keyed `["admin", "deal", id, "composite-verdict"]`
+      // (see lib/queries/deals.ts) — the `["deal"]` prefix above does NOT
+      // catch this because TanStack matches left-to-right.
+      qc.invalidateQueries({ queryKey: ["admin", "deal"] });
+      qc.invalidateQueries({ queryKey: ["admin", "customers"] });
     },
   });
 }

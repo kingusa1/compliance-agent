@@ -12,6 +12,7 @@ import {
 } from "@/lib/queries/aggregator";
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import { useUrlState } from "@/lib/hooks/useUrlState";
+import { useRealtimeInvalidate } from "@/lib/hooks/useRealtimeInvalidate";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
@@ -88,6 +89,13 @@ function DealsPageBody() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedQ]);
 
+  // Realtime — when a reviewer edits customer_name (which dual-writes
+  // to CustomerDeal.customer_name) or the pipeline finalises and
+  // updates the deal's lifecycle / score, refetch the list silently.
+  // No-op unless NEXT_PUBLIC_USE_REALTIME=1.
+  useRealtimeInvalidate("customer_deals", [["deals", "list"]]);
+  useRealtimeInvalidate("calls", [["deals", "list"]]);
+
   // Lifecycle filtering still happens in-memory (backend filter is
   // `status` not `lifecycle_status`); cursor pagination drives ?offset.
   const query = useQuery({
@@ -111,21 +119,48 @@ function DealsPageBody() {
   }, [query.data, filter]);
 
   return (
-    <div className="mx-auto max-w-7xl px-6 py-10">
-      <header className="mb-6 flex items-baseline justify-between gap-4">
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-[24px] font-semibold tracking-tight">Deals</h1>
-          {query.isSuccess && (
-            <Badge variant="outline" className="tabular-nums">
-              {query.data.total} total
-            </Badge>
-          )}
-        </div>
-      </header>
+    // 2026-05-24 — switched from max-w-7xl box to /customers-style full-height
+    // flex column so the table spans the same width as the rest of the admin
+    // surfaces. The container caps scroll on the body, not the page, so
+    // sticky filter bar + paginator stay anchored.
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100vh",
+        overflow: "hidden",
+        minWidth: 0,
+      }}
+    >
+      {/* Top bar — title + count + search + filter tabs */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          padding: "14px 24px",
+          borderBottom: "1px solid var(--border-subtle)",
+          flexShrink: 0,
+        }}
+      >
+        <h1
+          style={{
+            fontSize: 19,
+            fontWeight: 600,
+            letterSpacing: "-0.018em",
+            margin: 0,
+            color: "var(--text-primary)",
+          }}
+        >
+          Deals
+        </h1>
+        {query.isSuccess && (
+          <Badge variant="outline" className="tabular-nums">
+            {query.data.total} total
+          </Badge>
+        )}
 
-
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <div className="relative">
+        <div className="ml-4 relative">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[var(--text-dim)]" />
           <Input
             placeholder="Search by customer…"
@@ -134,14 +169,13 @@ function DealsPageBody() {
             onChange={(e) => setQ(e.target.value)}
             data-testid="deals-search"
           />
-          {/* Marker so the URL-synced ?q= param is observable in tests. */}
           <span data-testid="deals-q-url" hidden>
             {get("q")}
           </span>
         </div>
 
         <div
-          className="flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-0.5"
+          className="ml-auto flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-0.5"
           role="tablist"
           aria-label="Lifecycle filter"
         >
@@ -165,33 +199,42 @@ function DealsPageBody() {
         </div>
       </div>
 
-      {query.isLoading && <DealsTableSkeleton />}
+      {/* Scrollable table area */}
+      <div
+        style={{
+          flex: 1,
+          overflowY: "auto",
+          padding: "16px 24px",
+        }}
+      >
+        {query.isLoading && <DealsTableSkeleton />}
 
-      {query.isError && (
-        <ErrorBanner error={query.error} onRetry={() => query.refetch()} />
-      )}
+        {query.isError && (
+          <ErrorBanner error={query.error} onRetry={() => query.refetch()} />
+        )}
 
-      {query.isSuccess && deals.length === 0 && <EmptyState filter={filter} />}
+        {query.isSuccess && deals.length === 0 && <EmptyState filter={filter} />}
 
-      {query.isSuccess && deals.length > 0 && <DealsTable deals={deals} />}
+        {query.isSuccess && deals.length > 0 && <DealsTable deals={deals} />}
 
-      {query.isSuccess && query.data.total > 0 && (
-        <div className="mt-4 overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elev1)]">
-          <CursorPagination
-            offset={offset}
-            limit={DEALS_PAGE_LIMIT}
-            total={query.data.total}
-            disabled={query.isFetching}
-            onChange={(next) => set("offset", next === 0 ? null : next)}
-          />
-        </div>
-      )}
+        {query.isSuccess && query.data.total > 0 && (
+          <div className="mt-4 overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elev1)]">
+            <CursorPagination
+              offset={offset}
+              limit={DEALS_PAGE_LIMIT}
+              total={query.data.total}
+              disabled={query.isFetching}
+              onChange={(next) => set("offset", next === 0 ? null : next)}
+            />
+          </div>
+        )}
 
-      {query.isSuccess && filter !== "all" && (
-        <p className="mt-2 text-right text-[12px] text-[var(--text-dim)] tabular-nums">
-          filter: <span className="text-[var(--text-muted)]">{FILTER_LABELS[filter]}</span>
-        </p>
-      )}
+        {query.isSuccess && filter !== "all" && (
+          <p className="mt-2 text-right text-[12px] text-[var(--text-dim)] tabular-nums">
+            filter: <span className="text-[var(--text-muted)]">{FILTER_LABELS[filter]}</span>
+          </p>
+        )}
+      </div>
     </div>
   );
 }

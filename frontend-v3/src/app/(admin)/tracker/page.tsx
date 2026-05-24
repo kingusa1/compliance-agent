@@ -165,17 +165,14 @@ export default function TrackerPage() {
         <header className="flex items-center justify-between border-b border-[var(--border-subtle)] px-6 py-3">
           <div>
             <h1 className="text-base font-semibold">Tracker</h1>
+            {/* 2026-05-24 — owner asked to remove the "Refreshing" pulse:
+                it was firing on every background refetch (cache stale,
+                tab focus, every realtime invalidate) which made the
+                table look like it was constantly reloading. The realtime
+                invalidation still happens silently in the background;
+                the table updates in place without the visual flicker. */}
             <p className="text-[11px] text-[var(--text-muted)]">
               {counts} rows · mirrors Watt&apos;s compliance tracker
-              {q.isFetching && !q.isLoading && (
-                <span className="ml-2 inline-flex items-center gap-1 text-[var(--text-muted)]" aria-live="polite">
-                  <span
-                    className="inline-block size-1.5 animate-pulse rounded-full bg-emerald-500"
-                    aria-hidden
-                  />
-                  Refreshing
-                </span>
-              )}
             </p>
           </div>
           <div className="flex items-center gap-2">

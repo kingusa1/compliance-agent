@@ -400,19 +400,41 @@ def patch_call_meta(
         else:
             raise HTTPException(400, f"field not editable: {k!r}")
 
+    # 2026-05-24 — load the deal whenever a `customer_name` edit is in
+    # the body too. The dual-write at the `if loc == "call"` branch
+    # propagates `customer_name` onto `CustomerDeal.customer_name` so
+    # the tracker_aggregator (which reads `(deal.customer_name) or
+    # call.customer_name`) sees the new value. Without this, a
+    # customer-name-only PATCH never loaded `deal`, the dual-write
+    # silently no-op'd, and the tracker kept showing the stale
+    # "(pending audio upload)" placeholder. A call without a linked
+    # deal is allowed (it'll just write Call.customer_name and skip
+    # the deal-side write at line ~479).
+    needs_deal = (
+        any(loc in ("deal", "both") for loc in accepted.values())
+        or "customer_name" in accepted
+    )
     deal: CustomerDeal | None = None
-    if any(loc in ("deal", "both") for loc in accepted.values()):
+    if needs_deal:
         if not call.deal_id:
-            raise HTTPException(
-                400, "deal-level edits unavailable — call has no linked deal"
+            # When the only deal-touching field is customer_name and the
+            # call has no linked deal, that's not an error — there's just
+            # nothing to dual-write. Only deal-level edits (MPAN, value,
+            # term, etc) genuinely require a deal to exist.
+            if any(loc in ("deal", "both") for loc in accepted.values()):
+                raise HTTPException(
+                    400, "deal-level edits unavailable — call has no linked deal"
+                )
+        else:
+            deal = (
+                db.query(CustomerDeal).filter(CustomerDeal.id == call.deal_id).first()
             )
-        deal = (
-            db.query(CustomerDeal).filter(CustomerDeal.id == call.deal_id).first()
-        )
-        if deal is None:
-            raise HTTPException(
-                400, "deal-level edits unavailable — linked deal missing"
-            )
+            if deal is None and any(
+                loc in ("deal", "both") for loc in accepted.values()
+            ):
+                raise HTTPException(
+                    400, "deal-level edits unavailable — linked deal missing"
+                )
 
     reviewer_id = str(user.get("id")) if isinstance(user, dict) else None
 
@@ -467,6 +489,32 @@ def patch_call_meta(
                     reviewer_id=reviewer_id,
                 )
                 setattr(call, k, v)
+            # 2026-05-24 — dual-write customer_name to the linked deal.
+            # The tracker_aggregator reads ``(deal.customer_name) or
+            # call.customer_name`` (line 182 / 350 / 406), so editing the
+            # Call alone leaves the tracker rendering the old deal value
+            # ("(pending audio upload)" placeholder is the common case).
+            # When the reviewer types the real customer name on the side
+            # panel, the intent is "this IS the customer" — propagate to
+            # the deal so every tracker tab + the /deals + /customers
+            # surfaces update on the same query invalidation.
+            if k == "customer_name" and deal is not None:
+                old_deal = deal.customer_name
+                if old_deal != v:
+                    _record_reviewer_edit(
+                        db,
+                        rejection_id=None,
+                        call_id=str(call.id),
+                        field="deal.customer_name",
+                        old_value=old_deal,
+                        new_value=v,
+                        reviewer_id=reviewer_id,
+                    )
+                    deal.customer_name = v
+                    if hasattr(deal, "field_sources"):
+                        fs = dict(deal.field_sources or {})
+                        fs["customer_name"] = "reviewer_edit"
+                        deal.field_sources = fs
             continue
 
         # loc == "deal"
