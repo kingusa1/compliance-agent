@@ -2215,7 +2215,17 @@ def _step_score(call_id: str, analysis: dict, db: Session) -> dict:
 
     call.score = f"{total_passed}/{total_total}" if total_total > 0 else "0/0"
     call.bucket = worst_bucket
-    call.compliant = worst_bucket in {"pass", "coaching"}
+    # 2026-05-24 — `compliant` now requires EVERY segment to pass cleanly
+    # (worst_bucket == "pass"). Previously `coaching` also flipped this
+    # to True, which put sub-80% calls (e.g. 14/25 = 56%, 19/26 = 73%)
+    # on the /tracker Compliant tab because that tab queries
+    # `Call.compliant.is_(True)`. Coaching calls now fall through to
+    # `awaiting_review` (no Rejection yet, but reviewer must triage)
+    # which matches reviewer intuition — they expected the Compliant
+    # tab to mean "clean pass", not "no critical/high breaches".
+    # `compliance_status` mapping below is unchanged so the existing
+    # status pill semantics across the rest of the UI hold.
+    call.compliant = worst_bucket == "pass"
 
     # Map bucket → compliance_status (UI sees only Compliant / Pending / Non-Compliant)
     if worst_bucket == "pass":
