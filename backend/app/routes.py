@@ -2194,6 +2194,122 @@ def admin_backfill_deal_entities(
     return stamped
 
 
+@router.post("/api/admin/backfill-compliant-strict", status_code=200)
+def admin_backfill_compliant_strict(
+    db: Session = Depends(get_db),
+    _user: dict = Depends(require_lead),
+) -> dict[str, int]:
+    """Re-apply the strict ``compliant = (worst_bucket == "pass")`` rule +
+    the corrected bucket→compliance_status mapping to existing Call rows.
+
+    2026-05-24 — pipeline.py was tightened so only a clean ``pass`` bucket
+    flips ``Call.compliant=True`` (previously ``coaching`` also qualified,
+    which mis-routed sub-80% calls onto the /tracker Compliant tab). The
+    pipeline change only affects new finalize() runs; rows already in the
+    DB still carry the lax value AND the now-inconsistent
+    ``compliance_status="compliant"``. This endpoint computes worst-bucket
+    per call in Python (mirrors ``pipeline._BUCKET_RANK``), then issues
+    two bulk UPDATEs:
+
+    - blocked-worst calls  → ``compliant=False, compliance_status="non_compliant"``
+    - review/coaching-worst → ``compliant=False, compliance_status="pending"``
+
+    Both filters include ``compliant.is_(True)`` so re-running the
+    endpoint is a no-op (idempotency: a second invocation flips 0 rows).
+    IDs are materialised to a Python list rather than via SQLAlchemy
+    ``.subquery()`` because the anonymous-label + ``.update(...).in_()``
+    pattern is brittle on SQLite (CI) and across legacy SA versions.
+
+    Cheaper than re-running analysis on every existing call (no LLM cost,
+    no transcript fetch). Gated by ``require_lead`` so only Watt leads can
+    run it. Writes one ``record_audit`` row inside the same transaction so
+    the bulk mutation is forensically reconstructable.
+    """
+    from app.models import Call, CallSegment
+    from app.pipeline import _BUCKET_RANK
+
+    pass_rank = _BUCKET_RANK["pass"]
+    non_pass_buckets = [b for b, r in _BUCKET_RANK.items() if r > pass_rank]
+
+    # Pull (call_id, bucket) for every non-pass segment, then dedupe to the
+    # worst bucket per call in Python — mirrors pipeline.finalize() loop.
+    seg_rows = (
+        db.query(CallSegment.call_id, CallSegment.bucket)
+        .filter(CallSegment.bucket.isnot(None))
+        .filter(CallSegment.bucket.in_(non_pass_buckets))
+        .all()
+    )
+    worst_by_call: dict[str, str] = {}
+    for call_id, bucket in seg_rows:
+        cur = worst_by_call.get(call_id)
+        if cur is None or _BUCKET_RANK.get(bucket, 0) > _BUCKET_RANK.get(cur, 0):
+            worst_by_call[call_id] = bucket
+
+    if not worst_by_call:
+        return {
+            "flipped": 0,
+            "to_pending": 0,
+            "to_non_compliant": 0,
+            "scanned_segments": len(seg_rows),
+        }
+
+    blocked_ids = [cid for cid, b in worst_by_call.items() if b == "blocked"]
+    pending_ids = [cid for cid, b in worst_by_call.items() if b in ("review", "coaching")]
+
+    flipped_non_compliant = 0
+    if blocked_ids:
+        flipped_non_compliant = (
+            db.query(Call)
+            .filter(Call.compliant.is_(True))
+            .filter(Call.id.in_(blocked_ids))
+            .update(
+                {Call.compliant: False, Call.compliance_status: "non_compliant"},
+                synchronize_session=False,
+            )
+        )
+
+    flipped_pending = 0
+    if pending_ids:
+        flipped_pending = (
+            db.query(Call)
+            .filter(Call.compliant.is_(True))
+            .filter(Call.id.in_(pending_ids))
+            .update(
+                {Call.compliant: False, Call.compliance_status: "pending"},
+                synchronize_session=False,
+            )
+        )
+
+    flipped = flipped_non_compliant + flipped_pending
+
+    if flipped:
+        record_audit(
+            db,
+            action="backfill.compliant_strict",
+            entity_type="call",
+            entity_id=None,
+            payload={
+                "flipped": flipped,
+                "to_pending": flipped_pending,
+                "to_non_compliant": flipped_non_compliant,
+                "scanned_segments": len(seg_rows),
+            },
+            actor_id=_user.get("id") if isinstance(_user, dict) else None,
+        )
+
+    db.commit()
+    log.info(
+        "BACKFILL_COMPLIANT_STRICT flipped=%d to_pending=%d to_non_compliant=%d",
+        flipped, flipped_pending, flipped_non_compliant,
+    )
+    return {
+        "flipped": flipped,
+        "to_pending": flipped_pending,
+        "to_non_compliant": flipped_non_compliant,
+        "scanned_segments": len(seg_rows),
+    }
+
+
 @router.post("/api/admin/ingest-phrase-packs", status_code=200)
 async def admin_ingest_phrase_packs(
     apply: bool = False,
