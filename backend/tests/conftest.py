@@ -148,6 +148,20 @@ def _reset_dependency_overrides_after_test():
         pass
 
 
+# 2026-05-24 wiring audit — the previous autouse `_auto_authenticate_test_client`
+# fixture (added in 8aa815b / d369c5d / 822a371) tried to be clever about which
+# tests to stub vs which to leave alone, by inspecting `request.fixturenames`
+# and the test name. On CI the heuristics were unreliable — `test_verdict.py`
+# tests that explicitly use the `auth` + `mock_jwks` fixtures still saw the
+# stub fire, blowing up identity assertions.
+#
+# Pivot: per-file install. The only tests that need the stub are the ones
+# hitting routes I gated in this wave WITHOUT using the existing `auth`
+# helper — currently `test_audit_coverage.py`, `test_deals_stub.py`, and
+# `test_upload_deal_linkage.py`. Each of those test files installs the
+# override in its own autouse fixture; this conftest stays out of the way.
+
+
 @pytest.fixture
 def seed_profiles(test_db):
     """Seed 4 test profiles (3 reviewers + 1 lead). Call from tests that need identity.

@@ -12,6 +12,10 @@ import { ModelSettings } from "./ModelSettings";
 import { TranscriptionSettings } from "./TranscriptionSettings";
 import { ObservabilityTab } from "./ObservabilityTab";
 import { DensityToggle } from "./DensityToggle";
+// 2026-05-24 wiring audit HIGH — render the real Account tab instead of
+// a placeholder. AccountTab.tsx has been on disk with a working sign-out
+// button; the prior PlaceholderCard was a stale stub.
+import { AccountTab } from "./AccountTab";
 
 type Tab = "model" | "transcription" | "density" | "account" | "observability";
 
@@ -113,35 +117,10 @@ export default function SettingsPage() {
           )}
           {tab === "observability" && <ObservabilityTab />}
           {tab === "density" && <DensityToggle />}
-          {tab === "account" && (
-            <PlaceholderCard
-              title="Account"
-              body="Email · role · sign out."
-            />
-          )}
+          {tab === "account" && <AccountTab />}
         </div>
       </div>
     </div>
   );
 }
 
-function PlaceholderCard({ title, body }: { title: string; body: string }) {
-  return (
-    <div style={{ marginBottom: 24 }}>
-      <h3
-        style={{
-          fontSize: 16,
-          fontWeight: 600,
-          letterSpacing: "-0.014em",
-          margin: 0,
-          color: "var(--text-primary)",
-        }}
-      >
-        {title}
-      </h3>
-      <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>
-        {body}
-      </div>
-    </div>
-  );
-}

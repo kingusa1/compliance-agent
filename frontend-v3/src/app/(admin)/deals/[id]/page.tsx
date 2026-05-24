@@ -47,92 +47,12 @@ function actionTone(a: string | null | undefined): PillTone {
   }
 }
 
-function CircularGauge({
-  value,
-  tone,
-  size = 250,
-}: {
-  value: number;
-  tone: "emerald" | "amber" | "red";
-  size?: number;
-}) {
-  const stroke = 16;
-  const r = (size - stroke) / 2;
-  const c = 2 * Math.PI * r;
-  const offset = c * (1 - value / 100);
-  const color =
-    tone === "emerald" ? "var(--emerald)" : tone === "red" ? "var(--red)" : "var(--amber)";
-
-  return (
-    <div style={{ position: "relative", width: size, height: size }}>
-      <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={r}
-          fill="none"
-          stroke="var(--bg-elev3)"
-          strokeWidth={stroke}
-        />
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={r}
-          fill="none"
-          stroke={color}
-          strokeWidth={stroke}
-          strokeDasharray={c}
-          strokeDashoffset={offset}
-          strokeLinecap="round"
-          style={{ transition: "stroke-dashoffset 600ms ease" }}
-        />
-      </svg>
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        <div
-          style={{
-            fontSize: 56,
-            fontWeight: 600,
-            color: "var(--text-primary)",
-            fontVariantNumeric: "tabular-nums",
-            letterSpacing: "-0.02em",
-            lineHeight: 1,
-          }}
-        >
-          {value}
-          <span
-            style={{
-              fontSize: 24,
-              color: "var(--text-muted)",
-              fontWeight: 500,
-            }}
-          >
-            %
-          </span>
-        </div>
-        <div
-          style={{
-            fontSize: 12,
-            color: "var(--text-faint)",
-            textTransform: "uppercase",
-            letterSpacing: "0.08em",
-            marginTop: 8,
-          }}
-        >
-          Composite
-        </div>
-      </div>
-    </div>
-  );
-}
+// 2026-05-24 redesign — the standalone CircularGauge component was
+// powered by the legacy `/api/deals/{id}/verdict` numbers and rendered
+// a second composite gauge below the new composite-verdict block. Both
+// blocks claimed the page heading "Composite" with different numbers
+// (e.g. 60.1% vs 0%), which is exactly the user-reported confusion.
+// The new single composite-verdict section above owns the gauge now.
 
 export default function DealDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -177,13 +97,9 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
   const v = verdict.data;
   const d = detail.data;
 
-  // Backend returns composite_score as 0-100 (e.g. 83.33), not 0-1.
-  const composite = Math.round(v?.composite_score ?? 0);
-  const worst = v?.worst_action ?? "—";
-  const tone = actionTone(worst) as "emerald" | "amber" | "red" | "blue" | "violet" | "neutral";
-  const gaugeTone: "emerald" | "amber" | "red" =
-    tone === "emerald" ? "emerald" : tone === "red" || tone === "violet" ? "red" : "amber";
-
+  // 2026-05-24 redesign — the legacy `composite`/`tone`/`gaugeTone`
+  // variables fed the duplicate big gauge that's been removed. The new
+  // composite block (compositeQuery.data) computes its own state.
   const missing = v?.missing_calls ?? [];
   const breakdown = v?.call_breakdown ?? [];
   const totalExpected = breakdown.length + missing.length;
@@ -421,254 +337,145 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
             </p>
           </section>
         )}
-        {compositeQuery.data && (
-          <section
-            data-slot="composite-verdict"
-            className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)] p-6"
-          >
-            <div className="flex items-center gap-8">
-              <div className="relative h-32 w-32">
-                <svg viewBox="0 0 100 100" className="-rotate-90">
-                  <circle
-                    cx="50"
-                    cy="50"
-                    r="44"
-                    stroke="rgb(228 228 231)"
-                    strokeWidth="8"
-                    fill="none"
-                  />
-                  <circle
-                    cx="50"
-                    cy="50"
-                    r="44"
-                    stroke={
-                      compositeQuery.data.threshold_met
-                        ? "rgb(16 185 129)"
-                        : "rgb(239 68 68)"
-                    }
-                    strokeWidth="8"
-                    fill="none"
-                    strokeDasharray={`${(compositeQuery.data.composite_pct ?? 0) * 2.76} 1000`}
-                  />
-                </svg>
-                <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <span className="text-3xl font-semibold">
-                    {compositeQuery.data.composite_pct ?? "—"}%
-                  </span>
-                  <span className="text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
-                    composite
-                  </span>
-                </div>
-              </div>
-              <div className="space-y-2 text-sm">
-                <div>
-                  <strong>Worst action:</strong> {compositeQuery.data.worst_action}
-                </div>
-                <div>
-                  <strong>Calls scored:</strong>{" "}
-                  {compositeQuery.data.calls_scored} / {compositeQuery.data.calls_total}
-                </div>
-                <div>
-                  <strong>Threshold:</strong> ≥ {compositeQuery.data.threshold_pct}%
-                  {" · "}
-                  {compositeQuery.data.threshold_met ? "met" : "not met"}
-                </div>
-              </div>
-            </div>
-            <h3 className="mt-6 text-sm font-medium">Per-call breakdown</h3>
-            <table className="mt-2 w-full text-sm">
-              <thead>
-                <tr className="text-left text-[var(--text-muted)]">
-                  <th>Call type</th>
-                  <th>Status</th>
-                  <th>Agent</th>
-                  <th>Score</th>
-                  <th>Weight</th>
-                </tr>
-              </thead>
-              <tbody>
-                {compositeQuery.data.per_call.map((c) => (
-                  <tr key={c.id}>
-                    <td>{c.call_type}</td>
-                    <td>{c.status}</td>
-                    <td>{c.agent ?? "—"}</td>
-                    <td>{c.score == null ? "—" : `${c.score.toFixed(0)}%`}</td>
-                    <td>{c.weight}%</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </section>
-        )}
-
-        {/* Big gauge card */}
-        <div
-          style={{
-            padding: 32,
-            background: "var(--bg-elev2)",
-            border: "1px solid var(--border-subtle)",
-            borderRadius: 10,
-            display: "flex",
-            alignItems: "center",
-            gap: 40,
-          }}
-        >
-          {isLoading ? (
-            <div style={{ width: 250, height: 250 }} />
-          ) : (
-            <CircularGauge value={composite} tone={gaugeTone} />
-          )}
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 16 }}>
-            <div>
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "var(--text-faint)",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.06em",
-                  marginBottom: 4,
-                }}
-              >
-                Worst action
-              </div>
-              <Pill tone={actionTone(worst)} style={{ fontSize: 14, padding: "4px 12px" }}>
-                {worst}
-              </Pill>
-            </div>
-            <div>
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "var(--text-faint)",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.06em",
-                  marginBottom: 6,
-                }}
-              >
-                Calls scored
-              </div>
-              <div
-                style={{
-                  fontSize: 22,
-                  fontWeight: 600,
-                  color: "var(--text-primary)",
-                  fontVariantNumeric: "tabular-nums",
-                }}
-              >
-                {breakdown.length}{" "}
-                <span style={{ color: "var(--text-muted)", fontSize: 16, fontWeight: 500 }}>
-                  / {totalExpected || breakdown.length}
-                </span>
-              </div>
-            </div>
-            <div>
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "var(--text-faint)",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.06em",
-                  marginBottom: 6,
-                }}
-              >
-                Threshold
-              </div>
-              <div style={{ fontSize: 13, color: "var(--text-primary)" }}>
-                {locked ? (
-                  <>
-                    ≥ 80% · <span style={{ color: "var(--emerald)" }}>met</span>
-                  </>
-                ) : (
-                  <span style={{ color: "var(--amber)" }}>≥ 80% · pending all calls</span>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Missing calls — only when not locked */}
-        {missing.length > 0 && (
-          <div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                marginBottom: 10,
-              }}
+        {/* 2026-05-24 redesign — single composite verdict block.
+            Previously this page rendered TWO independent gauges (one from
+            /api/deals/{id}/composite-verdict counting only scored calls;
+            another from /api/deals/{id}/verdict counting expected calls)
+            with the same labels and different numbers — reviewers could
+            not tell which was "the" verdict. The unified block now shows:
+              • ONE big gauge tinted by overall state (pending / pass /
+                at-risk / fail)
+              • Three explicit KPIs (worst action · scored progress ·
+                threshold)
+              • An inline next-action callout when the deal is incomplete
+                (the same Upload-next-phase CTA already in the top bar)
+              • The per-call breakdown table integrates MISSING rows so
+                the gap is visible in-line rather than in a separate
+                "Missing required calls" section below.
+        */}
+        {compositeQuery.data && (() => {
+          const data = compositeQuery.data;
+          const pct = data.composite_pct;
+          const scored = data.calls_scored;
+          const totalForGauge = totalExpected || data.calls_total || scored;
+          const allScored = scored === totalForGauge && totalForGauge > 0;
+          // Deal state machine: PENDING (missing calls) → READY when all
+          // scored → PASS / FAIL based on threshold + worst_action.
+          const dealState: "pending" | "pass" | "at_risk" | "fail" =
+            !allScored
+              ? "pending"
+              : data.worst_action === "FAIL"
+                ? "fail"
+                : data.threshold_met
+                  ? "pass"
+                  : "at_risk";
+          const stateBadge: Record<typeof dealState, { label: string; tone: "amber" | "emerald" | "red"; }> = {
+            pending:  { label: "Pending more calls", tone: "amber"   },
+            pass:     { label: "PASS",                tone: "emerald" },
+            at_risk:  { label: "At risk",             tone: "amber"   },
+            fail:     { label: "FAIL",                tone: "red"     },
+          };
+          const ringColor =
+            dealState === "pass"   ? "rgb(16 185 129)"
+          : dealState === "fail"   ? "rgb(239 68 68)"
+          :                          "rgb(245 158 11)";
+          return (
+            <section
+              data-slot="composite-verdict"
+              className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)] p-6"
             >
-              <h3
-                style={{
-                  fontSize: 16,
-                  fontWeight: 600,
-                  letterSpacing: "-0.014em",
-                  margin: 0,
-                  color: "var(--text-primary)",
-                }}
-              >
-                Missing required calls
-              </h3>
-              <Pill tone="amber">{missing.length}</Pill>
-              <span style={{ fontSize: 12, color: "var(--text-faint)" }}>· click to upload</span>
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {missing.map((name) => (
-                <button
-                  key={name}
-                  type="button"
-                  onClick={() => setUploadOpen(true)}
-                  title={`Upload the ${
-                    PHASE_LABEL[name as keyof typeof PHASE_LABEL] ?? name
-                  } call to advance this deal`}
-                  data-slot="deal-missing-call-chip"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    padding: "10px 14px",
-                    background: "var(--amber-bg)",
-                    border: "1px solid var(--amber-border)",
-                    borderRadius: 8,
-                    cursor: "pointer",
-                    fontFamily: "inherit",
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 24,
-                      height: 24,
-                      borderRadius: 12,
-                      background: "var(--amber-bg)",
-                      display: "grid",
-                      placeItems: "center",
-                      color: "var(--amber)",
-                    }}
-                  >
-                    <Plus size={14} />
+              <div className="flex flex-wrap items-center gap-8">
+                {/* Gauge */}
+                <div className="relative h-36 w-36 shrink-0" aria-label={`Composite score ${pct ?? "pending"} percent`}>
+                  <svg viewBox="0 0 100 100" className="-rotate-90">
+                    <circle cx="50" cy="50" r="44" stroke="rgb(228 228 231)" strokeWidth="8" fill="none" />
+                    <circle
+                      cx="50"
+                      cy="50"
+                      r="44"
+                      stroke={ringColor}
+                      strokeWidth="8"
+                      fill="none"
+                      strokeDasharray={`${(pct ?? 0) * 2.76} 1000`}
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                  <div className="absolute inset-0 flex flex-col items-center justify-center">
+                    <span className="text-3xl font-semibold tabular-nums">
+                      {pct == null ? "—" : `${pct}%`}
+                    </span>
+                    <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+                      {allScored ? "composite" : "scored so far"}
+                    </span>
                   </div>
-                  <div style={{ textAlign: "left" }}>
-                    <div
-                      style={{
-                        fontSize: 13,
-                        fontWeight: 500,
-                        color: "var(--amber-400)",
-                        fontFamily: "var(--font-mono)",
-                      }}
-                    >
-                      {PHASE_LABEL[name as keyof typeof PHASE_LABEL] ?? name}
-                    </div>
-                    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                      missing — click to upload
-                    </div>
-                  </div>
-                  <span style={{ color: "var(--amber)", marginLeft: 4 }}>→</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+                </div>
 
-        {/* Per-call breakdown */}
+                {/* KPIs */}
+                <div className="flex min-w-0 flex-1 flex-col gap-3">
+                  <div className="flex items-center gap-3">
+                    <Pill tone={stateBadge[dealState].tone} dot>
+                      {stateBadge[dealState].label}
+                    </Pill>
+                    <span className="text-[12px] text-[var(--text-muted)]">
+                      worst action <strong className="text-[var(--text-primary)]">{data.worst_action ?? "—"}</strong>
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Calls scored</div>
+                      <div className="text-[18px] font-semibold tabular-nums text-[var(--text-primary)]">
+                        {scored}<span className="text-[var(--text-muted)] text-[14px] font-normal"> / {totalForGauge}</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Threshold</div>
+                      <div className="text-[14px] tabular-nums text-[var(--text-primary)]">
+                        ≥ {data.threshold_pct}%
+                        <span className={data.threshold_met ? "text-emerald-500 ml-1" : "text-amber-500 ml-1"}>
+                          · {allScored ? (data.threshold_met ? "met" : "not met") : "pending"}
+                        </span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Avg of scored</div>
+                      <div className="text-[14px] tabular-nums text-[var(--text-primary)]">
+                        {pct == null ? "—" : `${pct}%`}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Inline next-action — visible only when something to do */}
+                  {!locked && missing.length > 0 && (
+                    <div className="mt-2 flex items-center gap-3 rounded-md border border-amber-300/40 bg-amber-500/10 px-3 py-2 text-[12.5px] text-[var(--text-primary)]">
+                      <AlertTriangle size={14} className="text-amber-500 shrink-0" aria-hidden />
+                      <div className="flex-1">
+                        Next step: upload the{" "}
+                        <strong>
+                          {missing
+                            .map((m) => PHASE_LABEL[m as keyof typeof PHASE_LABEL] ?? m)
+                            .join(", ")}
+                        </strong>{" "}
+                        call{missing.length === 1 ? "" : "s"} to finalise this deal.
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setUploadOpen(true)}
+                        className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2.5 py-1 text-[12px] font-medium text-[#1f1300] hover:bg-amber-400"
+                      >
+                        <Plus size={12} />
+                        Upload {PHASE_LABEL[missing[0] as keyof typeof PHASE_LABEL] ?? missing[0]}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+          );
+        })()}
+
+        {/* Per-call breakdown — integrates MISSING rows so the gap is
+            visible inline; each MISSING row carries an Upload button so
+            reviewers don't have to scan the page for an action. */}
         <div>
           <div
             style={{
@@ -690,6 +497,9 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
               Per-call breakdown
             </h3>
             <Pill tone="neutral">{breakdown.length}</Pill>
+            {missing.length > 0 && (
+              <Pill tone="amber">{missing.length} missing</Pill>
+            )}
           </div>
           <div
             style={{
@@ -702,14 +512,14 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "130px 110px 1fr 100px 100px 110px",
+                gridTemplateColumns: "130px 110px 1fr 100px 110px 130px",
                 gap: 12,
                 padding: "10px 20px",
                 borderBottom: "1px solid var(--border-subtle)",
                 background: "var(--bg-elev3)",
               }}
             >
-              {["Call type", "Status", "Phase", "Score", "Action", "When"].map((h) => (
+              {["Call type", "Status", "Phase", "Score", "When", ""].map((h) => (
                 <div
                   key={h}
                   style={{
@@ -724,7 +534,7 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
                 </div>
               ))}
             </div>
-            {breakdown.length === 0 ? (
+            {breakdown.length === 0 && missing.length === 0 ? (
               <div
                 style={{
                   padding: 32,
@@ -736,59 +546,107 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
                 No calls scored yet.
               </div>
             ) : (
-              breakdown.map((row, i) => {
-                const scorePct =
-                  row.score_fraction != null
-                    ? `${Math.round(row.score_fraction * 100)}%`
-                    : row.score_raw ?? "—";
-                return (
-                  <div
-                    key={row.call_id || i}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "130px 110px 1fr 100px 100px 110px",
-                      gap: 12,
-                      alignItems: "center",
-                      padding: "12px 20px",
-                      borderBottom:
-                        i < breakdown.length - 1 ? "1px solid var(--border-subtle)" : "none",
-                      fontSize: 13,
-                    }}
-                  >
-                    <div>
-                      <Pill tone="neutral">{row.call_type ?? "—"}</Pill>
-                    </div>
-                    <div>
-                      <Pill tone={actionTone(row.action)} dot>
-                        {row.action ?? "—"}
-                      </Pill>
-                    </div>
-                    <div style={{ color: "var(--text-muted)" }}>{row.phase ?? "—"}</div>
+              <>
+                {breakdown.map((row, i) => {
+                  const scorePct =
+                    row.score_fraction != null
+                      ? `${Math.round(row.score_fraction * 100)}%`
+                      : row.score_raw ?? "—";
+                  const isLast = i === breakdown.length - 1 && missing.length === 0;
+                  return (
                     <div
+                      key={row.call_id || i}
                       style={{
-                        fontFamily: "var(--font-mono)",
-                        color: "var(--text-primary)",
-                        fontVariantNumeric: "tabular-nums",
+                        display: "grid",
+                        gridTemplateColumns: "130px 110px 1fr 100px 110px 130px",
+                        gap: 12,
+                        alignItems: "center",
+                        padding: "12px 20px",
+                        borderBottom: isLast ? "none" : "1px solid var(--border-subtle)",
+                        fontSize: 13,
                       }}
                     >
-                      {scorePct}
+                      <div>
+                        <Pill tone="neutral">{row.call_type ?? "—"}</Pill>
+                      </div>
+                      <div>
+                        <Pill tone={actionTone(row.action)} dot>
+                          {row.action ?? "—"}
+                        </Pill>
+                      </div>
+                      <div style={{ color: "var(--text-muted)" }}>{row.phase ?? "—"}</div>
+                      <div
+                        style={{
+                          fontFamily: "var(--font-mono)",
+                          color: "var(--text-primary)",
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                      >
+                        {scorePct}
+                      </div>
+                      <div style={{ color: "var(--text-muted)" }}>
+                        {row.completed_at
+                          ? new Date(row.completed_at).toLocaleDateString()
+                          : "—"}
+                      </div>
+                      <div>
+                        {row.call_id && (
+                          <Link
+                            href={`/calls/${row.call_id}`}
+                            className="text-[12px] text-emerald-500 hover:underline"
+                          >
+                            Open →
+                          </Link>
+                        )}
+                      </div>
                     </div>
+                  );
+                })}
+                {missing.map((phase, i) => {
+                  const label = PHASE_LABEL[phase as keyof typeof PHASE_LABEL] ?? phase;
+                  const isLast = i === missing.length - 1;
+                  return (
                     <div
+                      key={`missing-${phase}`}
                       style={{
-                        color: "var(--text-muted)",
-                        fontVariantNumeric: "tabular-nums",
+                        display: "grid",
+                        gridTemplateColumns: "130px 110px 1fr 100px 110px 130px",
+                        gap: 12,
+                        alignItems: "center",
+                        padding: "12px 20px",
+                        borderBottom: isLast ? "none" : "1px solid var(--border-subtle)",
+                        fontSize: 13,
+                        background: "var(--amber-bg)",
                       }}
+                      data-slot="deal-missing-call-row"
                     >
-                      {row.action ?? "—"}
+                      <div>
+                        <Pill tone="neutral">{label}</Pill>
+                      </div>
+                      <div>
+                        <Pill tone="amber" dot>
+                          MISSING
+                        </Pill>
+                      </div>
+                      <div style={{ color: "var(--text-muted)" }}>—</div>
+                      <div style={{ color: "var(--text-muted)" }}>—</div>
+                      <div style={{ color: "var(--text-muted)" }}>—</div>
+                      <div>
+                        {!locked && (
+                          <button
+                            type="button"
+                            onClick={() => setUploadOpen(true)}
+                            className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 text-[11.5px] font-medium text-[#1f1300] hover:bg-amber-400"
+                            title={`Upload the ${label} call`}
+                          >
+                            <Plus size={11} /> Upload
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    <div style={{ color: "var(--text-muted)" }}>
-                      {row.completed_at
-                        ? new Date(row.completed_at).toLocaleDateString()
-                        : "—"}
-                    </div>
-                  </div>
-                );
-              })
+                  );
+                })}
+              </>
             )}
           </div>
         </div>

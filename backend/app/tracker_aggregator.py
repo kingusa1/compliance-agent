@@ -222,6 +222,58 @@ def _rejection_row(
     }
 
 
+def _bulk_ai_suggestions(db: Session, call_ids: list[str]) -> dict[str, dict]:
+    """Bulk-load AI suggestion summaries for many calls in one query.
+
+    2026-05-24 wiring audit HIGH-N+1 — `_awaiting_review_row` was calling
+    `_ai_suggestions_for_call` once per page row (100-row page → 100
+    extra round-trips to call_checkpoints, ~1s on Supabase pooler RTT).
+    This helper does one SELECT across all calls and aggregates in
+    Python, then passes the result into each row builder.
+
+    Returns ``{call_id_str: {category, fix_required, ai_rejection_reason}}``
+    keyed identically to ``_ai_suggestions_for_call``'s output for a
+    drop-in slot in the row factory.
+    """
+    if not call_ids:
+        return {}
+    rows = (
+        db.query(CallCheckpoint)
+        .filter(CallCheckpoint.call_id.in_(call_ids))
+        .filter(CallCheckpoint.passed.is_(False))
+        .all()
+    )
+    by_call: dict[str, list[CallCheckpoint]] = {}
+    for cp in rows:
+        by_call.setdefault(str(cp.call_id), []).append(cp)
+    out: dict[str, dict] = {}
+    for cid in call_ids:
+        cps = by_call.get(str(cid), [])
+        if not cps:
+            out[str(cid)] = {"category": None, "fix_required": None, "ai_rejection_reason": None}
+            continue
+        cat_score: dict[str, float] = {}
+        fix_score: dict[str, float] = {}
+        reasons: list[str] = []
+        for cp in cps:
+            cat = (getattr(cp, "ai_category", None) or "").strip() or None
+            fix = (getattr(cp, "ai_fix_required", None) or "").strip() or None
+            conf = float(getattr(cp, "ai_category_confidence", None) or 0.5)
+            if cat:
+                cat_score[cat] = cat_score.get(cat, 0.0) + conf
+            if fix:
+                fix_score[fix] = fix_score.get(fix, 0.0) + conf
+            rj = (getattr(cp, "ai_rejection_reason", None) or "").strip()
+            if rj:
+                reasons.append(rj)
+        out[str(cid)] = {
+            "category": max(cat_score, key=cat_score.get) if cat_score else None,
+            "fix_required": max(fix_score, key=fix_score.get) if fix_score else None,
+            "ai_rejection_reason": reasons[0] if reasons else None,
+        }
+    return out
+
+
 def _ai_suggestions_for_call(db: Session, call_id) -> dict:
     """Aggregate per-checkpoint AI suggestions into one row-level summary.
 
@@ -276,6 +328,7 @@ def _awaiting_review_row(
     call: Call,
     deal: Optional[CustomerDeal],
     db: Session,
+    ai_suggestions: Optional[dict] = None,
 ) -> TrackerRow:
     """Tracker row for a Call that's awaiting reviewer sign-off.
 
@@ -296,7 +349,10 @@ def _awaiting_review_row(
     """
     cust_name = (deal.customer_name if deal else None) or call.customer_name
 
-    ai = _ai_suggestions_for_call(db, call.id)
+    # 2026-05-24 wiring audit HIGH-N+1 — accept pre-computed suggestions
+    # to avoid one CallCheckpoint query per row. Falls back to per-row
+    # query only when called outside the bulk path (legacy callsites).
+    ai = ai_suggestions if ai_suggestions is not None else _ai_suggestions_for_call(db, call.id)
 
     # Deadline = completed_at + 2 days. Mirrors Rejection.deadline so the
     # reviewer sees the same SLA pressure for awaiting-review rows.
@@ -607,10 +663,16 @@ def build_tracker_rows(
         if deal_ids:
             for d in db.query(CustomerDeal).filter(CustomerDeal.id.in_(deal_ids)).all():
                 deals_by_id[d.id] = d
+        # 2026-05-24 wiring audit HIGH-N+1 — bulk-load per-checkpoint AI
+        # suggestions for every call in one query instead of N per-row
+        # round-trips inside _ai_suggestions_for_call.
+        ai_by_call = _bulk_ai_suggestions(db, [str(c.id) for c in calls])
         rows: list[TrackerRow] = []
         for call in calls:
             deal = deals_by_id.get(call.deal_id) if call.deal_id else None
-            rows.append(_awaiting_review_row(call, deal, db))
+            rows.append(_awaiting_review_row(
+                call, deal, db, ai_suggestions=ai_by_call.get(str(call.id)),
+            ))
         # 2026-05-16 audit fix — the CATEGORY pill on the Tracker page
         # was a silent no-op on the awaiting_review tab because the
         # category column doesn't exist on Call; it's derived per-call

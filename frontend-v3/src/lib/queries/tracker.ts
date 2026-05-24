@@ -189,3 +189,37 @@ export function useTrackerRowsQuery(filters: TrackerFilters) {
 export function trackerExportUrl(): string {
   return `/api/tracker/export.xlsx`;
 }
+
+/**
+ * 2026-05-24 wiring audit C7 — fetch the tracker XLSX with the Supabase
+ * Bearer token attached, then trigger a Blob download. The previous
+ * `<a href={trackerExportUrl()}>` flow worked only because the Next.js
+ * proxy forwarded session cookies; a direct backend deploy or any env
+ * where the proxy is bypassed would 401. This path works regardless
+ * of proxy setup.
+ *
+ * Throws ApiError on non-2xx so the caller can surface a toast.
+ */
+export async function downloadTrackerXlsx(filename = "compliance-tracker.xlsx"): Promise<void> {
+  const { getAccessToken } = await import("@/lib/supabase");
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
+  const token = await getAccessToken();
+  const r = await fetch(`${API_URL}/api/tracker/export.xlsx`, {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(`Tracker export failed (${r.status}): ${text.slice(0, 200)}`);
+  }
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}

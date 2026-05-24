@@ -17,9 +17,51 @@ def _clear_db_override():
     """Other test files permanently mutate ``app.dependency_overrides[get_db]``
     to point at their private in-memory SQLite engines. This file needs the
     real Postgres ``get_db`` so its ``SessionLocal`` queries and the endpoint's
-    DB session see the same rows."""
+    DB session see the same rows.
+
+    2026-05-24 wiring audit C2 added ``Depends(current_reviewer)`` to
+    ``POST /api/calls/upload``. The conftest autouse stub doesn't reach
+    this test on CI (likely a fixture-resolution timing issue with the
+    file's own autouse + module-level TestClient). Install the override
+    explicitly here AND seed a test-admin profile so the audit log FK
+    doesn't violate.
+    """
     app.dependency_overrides.pop(get_db, None)
+
+    from app.auth import current_user, require_lead
+    from app.reviewers import current_reviewer
+    from app.models import Profile
+
+    _stub_admin = {
+        "id": "test-admin",
+        "email": "test-admin@compliance-agent.local",
+        "name": "Test Admin",
+        "role": "admin",
+    }
+    app.dependency_overrides[current_user] = lambda: _stub_admin
+    app.dependency_overrides[current_reviewer] = lambda: _stub_admin
+    app.dependency_overrides[require_lead] = lambda: _stub_admin
+
+    db = SessionLocal()
+    try:
+        if not db.query(Profile).filter_by(id="test-admin").first():
+            db.add(Profile(
+                id="test-admin",
+                email="test-admin@compliance-agent.local",
+                name="Test Admin",
+                role="admin",
+                active=True,
+            ))
+            db.commit()
+    finally:
+        db.close()
+
     yield
+    # Explicit teardown so the override doesn't leak into test files
+    # that follow alphabetically (test_verdict, test_workflows, etc.).
+    app.dependency_overrides.pop(current_user, None)
+    app.dependency_overrides.pop(current_reviewer, None)
+    app.dependency_overrides.pop(require_lead, None)
 
 
 @pytest.fixture(autouse=True)

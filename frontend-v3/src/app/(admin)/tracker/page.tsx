@@ -8,7 +8,7 @@ import { TrackerFilterBar } from "./TrackerFilterBar";
 import { CATEGORY_KEYS, CATEGORY_LABEL, CATEGORY_HEX } from "./CategoryChip";
 import {
   useTrackerRowsQuery,
-  trackerExportUrl,
+  downloadTrackerXlsx,
   type TrackerFilters,
   type TrackerRow,
   type TrackerTab,
@@ -43,6 +43,10 @@ export default function TrackerPage() {
   }));
   const [selectedRow, setSelectedRow] = useState<TrackerRow | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
+  // 2026-05-24 tracker enterprise polish — track XLSX export in flight
+  // so the button can show "Exporting…" feedback and prevent double-click.
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const filters = useMemo<TrackerFilters>(() => ({
     tab,
@@ -161,7 +165,18 @@ export default function TrackerPage() {
         <header className="flex items-center justify-between border-b border-[var(--border-subtle)] px-6 py-3">
           <div>
             <h1 className="text-base font-semibold">Tracker</h1>
-            <p className="text-[11px] text-[var(--text-muted)]">{counts} rows · mirrors Watt's compliance tracker</p>
+            <p className="text-[11px] text-[var(--text-muted)]">
+              {counts} rows · mirrors Watt&apos;s compliance tracker
+              {q.isFetching && !q.isLoading && (
+                <span className="ml-2 inline-flex items-center gap-1 text-[var(--text-muted)]" aria-live="polite">
+                  <span
+                    className="inline-block size-1.5 animate-pulse rounded-full bg-emerald-500"
+                    aria-hidden
+                  />
+                  Refreshing
+                </span>
+              )}
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -171,13 +186,37 @@ export default function TrackerPage() {
             >
               + Upload Call
             </button>
-            <a href={trackerExportUrl()} className="inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 py-1.5 text-[12px] hover:bg-[var(--bg-elev2)]">
-              ↓ Export to XLSX
-            </a>
+            <button
+              type="button"
+              disabled={exporting}
+              onClick={async () => {
+                // 2026-05-24 wiring audit C7 — direct fetch+Blob carries
+                // the Supabase Bearer token; the prior bare <a href> worked
+                // only because the Next proxy forwarded session cookies.
+                setExportError(null);
+                setExporting(true);
+                try {
+                  await downloadTrackerXlsx();
+                } catch (e) {
+                  setExportError(e instanceof Error ? e.message : String(e));
+                } finally {
+                  setExporting(false);
+                }
+              }}
+              className="inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 py-1.5 text-[12px] hover:bg-[var(--bg-elev2)] disabled:cursor-wait disabled:opacity-60"
+              aria-label="Export tracker rows to XLSX"
+              aria-busy={exporting}
+            >
+              {exporting ? "Exporting…" : "↓ Export to XLSX"}
+            </button>
           </div>
         </header>
 
-        <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border-subtle)] bg-[var(--surface-1)] px-6 py-2">
+        <div
+          className="flex flex-wrap items-center gap-2 border-b border-[var(--border-subtle)] bg-[var(--surface-1)] px-6 py-2"
+          role="tablist"
+          aria-label="Tracker view"
+        >
           {TABS.map((t) => {
             const isAwaiting = t === "awaiting_review";
             const active = tab === t;
@@ -187,29 +226,64 @@ export default function TrackerPage() {
                 ? `${baseCls} bg-amber-500 text-white`
                 : `${baseCls} bg-emerald-600 text-white`
               : `${baseCls} text-[var(--text-muted)] hover:bg-[var(--bg-elev2)]`;
+            const labels: Record<TrackerTab, string> = {
+              awaiting_review: "Awaiting review",
+              active: "Active",
+              fixed: "Fixed",
+              dead: "Dead",
+              compliant: "Compliant",
+            };
+            const n = tabCount(t);
             return (
-              <button key={t} onClick={() => setTab(t)} className={cls}>
+              <button
+                key={t}
+                role="tab"
+                aria-selected={active}
+                aria-current={active ? "page" : undefined}
+                onClick={() => setTab(t)}
+                className={cls}
+              >
                 {isAwaiting && (
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                     <circle cx="12" cy="12" r="9" />
                     <path d="M12 8v4l3 3" />
                   </svg>
                 )}
-                {(() => {
-                  const labels: Record<TrackerTab, string> = {
-                    awaiting_review: "Awaiting review",
-                    active: "Active",
-                    fixed: "Fixed",
-                    dead: "Dead",
-                    compliant: "Compliant",
-                  };
-                  const n = tabCount(t);
-                  return n == null ? labels[t] : `${labels[t]} · ${n}`;
-                })()}
+                {n == null ? labels[t] : `${labels[t]} · ${n}`}
               </button>
             );
           })}
         </div>
+
+        {/* 2026-05-24 tracker enterprise polish — surface query/export
+            errors prominently so the reviewer never wonders why the
+            table flashed. Previously errors silently dropped rows to []
+            and the empty state masqueraded as "no data". */}
+        {(q.isError || exportError) && (
+          <div
+            role="alert"
+            className="mx-6 mt-2 flex items-start justify-between gap-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-[12.5px] text-red-900"
+          >
+            <div>
+              <strong className="font-semibold">
+                {q.isError ? "Couldn't load tracker rows." : "Export failed."}
+              </strong>{" "}
+              {q.isError
+                ? (q.error instanceof Error ? q.error.message : "Unknown error.")
+                : exportError}
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setExportError(null);
+                if (q.isError) q.refetch();
+              }}
+              className="rounded border border-red-400 bg-white px-2 py-0.5 text-[11.5px] font-medium text-red-900 hover:bg-red-100"
+            >
+              Retry
+            </button>
+          </div>
+        )}
 
         {tab !== "compliant" && availableMonths.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border-subtle)] px-6 py-2">

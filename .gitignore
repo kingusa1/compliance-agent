@@ -62,4 +62,15 @@ BRAIN/
 *.log
 backend/*.log
 
+# ── Vercel CLI link cache ────────────────────────────────────────────────
 .vercel
+
+# ── Supabase CLI scratch state (2026-05-24 wiring audit C9) ──────────────
+# `supabase init` drops machine-local pointers under .supabase / supabase/.temp
+# including pooler-url. The stub it writes for new projects ships port :5432
+# (session-mode) — DO NOT inject as DATABASE_URL; prod requires :6543
+# transaction-mode pooler. Keep these out of the repo so the wrong stub
+# can't propagate via PR.
+backend/supabase/.temp/
+backend/supabase/.branches/
+.supabase/

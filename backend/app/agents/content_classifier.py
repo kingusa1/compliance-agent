@@ -215,7 +215,12 @@ async def classify_content(
     prompt = CONTENT_CLASSIFIER_PROMPT.replace("{indexed_transcript}", indexed)
 
     try:
-        raw = await _call_llm(prompt, timeout=timeout)
+        # 2026-05-24 wiring audit HIGH — explicit cheap=False matches the
+        # other T0 detectors (detect_supplier, detect_call_type, detect_
+        # names, detect_business_name, ai_match_deal). Defence-in-depth
+        # so any future routing change can't silently downgrade us off
+        # Opus 4.7. See BRAIN/06_Operations/Model_Routing.md.
+        raw = await _call_llm(prompt, timeout=timeout, cheap=False)
     except Exception as e:
         log.warning(f"📍 classify_content LLM failed: {e}")
         return []

@@ -643,7 +643,17 @@ class CustomerDeal(Base):
     # the rejection-tracker row that killed them.
     rejection_id = Column(
         PGUUID(as_uuid=True),
-        ForeignKey("rejections.id", ondelete="SET NULL"),
+        # 2026-05-24 — use_alter breaks the 3-table FK cycle (calls →
+        # customer_deals → rejections → calls) for SQLAlchemy's
+        # Base.metadata.drop_all() in CI. Without it, drop_all emits a
+        # noisy SAWarning every test run. Postgres + SQLite both accept
+        # this. ondelete=SET NULL is preserved.
+        ForeignKey(
+            "rejections.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_customer_deals_rejection_id",
+        ),
         nullable=True,
         index=True,
     )

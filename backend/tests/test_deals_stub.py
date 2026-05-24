@@ -8,13 +8,57 @@ detection backfills the shared stub deal.
 """
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.database import SessionLocal
-from app.models import CustomerDeal
+from app.models import CustomerDeal, Profile
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _install_auth_stub():
+    """2026-05-24 wiring audit C3 added Depends(current_reviewer) to
+    POST /api/deals/stub + stamps user["id"] into audit_log.actor_id
+    (was a client-controlled x-user-id header). Tests must:
+      1. Override current_user so the request authenticates as admin
+      2. Seed a Profile row matching the stub id so audit_log's
+         actor_id FK doesn't violate.
+    """
+    from app.auth import current_user, require_lead
+    from app.reviewers import current_reviewer
+
+    _stub_admin = {
+        "id": "test-admin",
+        "email": "test-admin@compliance-agent.local",
+        "name": "Test Admin",
+        "role": "admin",
+    }
+    app.dependency_overrides[current_user] = lambda: _stub_admin
+    app.dependency_overrides[current_reviewer] = lambda: _stub_admin
+    app.dependency_overrides[require_lead] = lambda: _stub_admin
+
+    db = SessionLocal()
+    try:
+        if not db.query(Profile).filter_by(id="test-admin").first():
+            db.add(Profile(
+                id="test-admin",
+                email="test-admin@compliance-agent.local",
+                name="Test Admin",
+                role="admin",
+                active=True,
+            ))
+            db.commit()
+    finally:
+        db.close()
+    yield
+    # Explicit teardown so the override doesn't leak into test files
+    # that follow alphabetically.
+    app.dependency_overrides.pop(current_user, None)
+    app.dependency_overrides.pop(current_reviewer, None)
+    app.dependency_overrides.pop(require_lead, None)
 
 
 def test_post_deals_stub_returns_uuid():

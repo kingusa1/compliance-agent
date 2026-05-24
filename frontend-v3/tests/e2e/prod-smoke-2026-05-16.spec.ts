@@ -10,13 +10,21 @@ import { test, expect, type Page, type BrowserContext } from "@playwright/test";
  * T1/T2 use two browser contexts to exercise realtime SSE sync.
  */
 
-const BASE_URL = "https://compliance-agent-mu.vercel.app";
-const BACKEND_URL = "https://compliance-agent-production-690e.up.railway.app";
-const ADMIN_EMAIL = "admin@compliance-agent.local";
-// Production Supabase project (zcmdsblqbgatsrofptsq) — distinct from local DEV db.
-const SUPABASE_URL = "https://zcmdsblqbgatsrofptsq.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpjbWRzYmxxYmdhdHNyb2ZwdHNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgzMTY0MzgsImV4cCI6MjA5Mzg5MjQzOH0.q6pZu7lnfnp3TkiMLV6RzyB_3f5f_A6TxRz1R5_dV3I";
-const ADMIN_PASSWORD = "Audit-Pass-2026-05-10!";
+// 2026-05-24 wiring audit C6 — credentials moved to env. Set in CI via repo
+// secrets; locally via `frontend-v3/.env.local` (gitignored). Tests skip
+// when env is unset rather than committing the values to source.
+const BASE_URL = process.env.E2E_BASE_URL ?? "https://compliance-agent-mu.vercel.app";
+const BACKEND_URL = process.env.E2E_BACKEND_URL ?? "https://compliance-agent-production-690e.up.railway.app";
+const ADMIN_EMAIL = process.env.E2E_ADMIN_EMAIL ?? "";
+const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? "";
+const SUPABASE_URL = process.env.E2E_SUPABASE_URL ?? "";
+const SUPABASE_ANON_KEY = process.env.E2E_SUPABASE_ANON_KEY ?? "";
+
+const HAS_E2E_ENV = !!(ADMIN_EMAIL && ADMIN_PASSWORD && SUPABASE_URL && SUPABASE_ANON_KEY);
+
+test.beforeEach(() => {
+  test.skip(!HAS_E2E_ENV, "set E2E_ADMIN_EMAIL / E2E_ADMIN_PASSWORD / E2E_SUPABASE_URL / E2E_SUPABASE_ANON_KEY in env");
+});
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 

@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 
 from app.agent import chat as agent_chat
 from app.database import get_db
+from app.reviewers import current_reviewer
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +213,9 @@ async def post_chat(
     payload: ChatRequest,
     request: Request,
     db: Session = Depends(get_db),
+    # 2026-05-24 wiring audit C4 — anonymous chat streaming PII out of
+    # call transcripts via RAG tools. Now requires reviewer auth.
+    _user: dict = Depends(current_reviewer),
 ) -> StreamingResponse:
     return StreamingResponse(
         _stream_chat(request, payload, db),
