@@ -100,8 +100,11 @@ def test_realtime_status_returns_composite_indexes_field(
     the resume-handover step ("confirm indexes applied on Railway") is
     a single curl.
 
-    On SQLite the pg_indexes query falls through to the error branch —
-    that's the contract: structure stays consistent, error is captured.
+    Response contract is the SAME shape regardless of branch:
+    {expected, present, missing, building, definitions, error?}. The
+    error path (no pg_index catalog on SQLite) sets present=[],
+    missing=expected, building=[], definitions={}, error="<class>: <msg>"
+    so dashboards can destructure unconditionally.
     """
     r = client.get("/api/admin/realtime-status", headers=auth("zoe"))
     assert r.status_code == 200, r.text
@@ -114,10 +117,98 @@ def test_realtime_status_returns_composite_indexes_field(
         "ix_calls_deal_created_at",
         "ix_calls_completed_with_transcript",
     ]
-    # SQLite has no pg_indexes catalog → error is reported, not raised.
-    # Either it succeeded (Postgres-backed test run) or it's an error
-    # string — both are valid response shapes for monitoring.
-    assert "present" in block or "error" in block
+    # Shape contract: every key always present.
+    for key in ("present", "missing", "building", "definitions"):
+        assert key in block, f"missing key {key!r}"
+    # On SQLite the pg_index query falls through to the error branch.
+    # Either: success on Postgres (no `error` key, present is a real
+    # subset of expected), or graceful failure on SQLite (error is set,
+    # missing = expected, present = []).
+    if "error" in block:
+        assert block["present"] == []
+        assert block["missing"] == block["expected"]
+        assert block["building"] == []
+        assert block["definitions"] == {}
+
+
+def test_realtime_status_composite_indexes_all_present_path(
+    mock_jwks, seed_profiles_local, auth, monkeypatch
+):
+    """Patch Session.execute so the test simulates the Postgres
+    happy-path response — all three composite indexes present and
+    valid. Closes the 'positive-path test coverage' gap python-reviewer
+    flagged on c5f710e."""
+    import sqlalchemy.orm
+
+    class _FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+        def first(self):
+            return self._rows[0] if self._rows else None
+
+    real_execute = sqlalchemy.orm.Session.execute
+
+    def _fake_execute(self, stmt, params=None, *a, **kw):
+        sql = str(stmt).lower()
+        if "pg_index" in sql and "indisvalid" in sql:
+            return _FakeResult([
+                ("ix_calls_completed_with_transcript", "CREATE INDEX ...", True, True),
+                ("ix_calls_deal_created_at", "CREATE INDEX ...", True, True),
+                ("ix_calls_queue_lookup", "CREATE INDEX ...", True, True),
+            ])
+        return real_execute(self, stmt, params, *a, **kw)
+
+    monkeypatch.setattr(sqlalchemy.orm.Session, "execute", _fake_execute)
+    r = client.get("/api/admin/realtime-status", headers=auth("zoe"))
+    assert r.status_code == 200, r.text
+    block = r.json()["composite_indexes"]
+    assert block["missing"] == []
+    assert set(block["present"]) == set(block["expected"])
+    assert block["building"] == []
+    assert "error" not in block
+
+
+def test_realtime_status_composite_indexes_still_building_not_counted_present(
+    mock_jwks, seed_profiles_local, auth, monkeypatch
+):
+    """CREATE INDEX CONCURRENTLY leaves indisvalid=false while the
+    backfill runs. The diagnostic MUST NOT report such an index as
+    'present' — that would defeat its purpose during a migration
+    deploy. (python-reviewer HIGH-1 fix verification.)"""
+    import sqlalchemy.orm
+
+    class _FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+        def first(self):
+            return self._rows[0] if self._rows else None
+
+    real_execute = sqlalchemy.orm.Session.execute
+
+    def _fake_execute(self, stmt, params=None, *a, **kw):
+        sql = str(stmt).lower()
+        if "pg_index" in sql and "indisvalid" in sql:
+            return _FakeResult([
+                ("ix_calls_completed_with_transcript", "CREATE INDEX ...", True, True),
+                ("ix_calls_deal_created_at", "CREATE INDEX ...", False, True),  # building
+                ("ix_calls_queue_lookup", "CREATE INDEX ...", True, True),
+            ])
+        return real_execute(self, stmt, params, *a, **kw)
+
+    monkeypatch.setattr(sqlalchemy.orm.Session, "execute", _fake_execute)
+    r = client.get("/api/admin/realtime-status", headers=auth("zoe"))
+    block = r.json()["composite_indexes"]
+    assert block["missing"] == ["ix_calls_deal_created_at"]
+    assert "ix_calls_deal_created_at" not in block["present"]
+    assert block["building"] == ["ix_calls_deal_created_at"]
 
 
 def test_realtime_status_includes_alembic_head_field(

@@ -8,7 +8,7 @@
  * calls-scored count, threshold. Banner at top describes lifecycle
  * status. Missing-calls chips when present. Per-call breakdown table.
  */
-import { use, useState } from "react";
+import { use, useMemo, useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, AlertTriangle, CheckCircle2, Plus, ExternalLink } from "lucide-react";
@@ -19,6 +19,7 @@ import {
   getDealVerdictQuery,
 } from "@/lib/queries/aggregator";
 import { useDealCompositeVerdictQuery } from "@/lib/queries/deals";
+import { useRealtimeInvalidate } from "@/lib/hooks/useRealtimeInvalidate";
 import { Pill, type PillTone } from "@/components/design/Pill";
 import { UploadModal } from "@/app/(admin)/calls/UploadModal";
 import { PHASE_LABEL } from "@/lib/workflow";
@@ -142,6 +143,24 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
   // 2026-05-24 — same Smart Upload CTA as /customers/[slug]; prefill the
   // supplier + customer name so the L7Form lands on the right deal lane.
   const [uploadOpen, setUploadOpen] = useState(false);
+
+  // 2026-05-24 — code-reviewer HIGH-1 retro on 1be5452: this page was
+  // shipping the +Upload CTA without subscribing to realtime, so the
+  // verdict + missing-call chips went stale until 30s stale-time
+  // expired. LAW_OF_ENTERPRISE_GRADE §4 makes realtime non-negotiable
+  // when a page has user-triggered mutations. Matches the pattern at
+  // /customers/[slug] (page.tsx:411-414).
+  const realtimeKeys = useMemo(
+    () => [
+      ["deal", id],
+      ["deal", id, "verdict"],
+      ["deal", id, "calls"],
+      ["admin", "deal", id, "composite-verdict"],
+    ],
+    [id],
+  );
+  useRealtimeInvalidate("calls", realtimeKeys);
+  useRealtimeInvalidate("customer_deals", realtimeKeys);
 
   if (detail.isError || verdict.isError) {
     const e = (detail.error ?? verdict.error) as unknown;

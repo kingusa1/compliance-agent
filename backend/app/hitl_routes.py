@@ -1819,11 +1819,11 @@ def admin_realtime_status(
         out["policy_count"] = f"error: {type(e).__name__}: {str(e)[:100]}"
 
     # Composite hot-path indexes shipped by migration 2026_05_23_q_perf_idx.
-    # Reported here so the carry-over verification (rotate keys, confirm
-    # indexes applied, ship the bulk-fix UI) is a single read instead of
-    # an out-of-band psql round-trip. The endpoint stays the single
-    # diagnostic surface for "did the last migration land" plus "is the
-    # planner walking the indexes it should" — both are answered together.
+    # Reported here so the carry-over verification is a single read instead
+    # of an out-of-band psql round-trip. Uses pg_index.indisvalid so that
+    # indexes still being built by CREATE INDEX CONCURRENTLY do NOT count
+    # as "present" — the diagnostic must not lie during the exact deployment
+    # window it exists to monitor (python-reviewer retro 2026-05-24).
     expected_composite_indexes = [
         "ix_calls_queue_lookup",
         "ix_calls_deal_created_at",
@@ -1831,22 +1831,34 @@ def admin_realtime_status(
     ]
     try:
         rows = db.execute(_sql_text(
-            "SELECT indexname, indexdef FROM pg_indexes "
-            "WHERE schemaname = 'public' AND tablename = 'calls' "
-            "AND indexname = ANY(:names) "
-            "ORDER BY indexname"
+            "SELECT i.relname, pg_get_indexdef(i.oid), ix.indisvalid, ix.indisready "
+            "FROM pg_class i "
+            "JOIN pg_index ix ON ix.indexrelid = i.oid "
+            "JOIN pg_class t ON ix.indrelid = t.oid "
+            "JOIN pg_namespace n ON t.relnamespace = n.oid "
+            "WHERE n.nspname = 'public' AND t.relname = 'calls' "
+            "AND i.relname = ANY(:names) "
+            "ORDER BY i.relname"
         ), {"names": expected_composite_indexes}).all()
-        present = {r[0]: r[1] for r in rows}
+        valid = {r[0]: r[1] for r in rows if r[2]}
+        building = sorted(r[0] for r in rows if not r[2] and r[3])
         out["composite_indexes"] = {
             "expected": expected_composite_indexes,
-            "present": sorted(present.keys()),
-            "missing": [n for n in expected_composite_indexes if n not in present],
-            "definitions": present,
+            # Keep semantic order across present + missing so dashboards
+            # can diff them visually without re-sorting.
+            "present": [n for n in expected_composite_indexes if n in valid],
+            "missing": [n for n in expected_composite_indexes if n not in valid],
+            "building": building,
+            "definitions": valid,
         }
     except Exception as e:
         out["composite_indexes"] = {
             "expected": expected_composite_indexes,
-            "error": f"{type(e).__name__}: {str(e)[:120]}",
+            "present": [],
+            "missing": list(expected_composite_indexes),
+            "building": [],
+            "definitions": {},
+            "error": f"{type(e).__name__}: {str(e)[:100]}",
         }
 
     return out
