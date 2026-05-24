@@ -2132,14 +2132,29 @@ def admin_backfill_deal_entities(
         if not ents:
             continue
 
-        def best(key: str):
+        def best(key: str, expected_lengths: tuple[int, ...] | None = None):
+            """Filter to clean entities only. When `expected_lengths` is
+            given, value must be a pure digit run of one of those lengths
+            (catches stale `[numerical_pii_1]` rows still in the entities
+            table from before the 2026-05-24 token-guard landed)."""
             cands = [e for e in ents if e.key == key and e.value]
+            if expected_lengths is not None:
+                cands = [
+                    e for e in cands
+                    if _is_clean_meter_id(str(e.value), expected_lengths)
+                ]
+            else:
+                # Money + other free-form keys — just reject PII tokens.
+                cands = [
+                    e for e in cands
+                    if not _PIPELINE_PII_TOKEN_RE.search(str(e.value))
+                ]
             if not cands:
                 return None
             return max(cands, key=lambda e: float(getattr(e, "confidence", 0) or 0))
 
         # MPAN — fill both split + legacy columns.
-        bm = best("mpan")
+        bm = best("mpan", (13,))
         if bm:
             if not getattr(deal, "mpan_electricity", None) and can_overwrite(deal, "mpan_electricity", "ai"):
                 deal.mpan_electricity = bm.value
@@ -2150,7 +2165,7 @@ def admin_backfill_deal_entities(
                 set_source(deal, "mpan_or_mprn", "ai")
 
         # MPRN.
-        br = best("mprn")
+        br = best("mprn", (6, 7, 8, 9, 10))
         if br:
             if not getattr(deal, "mprn_gas", None) and can_overwrite(deal, "mprn_gas", "ai"):
                 deal.mprn_gas = br.value
