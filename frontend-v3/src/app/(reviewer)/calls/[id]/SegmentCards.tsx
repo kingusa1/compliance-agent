@@ -322,26 +322,42 @@ export function SegmentCards({ callId, cpCards = [], cpFilter = "all", innerProp
       return next;
     });
 
-  // Bucket cpCards by which segment they belong to. Uses the segment's
-  // `checkpoints[]` server-side list (which is the JSON the analyzer wrote
-  // per segment). Name-match is case-insensitive + trim-normalised.
+  // Bucket cpCards by which segment they belong to.
+  //
+  // 2026-05-24 bug fix — the previous implementation built a `name →
+  // segmentIdx` map with "first segment wins" semantics. That dropped
+  // every rule on the floor for downstream segments whenever two
+  // segments shared a rule name. Real-world hit: a multi-segment call
+  // where Lead Gen + Pre-Sales BOTH grade against the same 88-rule
+  // phrase pack — all 88 rule names mapped to the Lead Gen segment
+  // first, so the Pre-Sales segment card rendered "CHECKPOINTS IN
+  // THIS SEGMENT · 0 — no checkpoint detail available", even though
+  // the segment had a 48/88 score and 40 breach badges right above.
+  //
+  // New algorithm — iterate segments and pull matching cpCards by name
+  // into that segment's bucket. A rule shared across segments now
+  // appears in ALL of them (the verdict shown is the same aggregated
+  // verdict in each — Call.checkpoint_results is deduped server-side).
   const cpsBySegmentIdx = useMemo(() => {
     const norm = (s: string) => (s || "").trim().toLowerCase();
     const result: Record<number, typeof cpCards> = {};
     if (cpCards.length === 0 || segments.length === 0) return result;
-    // Build name → segment idx lookup.
-    const nameToSegIdx = new Map<string, number>();
-    for (const s of segments) {
-      for (const cp of s.checkpoints ?? []) {
-        const k = norm(cp.name ?? "");
-        if (k && !nameToSegIdx.has(k)) nameToSegIdx.set(k, s.idx);
-      }
-    }
+    const cpByName = new Map<string, (typeof cpCards)[number]>();
     for (const cpc of cpCards) {
       const k = norm(cpc.script?.name || cpc.verdict?.name || "");
-      const segIdx = nameToSegIdx.get(k);
-      if (segIdx == null) continue;
-      (result[segIdx] ??= []).push(cpc);
+      if (k && !cpByName.has(k)) cpByName.set(k, cpc);
+    }
+    for (const s of segments) {
+      const bucket: typeof cpCards = [];
+      const seen = new Set<string>();
+      for (const cp of s.checkpoints ?? []) {
+        const k = norm(cp.name ?? "");
+        if (!k || seen.has(k)) continue;
+        seen.add(k);
+        const cpc = cpByName.get(k);
+        if (cpc) bucket.push(cpc);
+      }
+      result[s.idx] = bucket;
     }
     return result;
   }, [cpCards, segments]);
