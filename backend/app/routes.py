@@ -2082,6 +2082,92 @@ async def admin_backfill_tracker(
     }
 
 
+@router.post("/api/admin/backfill-deal-entities", status_code=200)
+def admin_backfill_deal_entities(
+    db: Session = Depends(get_db),
+    _user: dict = Depends(require_lead),
+):
+    """Lift MPAN / MPRN / deal_value from extracted_entities → customer_deals.
+
+    2026-05-24 — closes the long-standing tracker gap where MPAN/MPRN/
+    VALUE showed "—" on every row. Root cause was in the pipeline
+    backfill (fixed in fb70392) which read a non-existent attribute. The
+    extracted_entities rows ARE in the DB — they just never made it to
+    the deal. This endpoint walks every CustomerDeal that has an empty
+    mpan/mprn/value, finds the highest-confidence entity for each key
+    across the deal's calls, and stamps the deal row in one pass. No
+    LLM cost — pure DB join.
+    """
+    from app.models import Call, CustomerDeal, ExtractedEntity
+    from app.pipeline import _parse_money_to_gbp
+    from app.field_sources import can_overwrite, set_source
+
+    deals = db.query(CustomerDeal).all()
+    stamped = {"mpan": 0, "mprn": 0, "deal_value_gbp": 0, "scanned_deals": len(deals)}
+
+    for deal in deals:
+        # Gather every entity across this deal's calls.
+        call_ids = [
+            row[0]
+            for row in db.query(Call.id).filter(Call.deal_id == deal.id).all()
+        ]
+        if not call_ids:
+            continue
+        ents = (
+            db.query(ExtractedEntity)
+            .filter(ExtractedEntity.call_id.in_(call_ids))
+            .all()
+        )
+        if not ents:
+            continue
+
+        def best(key: str):
+            cands = [e for e in ents if e.key == key and e.value]
+            if not cands:
+                return None
+            return max(cands, key=lambda e: float(getattr(e, "confidence", 0) or 0))
+
+        # MPAN — fill both split + legacy columns.
+        bm = best("mpan")
+        if bm:
+            if not getattr(deal, "mpan_electricity", None) and can_overwrite(deal, "mpan_electricity", "ai"):
+                deal.mpan_electricity = bm.value
+                set_source(deal, "mpan_electricity", "ai")
+                stamped["mpan"] += 1
+            if not deal.mpan_or_mprn and can_overwrite(deal, "mpan_or_mprn", "ai"):
+                deal.mpan_or_mprn = bm.value
+                set_source(deal, "mpan_or_mprn", "ai")
+
+        # MPRN.
+        br = best("mprn")
+        if br:
+            if not getattr(deal, "mprn_gas", None) and can_overwrite(deal, "mprn_gas", "ai"):
+                deal.mprn_gas = br.value
+                set_source(deal, "mprn_gas", "ai")
+                stamped["mprn"] += 1
+            if not deal.mpan_or_mprn and can_overwrite(deal, "mpan_or_mprn", "ai"):
+                deal.mpan_or_mprn = br.value
+                set_source(deal, "mpan_or_mprn", "ai")
+
+        # Deal value — accept canonical + aliases.
+        value_cands = [
+            e for e in ents
+            if e.key in ("deal_value_gbp", "deal_value", "value_gbp", "amount_gbp", "annual_cost")
+            and e.value
+        ]
+        if value_cands and deal.deal_value_gbp is None:
+            best_v = max(value_cands, key=lambda e: float(getattr(e, "confidence", 0) or 0))
+            parsed = _parse_money_to_gbp(str(best_v.value))
+            if parsed is not None:
+                deal.deal_value_gbp = parsed
+                set_source(deal, "deal_value_gbp", "ai")
+                stamped["deal_value_gbp"] += 1
+
+    db.commit()
+    log.info(f"BACKFILL_DEAL_ENTITIES stamped={stamped}")
+    return stamped
+
+
 @router.post("/api/admin/ingest-phrase-packs", status_code=200)
 async def admin_ingest_phrase_packs(
     apply: bool = False,
