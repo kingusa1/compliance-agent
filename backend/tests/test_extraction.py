@@ -98,15 +98,21 @@ def test_segment_detector_intro_anchor():
 
 def test_entity_regex_mpan():
     """An MPAN regex hit must produce an ExtractedEntity with key='mpan',
-    source='regex', confidence=0.95."""
-    transcript = "the supply number is 1234567890 thanks"
+    source='regex', confidence=0.95.
+
+    2026-05-24 — MPAN guard now requires exactly 13 digits (the real-world
+    length); the previous 10-digit fixture was a near-miss that the PII
+    guard correctly rejects. Use a real 13-digit MPAN core here so the
+    regex extractor + the post-regex validation both accept it.
+    """
+    transcript = "the supply number is 2000023456789 thanks"
     rows = asyncio.run(extract_entities(call_id="call-2", transcript=transcript))
 
     mpans = [r for r in rows if r.key == "mpan"]
     assert mpans, f"expected an mpan row, got: {[(r.key, r.value) for r in rows]}"
     row = mpans[0]
     assert isinstance(row, ExtractedEntity)
-    assert row.value == "1234567890"
+    assert row.value == "2000023456789"
     assert row.source == "regex"
     assert row.confidence == 0.95
     assert row.call_id == "call-2"
