@@ -82,7 +82,53 @@ class CustomerDetailResponse(BaseModel):
 
 # ── SQL ─────────────────────────────────────────────────────────────────
 
-_LIST_SQL = """
+# 2026-05-24 — placeholder customer-name predicate. Backend writes the
+# literal "(pending audio upload)" string into customer_deals.customer_name
+# on every /api/deals/stub call (see routes.py:578) so the deal row has a
+# customer reference before the pipeline runs. When extraction fails to
+# fill in the real name, multiple stub deals share that placeholder and
+# the /customers aggregation (which groups by LOWER(TRIM(customer_name)))
+# coalesces them all into one synthetic customer. That synthetic row
+# mixes suppliers (E.ON Next + British Gas in the 2026-05-24 reviewer
+# report), agents, and call totals — the page looks broken because it's
+# rendering 5 unrelated deals as if they belong to one customer.
+#
+# This predicate mirrors the frontend `isPlaceholderCustomerName` helper
+# (lib/customer.ts) so /customers list, detail, rollup, and timeline all
+# skip placeholder deals. The deals themselves remain visible on /deals
+# and /tracker (their natural home) until a real name is set via the
+# tracker side panel, at which point the dual-write puts the deal back
+# on the right customer page.
+_PLACEHOLDER_NAMES: tuple[str, ...] = (
+    "(pending audio upload)",
+    "(no customer)",
+    "Untitled",
+)
+
+
+def _real_name_predicate(expr: str = "d.customer_name") -> str:
+    """SQL fragment filtering out placeholder customer names.
+
+    ``expr`` is the SQL expression to test — defaults to ``d.customer_name``
+    for queries with the ``d`` alias on ``customer_deals``. The timeline
+    query passes ``COALESCE(d.customer_name, c.customer_name)`` so the
+    same set of placeholder strings is rejected regardless of which row
+    side owns the name. Centralising in one helper kills the drift risk:
+    when a new placeholder is added to ``_PLACEHOLDER_NAMES`` every query
+    surface picks it up automatically.
+    """
+    placeholders = ", ".join(f"'{p}'" for p in _PLACEHOLDER_NAMES)
+    return (
+        f"{expr} IS NOT NULL "
+        f"AND TRIM({expr}) <> '' "
+        f"AND {expr} NOT IN ({placeholders}) "
+        f"AND LOWER({expr}) NOT LIKE '(auto-detect pending%'"
+    )
+
+
+_REAL_NAME_PREDICATE: str = _real_name_predicate()
+
+_LIST_SQL = f"""
 SELECT
     LOWER(TRIM(d.customer_name))                                            AS slug,
     MAX(d.customer_name)                                                    AS display_name,
@@ -105,7 +151,7 @@ SELECT
     MAX(d.external_watt_site_id)                                            AS external_watt_site_id
 FROM customer_deals  d
 LEFT JOIN calls      c ON c.deal_id = d.id
-WHERE d.customer_name IS NOT NULL
+WHERE {_REAL_NAME_PREDICATE}
 GROUP BY LOWER(TRIM(d.customer_name))
 """
 
@@ -299,7 +345,7 @@ def get_customer(slug: str, db: Session = Depends(get_db)) -> CustomerDetailResp
     if not summary_row:
         raise HTTPException(404, "customer not found")
 
-    deals_rows = db.execute(text("""
+    deals_rows = db.execute(text(f"""
         SELECT
             d.id, d.supplier, d.deal_value_gbp, d.status, d.final_action,
             d.created_at,
@@ -307,6 +353,7 @@ def get_customer(slug: str, db: Session = Depends(get_db)) -> CustomerDetailResp
             (SELECT MAX(c2.created_at) FROM calls c2 WHERE c2.deal_id = d.id) AS last_call_at
         FROM customer_deals d
         WHERE LOWER(TRIM(d.customer_name)) = :slug
+          AND {_REAL_NAME_PREDICATE}
         ORDER BY d.created_at DESC
     """), {"slug": slug}).fetchall()
 
@@ -372,7 +419,7 @@ def customer_rollup(slug: str, db: Session = Depends(get_db)) -> dict:
     """
     base = db.execute(
         text(
-            """
+            f"""
             SELECT
                 COUNT(DISTINCT d.id)                              AS total_deals,
                 COUNT(DISTINCT c.id)                              AS total_calls,
@@ -382,6 +429,7 @@ def customer_rollup(slug: str, db: Session = Depends(get_db)) -> dict:
             FROM customer_deals d
             LEFT JOIN calls c ON c.deal_id = d.id
             WHERE LOWER(TRIM(d.customer_name)) = :slug
+              AND {_REAL_NAME_PREDICATE}
             """
         ),
         {"slug": slug},
@@ -395,12 +443,13 @@ def customer_rollup(slug: str, db: Session = Depends(get_db)) -> dict:
     try:
         rec_rows = db.execute(
             text(
-                """
-                SELECT rejection_category AS cat, COUNT(*) AS n
-                FROM customer_deals
-                WHERE LOWER(TRIM(customer_name)) = :slug
-                  AND rejection_category IS NOT NULL
-                GROUP BY rejection_category
+                f"""
+                SELECT d.rejection_category AS cat, COUNT(*) AS n
+                FROM customer_deals d
+                WHERE LOWER(TRIM(d.customer_name)) = :slug
+                  AND {_REAL_NAME_PREDICATE}
+                  AND d.rejection_category IS NOT NULL
+                GROUP BY d.rejection_category
                 HAVING COUNT(*) > 1
                 ORDER BY n DESC
                 """
@@ -420,12 +469,13 @@ def customer_rollup(slug: str, db: Session = Depends(get_db)) -> dict:
     try:
         rows = db.execute(
             text(
-                """
+                f"""
                 SELECT fd.status AS s, COUNT(*) AS n
                 FROM fix_directives fd
                 JOIN calls c ON c.id = fd.call_id
                 JOIN customer_deals d ON d.id = c.deal_id
                 WHERE LOWER(TRIM(d.customer_name)) = :slug
+                  AND {_REAL_NAME_PREDICATE}
                 GROUP BY fd.status
                 """
             ),
@@ -444,12 +494,13 @@ def customer_rollup(slug: str, db: Session = Depends(get_db)) -> dict:
     try:
         rt_rows = db.execute(
             text(
-                """
+                f"""
                 SELECT f.risk_tag AS tag, COUNT(*) AS n
                 FROM flags f
                 JOIN calls c ON c.id = f.call_id
                 JOIN customer_deals d ON d.id = c.deal_id
                 WHERE LOWER(TRIM(d.customer_name)) = :slug
+                  AND {_REAL_NAME_PREDICATE}
                   AND f.risk_tag IS NOT NULL
                 GROUP BY f.risk_tag
                 """
@@ -482,9 +533,12 @@ def customer_rollup(slug: str, db: Session = Depends(get_db)) -> dict:
 @customers_router.get("/{slug}/timeline")
 def customer_timeline(slug: str, db: Session = Depends(get_db)) -> dict:
     """Chronological all-calls-across-all-deals for a customer."""
+    timeline_name_predicate = _real_name_predicate(
+        "COALESCE(d.customer_name, c.customer_name)"
+    )
     rows = db.execute(
         text(
-            """
+            f"""
             SELECT
                 c.id                           AS call_id,
                 c.deal_id                      AS deal_id,
@@ -499,6 +553,7 @@ def customer_timeline(slug: str, db: Session = Depends(get_db)) -> dict:
             FROM calls c
             LEFT JOIN customer_deals d ON d.id = c.deal_id
             WHERE LOWER(TRIM(COALESCE(d.customer_name, c.customer_name))) = :slug
+              AND {timeline_name_predicate}
             ORDER BY COALESCE(c.completed_at, c.created_at) DESC NULLS LAST
             """
         ),
