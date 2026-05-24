@@ -104,6 +104,42 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
   const breakdown = v?.call_breakdown ?? [];
   const totalExpected = breakdown.length + missing.length;
   const lifecycle = (v?.lifecycle_status ?? "in_progress").toLowerCase();
+
+  // 2026-05-24 enrichment wave — the verdict breakdown is light on
+  // metadata (no agent name, no filename, no full status text). The
+  // deal detail response includes the full Call list with all those
+  // fields. Index by id so the per-call table can show agent +
+  // customer + filename next to each scored row — QA reviewers need
+  // those three columns to understand "who took this call against
+  // which customer" without drilling into /calls/[id] first.
+  const callsById = useMemo(() => {
+    const out = new Map<string, NonNullable<typeof d>["calls"][number]>();
+    for (const c of d?.calls ?? []) {
+      if (c.id) out.set(String(c.id), c);
+    }
+    return out;
+  }, [d?.calls]);
+
+  // Unique agent set across the deal — surfaced in the info card so the
+  // QA reviewer sees at a glance which sales agents worked this customer.
+  const uniqueAgents = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of d?.calls ?? []) {
+      const n = (c.agent_name ?? "").trim();
+      if (n && n.toLowerCase() !== "unknown") set.add(n);
+    }
+    return Array.from(set);
+  }, [d?.calls]);
+
+  // Most-recent activity for the timeline subtitle.
+  const lastActivity = useMemo(() => {
+    const ts = (d?.calls ?? [])
+      .map((c) => c.completed_at || c.created_at)
+      .filter(Boolean)
+      .sort()
+      .reverse();
+    return ts[0] ?? null;
+  }, [d?.calls]);
   const locked = lifecycle === "closed_done";
 
   return (
@@ -473,6 +509,146 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
           );
         })()}
 
+        {/* 2026-05-24 enrichment wave — "Deal at a glance" info card.
+            QA reviewers asked for ALL deal data on one screen: supplier,
+            MPAN/MPRN(s), deal value, expected live date, who the customer
+            is, which agents handled it, and the supplier-portal link.
+            Every field the API returns appears here at least once. */}
+        {d && (
+          <section
+            data-slot="deal-glance"
+            className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)] p-5"
+          >
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h2 className="text-[14px] font-semibold tracking-tight text-[var(--text-primary)]">
+                Deal at a glance
+              </h2>
+              {lastActivity && (
+                <span className="text-[11px] text-[var(--text-muted)]">
+                  Last activity {new Date(lastActivity).toLocaleString("en-GB", {
+                    day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
+                  })}
+                </span>
+              )}
+            </div>
+            <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+              {/* Customer */}
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Customer</div>
+                <div className="mt-0.5 text-[13.5px] font-medium text-[var(--text-primary)]">
+                  {d?.customer_name ?? "—"}
+                </div>
+              </div>
+              {/* Sales agents */}
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
+                  Sales agent{uniqueAgents.length === 1 ? "" : "s"}
+                </div>
+                <div className="mt-0.5 flex flex-wrap gap-1">
+                  {uniqueAgents.length === 0 ? (
+                    <span className="text-[12.5px] text-[var(--text-muted)]">—</span>
+                  ) : (
+                    uniqueAgents.map((a) => (
+                      <Pill key={a} tone="neutral">{a}</Pill>
+                    ))
+                  )}
+                </div>
+              </div>
+              {/* Supplier */}
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Supplier</div>
+                <div className="mt-0.5 text-[13.5px] text-[var(--text-primary)]">
+                  {d?.supplier ?? "—"}
+                </div>
+              </div>
+              {/* Deal value */}
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Deal value</div>
+                <div className="mt-0.5 font-mono text-[13.5px] tabular-nums text-[var(--text-primary)]">
+                  {d?.deal_value_gbp != null ? `£${Math.round(d.deal_value_gbp).toLocaleString()}` : "—"}
+                </div>
+              </div>
+              {/* MPAN / MPRN */}
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">MPAN / MPRN</div>
+                <div className="mt-0.5 font-mono text-[12.5px] text-[var(--text-primary)]">
+                  {d?.meters && d.meters.length > 0 ? (
+                    <div className="flex flex-col gap-0.5">
+                      {d.meters.map((m, i) => {
+                        // 2026-05-24 — DealMeter.fuel isn't on the TS type
+                        // even though the backend includes it for dual-fuel
+                        // deals. Read defensively until aggregator.ts adds it.
+                        const fuel = (m as { fuel?: string | null }).fuel ?? null;
+                        return (
+                          <span key={i}>
+                            {fuel ? `${fuel.toUpperCase()}: ` : ""}
+                            {m.mpan || m.mprn || "—"}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  ) : d?.mpan_or_mprn ? (
+                    <span>{d.mpan_or_mprn}</span>
+                  ) : (
+                    <span className="text-[var(--text-muted)]">—</span>
+                  )}
+                </div>
+              </div>
+              {/* Expected live */}
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Expected live</div>
+                <div className="mt-0.5 text-[13.5px] text-[var(--text-primary)]">
+                  {d?.expected_live_date ? (
+                    new Date(d.expected_live_date).toLocaleDateString("en-GB", {
+                      day: "2-digit", month: "short", year: "numeric",
+                    })
+                  ) : (
+                    <span className="text-[var(--text-muted)]">—</span>
+                  )}
+                </div>
+              </div>
+              {/* Risk tags */}
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Risk flags</div>
+                <div className="mt-0.5 flex flex-wrap gap-1">
+                  {(d?.risk_tags ?? []).length === 0 ? (
+                    <span className="text-[12.5px] text-[var(--text-muted)]">—</span>
+                  ) : (
+                    (d?.risk_tags ?? []).map((t) => (
+                      <Pill key={t} tone="amber" dot>{t}</Pill>
+                    ))
+                  )}
+                </div>
+              </div>
+              {/* Rejection category — only shown when populated */}
+              {d?.rejection_category && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Rejection category</div>
+                  <div className="mt-0.5">
+                    <Pill tone="red">{d.rejection_category}</Pill>
+                  </div>
+                </div>
+              )}
+              {/* Lifecycle status */}
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Lifecycle</div>
+                <div className="mt-0.5">
+                  <Pill tone={locked ? "emerald" : "amber"} dot>
+                    {(lifecycle || "—").toUpperCase()}
+                  </Pill>
+                </div>
+              </div>
+              {/* Calls captured */}
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Calls captured</div>
+                <div className="mt-0.5 font-mono text-[13.5px] tabular-nums text-[var(--text-primary)]">
+                  {d?.calls?.length ?? 0}
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* Per-call breakdown — integrates MISSING rows so the gap is
             visible inline; each MISSING row carries an Upload button so
             reviewers don't have to scan the page for an action. */}
@@ -512,14 +688,14 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "130px 110px 1fr 100px 110px 130px",
+                gridTemplateColumns: "110px 110px 130px 130px 1fr 130px 110px 110px",
                 gap: 12,
                 padding: "10px 20px",
                 borderBottom: "1px solid var(--border-subtle)",
                 background: "var(--bg-elev3)",
               }}
             >
-              {["Call type", "Status", "Phase", "Score", "When", ""].map((h) => (
+              {["Call type", "Status", "Agent", "Customer", "Filename", "Score", "When", ""].map((h) => (
                 <div
                   key={h}
                   style={{
@@ -548,17 +724,37 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
             ) : (
               <>
                 {breakdown.map((row, i) => {
-                  const scorePct =
+                  const scorePctNum =
                     row.score_fraction != null
-                      ? `${Math.round(row.score_fraction * 100)}%`
+                      ? Math.round(row.score_fraction * 100)
+                      : null;
+                  const scorePct =
+                    scorePctNum != null
+                      ? `${scorePctNum}%`
                       : row.score_raw ?? "—";
                   const isLast = i === breakdown.length - 1 && missing.length === 0;
+                  // 2026-05-24 enrichment — join breakdown row to the full
+                  // Call record so we can surface agent_name / customer_name
+                  // / filename without an extra round-trip.
+                  const call = row.call_id ? callsById.get(String(row.call_id)) : undefined;
+                  const agentName = call?.agent_name?.trim() || null;
+                  const custName = call?.customer_name?.trim() || null;
+                  const filename = call?.filename || null;
+                  // Color the score bar by bucket so the table reads at a glance.
+                  const barColor =
+                    scorePctNum == null
+                      ? "var(--text-faint)"
+                      : scorePctNum >= 80
+                        ? "var(--emerald)"
+                        : scorePctNum >= 50
+                          ? "var(--amber)"
+                          : "var(--red)";
                   return (
                     <div
                       key={row.call_id || i}
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "130px 110px 1fr 100px 110px 130px",
+                        gridTemplateColumns: "110px 110px 130px 130px 1fr 130px 110px 110px",
                         gap: 12,
                         alignItems: "center",
                         padding: "12px 20px",
@@ -574,19 +770,71 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
                           {row.action ?? "—"}
                         </Pill>
                       </div>
-                      <div style={{ color: "var(--text-muted)" }}>{row.phase ?? "—"}</div>
+                      <div
+                        style={{ color: agentName ? "var(--text-primary)" : "var(--text-muted)" }}
+                        title={agentName ?? undefined}
+                      >
+                        {agentName ?? "—"}
+                      </div>
+                      <div
+                        style={{ color: custName ? "var(--text-primary)" : "var(--text-muted)" }}
+                        title={custName ?? undefined}
+                      >
+                        {custName ?? "—"}
+                      </div>
                       <div
                         style={{
+                          color: "var(--text-muted)",
                           fontFamily: "var(--font-mono)",
-                          color: "var(--text-primary)",
-                          fontVariantNumeric: "tabular-nums",
+                          fontSize: 11.5,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
                         }}
+                        title={filename ?? row.phase ?? undefined}
                       >
-                        {scorePct}
+                        {filename ?? row.phase ?? "—"}
+                      </div>
+                      {/* Score cell — number + miniature bar */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span
+                          style={{
+                            fontFamily: "var(--font-mono)",
+                            color: "var(--text-primary)",
+                            fontVariantNumeric: "tabular-nums",
+                            minWidth: 38,
+                          }}
+                        >
+                          {scorePct}
+                        </span>
+                        {scorePctNum != null && (
+                          <span
+                            style={{
+                              display: "inline-block",
+                              flex: 1,
+                              height: 5,
+                              borderRadius: 3,
+                              background: "var(--bg-elev3)",
+                              overflow: "hidden",
+                            }}
+                            aria-hidden
+                          >
+                            <span
+                              style={{
+                                display: "block",
+                                height: "100%",
+                                width: `${Math.max(0, Math.min(100, scorePctNum))}%`,
+                                background: barColor,
+                              }}
+                            />
+                          </span>
+                        )}
                       </div>
                       <div style={{ color: "var(--text-muted)" }}>
                         {row.completed_at
-                          ? new Date(row.completed_at).toLocaleDateString()
+                          ? new Date(row.completed_at).toLocaleDateString("en-GB", {
+                              day: "2-digit", month: "short",
+                            })
                           : "—"}
                       </div>
                       <div>
@@ -610,7 +858,7 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
                       key={`missing-${phase}`}
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "130px 110px 1fr 100px 110px 130px",
+                        gridTemplateColumns: "110px 110px 130px 130px 1fr 130px 110px 110px",
                         gap: 12,
                         alignItems: "center",
                         padding: "12px 20px",
@@ -628,6 +876,9 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
                           MISSING
                         </Pill>
                       </div>
+                      {/* Agent / Customer / Filename / Score / When all blank for missing rows */}
+                      <div style={{ color: "var(--text-muted)" }}>—</div>
+                      <div style={{ color: "var(--text-muted)" }}>—</div>
                       <div style={{ color: "var(--text-muted)" }}>—</div>
                       <div style={{ color: "var(--text-muted)" }}>—</div>
                       <div style={{ color: "var(--text-muted)" }}>—</div>
