@@ -289,6 +289,7 @@ export default function AgentDrilldownPage({
 // ── Tab content components ─────────────────────────────────────────
 
 import type { AgentRecentCall, AgentDeadRejection } from "@/lib/queries/aggregator";
+import { formatCustomerName } from "@/lib/customer";
 
 const COLS_RECENT = "120px 1.4fr 1.2fr 90px 110px 110px";
 const HEADERS_RECENT = ["When", "Customer", "Supplier", "Score", "Status", "Call ID"];
@@ -321,7 +322,7 @@ function RecentCallsTable({ calls }: { calls: AgentRecentCall[] }) {
             <div style={{ color: "var(--text-muted)", fontVariantNumeric: "tabular-nums" }}>
               {c.created_at ? new Date(c.created_at).toLocaleDateString() : "—"}
             </div>
-            <div>{c.customer_name ?? "—"}</div>
+            <div>{formatCustomerName(c.customer_name)}</div>
             <div style={{ color: "var(--text-muted)" }}>{c.detected_supplier ?? "—"}</div>
             <div style={{ fontVariantNumeric: "tabular-nums" }}>{c.score ?? "—"}</div>
             <div>
@@ -369,7 +370,7 @@ function DeadRejectionsTable({ flags }: { flags: AgentDeadRejection[] }) {
               <Pill tone="red" dot>HIGH</Pill>
             </div>
             <div style={{ color: "var(--text-primary)" }}>{r.dead_reason ?? "—"}</div>
-            <div style={{ color: "var(--text-muted)" }}>{r.customer_name ?? "—"}</div>
+            <div style={{ color: "var(--text-muted)" }}>{formatCustomerName(r.customer_name)}</div>
             <div>
               <Pill tone="amber" dot>open</Pill>
             </div>

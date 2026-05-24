@@ -17,6 +17,7 @@ import { useUrlState } from "@/lib/hooks/useUrlState";
 import { CursorPagination } from "@/components/shared/CursorPagination";
 import { CallPreviewPanel } from "@/components/shared/CallPreviewPanel";
 import { shortFilename } from "@/lib/filename";
+import { formatCustomerName } from "@/lib/customer";
 
 const COMPLIANT_PAGE_LIMIT = 50;
 
@@ -116,7 +117,7 @@ export default function CompliantPage() {
                             </Link>
                           </TableCell>
                           <TableCell className="text-[13px] text-[var(--text-primary)]">
-                            {c.customer_name ?? "—"}
+                            {formatCustomerName(c.customer_name)}
                           </TableCell>
                           <TableCell className="text-[13px] text-[var(--text-muted)]">
                             {c.agent_name ?? "—"}

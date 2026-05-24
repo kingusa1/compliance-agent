@@ -6,6 +6,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 
 import type { AdminCallRow } from "@/lib/queries/admin";
 import { formatScorePercent } from "@/lib/score";
+import { formatCustomerName } from "@/lib/customer";
 import { Badge } from "@/components/ui/badge";
 
 /**
@@ -65,7 +66,7 @@ export function DealGroupedView({ calls }: { calls: AdminCallRow[] }) {
                 <ChevronRight className="h-4 w-4 text-[var(--text-muted)]" />
               )}
               <span className="text-[14px] font-medium">
-                {g.customer_name ?? "—"}
+                {formatCustomerName(g.customer_name)}
               </span>
               {g.supplier && (
                 <Badge variant="outline" className="font-normal">

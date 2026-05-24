@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 
 import { shortFilename } from "@/lib/filename";
+import { formatCustomerName } from "@/lib/customer";
 
 import {
   Table,
@@ -132,7 +133,7 @@ export default function NonCompliantPage() {
                             </Link>
                           </TableCell>
                           <TableCell className="text-[13px] text-[var(--text-primary)]">
-                            {c.customer_name ?? "—"}
+                            {formatCustomerName(c.customer_name)}
                           </TableCell>
                           <TableCell className="text-[13px] text-[var(--text-muted)]">
                             {c.agent_name ?? "—"}

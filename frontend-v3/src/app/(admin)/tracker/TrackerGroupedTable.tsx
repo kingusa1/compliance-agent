@@ -26,6 +26,7 @@ import {
 
 import { Pill } from "@/components/design/Pill";
 import { CategoryChip } from "./CategoryChip";
+import { formatCustomerName } from "@/lib/customer";
 import type { TrackerRow, TrackerTab } from "@/lib/queries/tracker";
 
 type Props = {
@@ -219,7 +220,7 @@ function TrackerGroupCard({
         {/* Customer + meta */}
         <div className="min-w-0">
           <div className="truncate text-[14px] font-medium text-[var(--text-primary)]">
-            {group.customer_name ?? "(no customer)"}
+            {formatCustomerName(group.customer_name)}
           </div>
           <div className="mt-0.5 truncate text-[12px] text-[var(--text-muted)]">
             <span>{group.sales_agent ?? "—"}</span>

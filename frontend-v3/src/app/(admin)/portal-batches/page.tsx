@@ -24,6 +24,7 @@ import {
   usePortalBatchesQuery,
 } from "@/lib/queries/rejections";
 import { useSubmitPortalBatch } from "@/lib/mutations/rejections";
+import { formatCustomerName } from "@/lib/customer";
 
 function pluralise(n: number, w: string): string {
   return `${n} ${w}${n === 1 ? "" : "s"}`;
@@ -181,7 +182,7 @@ function SupplierBatchCard({ batch }: { batch: PortalBatch }) {
                   whiteSpace: "nowrap",
                 }}
               >
-                {rej.customer_name ?? rej.customer_slug ?? "—"}
+                {formatCustomerName(rej.customer_name ?? rej.customer_slug)}
                 {rej.external_watt_site_id != null && (
                   <span
                     style={{

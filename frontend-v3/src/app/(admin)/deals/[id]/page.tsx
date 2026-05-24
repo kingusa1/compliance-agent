@@ -14,6 +14,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, AlertTriangle, CheckCircle2, Plus, ExternalLink } from "lucide-react";
 
 import { ApiError } from "@/lib/api";
+import { formatCustomerName } from "@/lib/customer";
 import {
   getDealDetailQuery,
   getDealVerdictQuery,
@@ -184,7 +185,7 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
             color: "var(--text-primary)",
           }}
         >
-          {d?.customer_name ?? id}
+          {d?.customer_name ? formatCustomerName(d.customer_name) : id}
         </h1>
         <Pill tone="neutral" mono>
           {id.slice(0, 12)}
@@ -536,7 +537,7 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
               <div>
                 <div className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Customer</div>
                 <div className="mt-0.5 text-[13.5px] font-medium text-[var(--text-primary)]">
-                  {d?.customer_name ?? "—"}
+                  {formatCustomerName(d?.customer_name)}
                 </div>
               </div>
               {/* Sales agents */}

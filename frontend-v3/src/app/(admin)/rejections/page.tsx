@@ -25,6 +25,7 @@ import type { Rejection, RejectionStatus } from "@/lib/schemas/rejections";
 import { useBulkTransitionRejections } from "@/lib/mutations/rejections";
 import { RejectionDetailPanel } from "./RejectionDetailPanel";
 import { useRealtimeInvalidate } from "@/lib/hooks/useRealtimeInvalidate";
+import { formatCustomerName } from "@/lib/customer";
 
 const CATEGORY_TONE: Record<string, string> = {
   ADMIN_ERROR: "#FFC000",
@@ -462,7 +463,7 @@ function RejectionGroupCard({
         {/* Customer / agent block */}
         <div className="min-w-0">
           <div className="truncate text-[14px] font-medium text-[var(--text-primary)]">
-            {group.customer_name ?? group.customer_slug ?? "(no customer)"}
+            {formatCustomerName(group.customer_name ?? group.customer_slug)}
           </div>
           <div className="mt-0.5 truncate text-[12px] text-[var(--text-muted)]">
             <span>{group.agent_name ?? "—"}</span>

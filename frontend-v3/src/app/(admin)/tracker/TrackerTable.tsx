@@ -5,6 +5,7 @@ import { VerdictBadge } from "./VerdictBadge";
 import { StatusPipelinePill } from "./StatusPipelinePill";
 import { InlineEditCell } from "./InlineEditCell";
 import { SourceBadge } from "./SourceBadge";
+import { formatCustomerName } from "@/lib/customer";
 import type { TrackerFieldSource, TrackerRow, TrackerTab } from "@/lib/queries/tracker";
 import { useActiveReviewersQuery } from "@/lib/queries/reviewers";
 
@@ -148,7 +149,7 @@ export function TrackerTable({ rows, tab, selectedRowId, onSelect }: Props) {
                 className={`cursor-pointer border-b border-[var(--border-subtle)] hover:bg-[var(--bg-elev2)] ${isSel ? "bg-[var(--bg-elev2)]" : ""}`}
                 data-row-id={id}
               >
-                <td className={BODY_CELL}>{row.customer_name ?? "—"}</td>
+                <td className={BODY_CELL}>{formatCustomerName(row.customer_name)}</td>
                 <td className={BODY_CELL + " font-mono"}>{row.mpan_mprn ?? "—"}</td>
                 <td className={BODY_CELL}>{fmtDate(row.expected_live_date)}</td>
                 <td className={BODY_CELL}>{fmtCurrency(row.deal_value_gbp)}</td>

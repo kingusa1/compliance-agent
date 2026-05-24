@@ -32,6 +32,7 @@ import {
   type QueueFilter,
 } from "@/lib/queries/reviewer";
 import { ApiError } from "@/lib/api";
+import { formatCustomerName, isPlaceholderCustomerName } from "@/lib/customer";
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import { useUrlState } from "@/lib/hooks/useUrlState";
 import { useRealtimeInvalidate } from "@/lib/hooks/useRealtimeInvalidate";
@@ -222,15 +223,19 @@ function QueueRow({
       <div style={{ minWidth: 0 }}>
         <div
           style={{
-            color: row.customer_name ? "var(--text-primary)" : "var(--text-faint)",
+            color: isPlaceholderCustomerName(row.customer_name) ? "var(--text-faint)" : "var(--text-primary)",
             fontWeight: 500,
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
           }}
-          title={row.customer_name ?? "Customer not yet extracted"}
+          title={
+            isPlaceholderCustomerName(row.customer_name)
+              ? "AI couldn't read the customer name from the audio. Open the tracker side panel to edit it."
+              : (row.customer_name ?? "")
+          }
         >
-          {row.customer_name ?? "—"}
+          {formatCustomerName(row.customer_name)}
         </div>
         <div
           style={{
@@ -398,7 +403,12 @@ function PreviewPanel({ row }: { row: QueueCall | null }) {
   type SnippetLine = { t: string; who: string; speakerIdx: number; text: string };
   const labelForSpeaker = (idx: number): string => {
     const agentLabel = row.agent_name?.trim() || "Agent";
-    const customerLabel = row.customer_name?.trim() || "Customer";
+    // Speaker label uses the literal customer name when present, "Customer"
+    // when it's missing or one of the AI-pending placeholders — the literal
+    // "Unknown" label would be confusing on a diarisation line.
+    const customerLabel = isPlaceholderCustomerName(row.customer_name)
+      ? "Customer"
+      : (row.customer_name?.trim() || "Customer");
     if (idx === 1) return agentLabel;
     if (idx === 2) return customerLabel;
     return `Speaker ${idx}`;
@@ -464,7 +474,8 @@ function PreviewPanel({ row }: { row: QueueCall | null }) {
   // customer (the entity being audited), not the supplier (already
   // implicit in the deal). Filename is de-emphasised to a tooltip on
   // the title; supplier moves to the subtitle alongside age + duration.
-  const customerName = (row.customer_name ?? "").trim();
+  const customerName = formatCustomerName(row.customer_name);
+  const customerIsPlaceholder = isPlaceholderCustomerName(row.customer_name);
   const agentName = (row.agent_name ?? "").trim();
   // Call types come from row.segments[] (one per pipeline segment).
   // Render up to 3 stage pills next to status; if zero segments, show
@@ -493,7 +504,25 @@ function PreviewPanel({ row }: { row: QueueCall | null }) {
             whiteSpace: "nowrap",
           }}
         >
-          {customerName || row.supplier || row.filename}
+          {customerName}
+          {customerIsPlaceholder && (
+            <span
+              style={{
+                marginLeft: 8,
+                padding: "2px 6px",
+                fontSize: 10,
+                fontWeight: 500,
+                textTransform: "uppercase",
+                color: "#92400e",
+                background: "#fef3c7",
+                borderRadius: 4,
+                verticalAlign: "middle",
+              }}
+              title="AI couldn't read the customer name from the audio. Open the tracker side panel to set it manually."
+            >
+              AI couldn&apos;t read
+            </span>
+          )}
         </div>
         <div
           style={{

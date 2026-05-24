@@ -12,6 +12,7 @@ import {
 import { ScoreBar } from "@/components/reviewer/ScoreBar";
 import type { QueueCall } from "@/lib/api";
 import { shortFilename } from "@/lib/filename";
+import { formatCustomerName, isPlaceholderCustomerName } from "@/lib/customer";
 
 /**
  * Comfortable-density queue master table (UX-D02 pick).
@@ -99,9 +100,21 @@ function QueueRow({
       <TableCell className="text-[13px]" style={{ maxWidth: 280 }}>
         <div
           className="font-medium text-[var(--text-primary)] truncate"
-          title={row.customer_name ?? row.filename ?? row.id}
+          title={
+            isPlaceholderCustomerName(row.customer_name)
+              ? "AI couldn't read the customer name. Open the tracker side panel to edit."
+              : (row.customer_name ?? row.filename ?? row.id)
+          }
         >
-          {row.customer_name ?? shortFilename(row.filename)}
+          {formatCustomerName(row.customer_name)}
+          {isPlaceholderCustomerName(row.customer_name) && (
+            <span
+              className="ml-1.5 rounded-sm bg-amber-100 px-1 py-0.5 align-middle text-[9px] font-medium uppercase text-amber-900"
+              aria-label="AI couldn't read the customer name"
+            >
+              AI couldn&apos;t read
+            </span>
+          )}
         </div>
         <div
           className="mt-0.5 font-mono text-[11px] text-[var(--text-dim)] truncate"

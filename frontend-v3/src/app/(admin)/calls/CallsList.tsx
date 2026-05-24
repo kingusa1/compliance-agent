@@ -7,6 +7,7 @@ import { useQueryClient, useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { formatScorePercent } from "@/lib/score";
+import { formatCustomerName, isPlaceholderCustomerName } from "@/lib/customer";
 import { apiFetch } from "@/lib/api";
 import type { AdminCallRow } from "@/lib/queries/admin";
 import {
@@ -116,7 +117,17 @@ export function CallsList({ calls }: { calls: AdminCallRow[] }) {
               <TableCell className="whitespace-nowrap py-3 text-[13px] text-[var(--text-muted)]">
                 {formatWhen(c.created_at)}
               </TableCell>
-              <TableCell className="py-3 text-[13px]">{c.customer_name ?? "—"}</TableCell>
+              <TableCell className="py-3 text-[13px]">
+                {formatCustomerName(c.customer_name)}
+                {isPlaceholderCustomerName(c.customer_name) && (
+                  <span
+                    className="ml-2 rounded-sm bg-amber-100 px-1 py-0.5 align-middle text-[9px] font-medium uppercase text-amber-900"
+                    title="The AI couldn't read the customer name from the audio. Click the row to edit it from the tracker side panel."
+                  >
+                    AI couldn&apos;t read
+                  </span>
+                )}
+              </TableCell>
               <TableCell className="py-3 text-[13px] text-[var(--text-muted)]">
                 {c.detected_supplier ?? "—"}
               </TableCell>

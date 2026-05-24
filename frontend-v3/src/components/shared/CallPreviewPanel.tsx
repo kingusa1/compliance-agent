@@ -17,6 +17,7 @@
 
 import Link from "next/link";
 import { Inbox, Play } from "lucide-react";
+import { formatCustomerName, isPlaceholderCustomerName } from "@/lib/customer";
 
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -84,7 +85,15 @@ export function CallPreviewPanel({ callId, primaryAction }: CallPreviewPanelProp
           <StatusPill status={c.review_status ?? c.status} />
         </div>
         <div className="text-[18px] font-semibold text-[var(--text-primary)]">
-          {c.customer_name ?? c.filename}
+          {formatCustomerName(c.customer_name)}
+          {isPlaceholderCustomerName(c.customer_name) && (
+            <span
+              className="ml-2 rounded-sm bg-amber-100 px-1.5 py-0.5 align-middle text-[10px] font-medium uppercase text-amber-900"
+              title="AI couldn't read the customer name from the audio."
+            >
+              AI couldn&apos;t read
+            </span>
+          )}
         </div>
         <div className="mt-1 text-[12px] text-[var(--text-muted)]">
           {[c.detected_supplier, c.agent_name && `agent ${c.agent_name}`]

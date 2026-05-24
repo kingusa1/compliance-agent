@@ -49,6 +49,7 @@ import {
 import { ApiError, apiFetch } from "@/lib/api";
 import { useMe } from "@/lib/auth";
 import { formatScorePercent } from "@/lib/score";
+import { formatCustomerName, isPlaceholderCustomerName } from "@/lib/customer";
 import { Pill } from "@/components/design/Pill";
 import { WorkflowTypePill } from "@/components/design/WorkflowTypePill";
 import { Waveform } from "@/components/design/Waveform";
@@ -952,7 +953,25 @@ export default function CallDetailPage({
             }}
             title={c?.filename ?? id}
           >
-            {c?.customer_name ?? c?.filename ?? id}
+            {formatCustomerName(c?.customer_name)}
+            {isPlaceholderCustomerName(c?.customer_name) && (
+              <span
+                style={{
+                  marginLeft: 6,
+                  padding: "1px 5px",
+                  fontSize: 9.5,
+                  fontWeight: 500,
+                  textTransform: "uppercase",
+                  color: "#92400e",
+                  background: "#fef3c7",
+                  borderRadius: 3,
+                  verticalAlign: "middle",
+                }}
+                title="AI couldn't read the customer name from this audio. Edit it via the Edit metadata dialog."
+              >
+                AI couldn&apos;t read
+              </span>
+            )}
           </span>
           <span
             style={{

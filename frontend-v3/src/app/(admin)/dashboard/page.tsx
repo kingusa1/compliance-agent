@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 
 import { apiFetch } from "@/lib/api";
+import { formatCustomerName } from "@/lib/customer";
 import { UploadModal } from "@/app/(admin)/calls/UploadModal";
 import { useRealtimeInvalidate } from "@/lib/hooks/useRealtimeInvalidate";
 import { fetchQueue } from "@/lib/queries/reviewer";
@@ -413,7 +414,7 @@ export default function DashboardPage() {
                       {relativeTime(c.created_at)}
                     </div>
                     <div className="min-w-0 flex-1 truncate text-[var(--text-primary)]">
-                      {c.customer_name ?? c.filename}
+                      {formatCustomerName(c.customer_name)}
                     </div>
                     <div className="hidden w-32 shrink-0 truncate text-[var(--text-muted)] md:block">
                       {c.detected_supplier ?? "—"}

@@ -21,6 +21,7 @@ import { MoreHorizontal } from "lucide-react";
 import { Avatar } from "@/components/design/Avatar";
 import { Pill, type PillTone } from "@/components/design/Pill";
 import type { Rejection, RejectionStatus } from "@/lib/schemas/rejections";
+import { formatCustomerName } from "@/lib/customer";
 import {
   REJECTION_STATUS_LABELS,
 } from "@/lib/schemas/rejections";
@@ -175,7 +176,7 @@ export function RejectionsTable({
             // The slug was originally rendered as the user-visible label,
             // which surfaced URL-style strings ("acme-energy-ltd") instead of
             // a clean trading name. Plan §5d: surface customer_name here.
-            const customer = row.customer_name || row.customer_slug || "—";
+            const customer = formatCustomerName(row.customer_name ?? row.customer_slug);
             return (
               <div
                 key={row.id}

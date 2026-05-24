@@ -24,6 +24,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CategoryChip, CATEGORY_KEYS, CATEGORY_LABEL } from "./CategoryChip";
 import { StatusPipelinePill, PIPELINE_STEPS, PIPELINE_LABELS } from "./StatusPipelinePill";
+import { formatCustomerName, isPlaceholderCustomerName } from "@/lib/customer";
 import type { TrackerRow } from "@/lib/queries/tracker";
 import {
   useConfirmVerdict,
@@ -75,6 +76,9 @@ const OUTCOMES = [
 // always a string (or "" for null) so the diff logic stays trivial. Final
 // numeric/date coercion happens in the per-field save router.
 type DraftFields = {
+  // Call-level — 2026-05-24 added customer_name editable so reviewers
+  // can correct it when AI extraction failed (e.g. unclear audio).
+  customer_name: string;
   // Rejection-level
   rejection_reason: string;
   fix_narrative: string;
@@ -116,9 +120,14 @@ const DEAL_KEYS: ReadonlyArray<keyof DraftFields> = [
   "term_months",
   "docusign_reference",
 ];
+// Call-level keys live on the Call row itself (not on Deal). Route through
+// `editCallMeta` to PATCH /api/tracker/calls/{call_id}/meta which accepts
+// `customer_name`, `agent_name`, `detected_supplier`.
+const CALL_KEYS: ReadonlyArray<keyof DraftFields> = ["customer_name"];
 
 function rowToDraft(row: TrackerRow): DraftFields {
   return {
+    customer_name: row.customer_name ?? "",
     rejection_reason: row.rejection_reason ?? "",
     fix_narrative: row.fix_narrative ?? "",
     category: row.category ?? "",
@@ -169,6 +178,7 @@ export function TrackerSidePanel({
   }, [
     row.rejection_id,
     row.call_id,
+    row.customer_name,
     row.rejection_reason,
     row.fix_narrative,
     row.category,
@@ -195,6 +205,10 @@ export function TrackerSidePanel({
   // Which keys are editable on THIS row.
   const rejectionEditable = Boolean(row.rejection_id);
   const dealEditable = editable && Boolean(row.deal_id);
+  // Call-level (customer_name) is editable whenever we have a call_id at
+  // all — covers awaiting-review rows and rejection rows alike. The
+  // backend route accepts the field on any call.
+  const callEditable = Boolean(row.call_id);
 
   // ── Dirty calculation ─────────────────────────────────────────────────
   const diffs = useMemo(() => {
@@ -306,6 +320,19 @@ export function TrackerSidePanel({
         assigneeId: diffs.fix_assignee_id === "" ? null : diffs.fix_assignee_id,
       });
     }
+
+    // 4. Call-level fields (customer_name) — route through call-meta PATCH.
+    // Always uses editCallMeta regardless of rejection_id so a reviewer
+    // can correct the AI's name extraction on rejection rows too.
+    if (callEditable && row.call_id) {
+      const callDiffs: Record<string, string | number | null> = {};
+      dirtyKeys.forEach((k) => {
+        if (CALL_KEYS.includes(k)) callDiffs[k] = toServerValue(k);
+      });
+      if (Object.keys(callDiffs).length > 0) {
+        editCallMeta.mutate({ callId: row.call_id, fields: callDiffs });
+      }
+    }
   };
 
   const onConfirm = () => {
@@ -314,10 +341,43 @@ export function TrackerSidePanel({
   };
 
   // ── Render ────────────────────────────────────────────────────────────
+  const nameIsPlaceholder = isPlaceholderCustomerName(row.customer_name);
+  const headerLabel = formatCustomerName(row.customer_name);
+
   return (
-    <aside className="flex h-full flex-col gap-4 border-l border-[var(--border-subtle)] bg-[var(--surface-1)] p-4">
-      <header className="flex items-center justify-between">
-        <h2 className="text-sm font-medium">{row.customer_name ?? "Untitled"}</h2>
+    <aside className="flex h-full flex-col gap-4 overflow-y-auto border-l border-[var(--border-subtle)] bg-[var(--surface-1)] p-4">
+      <header className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-sm font-medium">
+            {headerLabel}
+            {nameIsPlaceholder && (
+              <span
+                className="ml-2 rounded-sm bg-amber-100 px-1.5 py-0.5 align-middle text-[10px] font-medium uppercase text-amber-900"
+                title="The AI couldn't read the customer name from the audio. Edit below to set it manually."
+              >
+                AI couldn&apos;t read
+              </span>
+            )}
+          </h2>
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-[var(--text-muted)]">
+            {row.score && <span className="font-medium">Score {row.score}</span>}
+            {row.verdict_state && (
+              <span className="rounded border border-[var(--border-subtle)] px-1 py-0.5">
+                {row.verdict_state.replace(/_/g, " ").toLowerCase()}
+              </span>
+            )}
+            {row.rejected_at && (
+              <span title="Rejection raised">
+                rejected {new Date(row.rejected_at).toLocaleDateString("en-GB")}
+              </span>
+            )}
+            {row.last_action_date && (
+              <span title="Last reviewer action">
+                last activity {new Date(row.last_action_date).toLocaleDateString("en-GB")}
+              </span>
+            )}
+          </div>
+        </div>
         <button
           onClick={onClose}
           className="text-[var(--text-muted)] hover:text-[var(--text-default)]"
@@ -326,6 +386,37 @@ export function TrackerSidePanel({
           ×
         </button>
       </header>
+
+      {/* Customer name editor — always present when a call_id is known so
+          reviewers can correct an unread/garbled name straight from the
+          panel. Empty value submits as NULL which the backend treats as
+          "clear". 2026-05-24 user-reported issue. */}
+      {callEditable && (
+        <section className="space-y-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-3 text-[12px]">
+          <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+            Customer
+          </div>
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+              Name
+            </span>
+            <input
+              type="text"
+              value={draft.customer_name}
+              onChange={(e) => update("customer_name", e.target.value)}
+              className="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-1.5 text-[12px]"
+              placeholder={nameIsPlaceholder ? "Type the customer name (Unknown by default)" : "Customer name…"}
+              aria-label="Customer name"
+            />
+            {nameIsPlaceholder && (
+              <span className="text-[10px] text-amber-700">
+                AI extraction failed. Type the customer name and press Save to
+                push it onto every page that references this call.
+              </span>
+            )}
+          </label>
+        </section>
+      )}
 
       {/* AI auto-categorized banner — only on AI_PENDING rejection rows. */}
       {!isCompliant && !isAwaitingReview && isAiPending && rejectionEditable && (
