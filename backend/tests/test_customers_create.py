@@ -10,13 +10,58 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 # Pre-import models so SQLAlchemy registers the customers table on
 # Base.metadata before any test fixture call_create_all (mirrors the
 # pattern in test_intake.py).
 from app import models as _models  # noqa: F401
+from app.auth import current_user
 from app.main import app
+from app.reviewers import current_reviewer, require_lead
+
+# 2026-05-24 — `POST /api/customers` now requires `require_lead`. Tests
+# stub the JWT dependency so they keep exercising the create logic
+# without needing a live Supabase Auth round-trip. The pop on teardown
+# matches the per-file fixture pattern used by test_audit_coverage.py
+# so the override doesn't leak into other test files that explicitly
+# verify the unauthenticated 401 path.
+_STUB_LEAD = {
+    "id": "test-lead",
+    "email": "lead@compliance-agent.local",
+    "name": "Test Lead",
+    "role": "lead",
+}
+
+
+@pytest.fixture(autouse=True)
+def _stub_auth():
+    app.dependency_overrides[current_user] = lambda: _STUB_LEAD
+    app.dependency_overrides[current_reviewer] = lambda: _STUB_LEAD
+    app.dependency_overrides[require_lead] = lambda: _STUB_LEAD
+    # `record_audit` writes `actor_id` which FK's to profiles.id; seed
+    # the test-lead profile so the chain extension doesn't 23503.
+    from app.database import SessionLocal
+    from app.models import Profile
+    db = SessionLocal()
+    try:
+        if not db.query(Profile).filter_by(id="test-lead").first():
+            db.add(Profile(
+                id="test-lead",
+                email="lead@compliance-agent.local",
+                name="Test Lead",
+                role="lead",
+                active=True,
+            ))
+            db.commit()
+    finally:
+        db.close()
+    yield
+    app.dependency_overrides.pop(current_user, None)
+    app.dependency_overrides.pop(current_reviewer, None)
+    app.dependency_overrides.pop(require_lead, None)
+
 
 client = TestClient(app)
 

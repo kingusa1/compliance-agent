@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from app._clock import utcnow
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse, Response
 from sqlalchemy.orm import Session
 
@@ -12,6 +12,7 @@ from app.audit import record_audit
 from app.auth import current_user
 from app.config import settings
 from app.database import get_db
+from app.reviewers import current_reviewer, require_lead
 from app.models import Script, ScriptLineMapping, ScriptVersion
 from app.schemas import ScriptCreate, ScriptListResponse, ScriptResponse, ScriptVersionListResponse, ScriptVersionResponse
 from app.script_parser import parse_script_to_checkpoints, checkpoints_to_markdown
@@ -20,7 +21,10 @@ script_router = APIRouter()
 
 
 @script_router.post("/api/scripts/upload")
-async def upload_and_parse_script(file: UploadFile = File(...)):
+async def upload_and_parse_script(
+    file: UploadFile = File(...),
+    _user: dict = Depends(require_lead),
+):
     """Parse an uploaded script file into checkpoint JSON.
 
     2026-05-13 hardening: now uses the same 4-pass hardened extractor
@@ -73,7 +77,11 @@ async def upload_and_parse_script(file: UploadFile = File(...)):
 
 
 @script_router.post("/api/scripts", response_model=ScriptResponse)
-def create_script(script: ScriptCreate, request: Request, db: Session = Depends(get_db)):
+def create_script(
+    script: ScriptCreate,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_lead),
+):
     checkpoints_json = json.dumps([cp.model_dump() for cp in script.checkpoints])
     db_script = Script(
         id=str(uuid.uuid4()),
@@ -110,7 +118,7 @@ def create_script(script: ScriptCreate, request: Request, db: Session = Depends(
             "mode": script.mode,
             "checkpoint_count": len(script.checkpoints),
         },
-        actor_id=request.headers.get("x-user-id"),
+        actor_id=user.get("id") if isinstance(user, dict) else None,
     )
     db.commit()
     db.refresh(db_script)
@@ -118,13 +126,20 @@ def create_script(script: ScriptCreate, request: Request, db: Session = Depends(
 
 
 @script_router.get("/api/scripts", response_model=ScriptListResponse)
-def list_scripts(db: Session = Depends(get_db)):
+def list_scripts(
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+):
     scripts = db.query(Script).order_by(Script.created_at.desc()).all()
     return ScriptListResponse(scripts=scripts, total=len(scripts))
 
 
 @script_router.get("/api/scripts/{script_id}", response_model=ScriptResponse)
-def get_script(script_id: str, db: Session = Depends(get_db)):
+def get_script(
+    script_id: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+):
     script = db.query(Script).filter_by(id=script_id).first()
     if not script:
         raise HTTPException(404, "Script not found")
@@ -132,7 +147,12 @@ def get_script(script_id: str, db: Session = Depends(get_db)):
 
 
 @script_router.get("/api/scripts/{script_id}/markdown", response_class=PlainTextResponse)
-def get_script_markdown(script_id: str, download: bool = False, db: Session = Depends(get_db)):
+def get_script_markdown(
+    script_id: str,
+    download: bool = False,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+):
     """Return the script rendered as clean markdown — what the agent actually sees.
     Set ?download=true to trigger a file download instead of inline preview."""
     script = db.query(Script).filter_by(id=script_id).first()
@@ -151,7 +171,12 @@ def get_script_markdown(script_id: str, download: bool = False, db: Session = De
 
 
 @script_router.put("/api/scripts/{script_id}", response_model=ScriptResponse)
-def update_script(script_id: str, script: ScriptCreate, request: Request, db: Session = Depends(get_db)):
+def update_script(
+    script_id: str,
+    script: ScriptCreate,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_lead),
+):
     db_script = db.query(Script).filter_by(id=script_id).first()
     if not db_script:
         raise HTTPException(404, "Script not found")
@@ -204,7 +229,7 @@ def update_script(script_id: str, script: ScriptCreate, request: Request, db: Se
             "fields_touched": fields_touched,
             "checkpoint_count": len(script.checkpoints),
         },
-        actor_id=request.headers.get("x-user-id"),
+        actor_id=user.get("id") if isinstance(user, dict) else None,
     )
     db.commit()
     db.refresh(db_script)
@@ -212,7 +237,11 @@ def update_script(script_id: str, script: ScriptCreate, request: Request, db: Se
 
 
 @script_router.delete("/api/scripts/{script_id}")
-def delete_script(script_id: str, request: Request, db: Session = Depends(get_db)):
+def delete_script(
+    script_id: str,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_lead),
+):
     db_script = db.query(Script).filter_by(id=script_id).first()
     if not db_script:
         raise HTTPException(404, "Script not found")
@@ -230,14 +259,18 @@ def delete_script(script_id: str, request: Request, db: Session = Depends(get_db
             "supplier_name": db_script.supplier_name,
             "script_name": db_script.script_name,
         },
-        actor_id=request.headers.get("x-user-id"),
+        actor_id=user.get("id") if isinstance(user, dict) else None,
     )
     db.commit()
     return {"status": "deactivated"}
 
 
 @script_router.get("/api/scripts/{script_id}/versions", response_model=ScriptVersionListResponse)
-def list_script_versions(script_id: str, db: Session = Depends(get_db)):
+def list_script_versions(
+    script_id: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+):
     db_script = db.query(Script).filter_by(id=script_id).first()
     if not db_script:
         raise HTTPException(404, "Script not found")

@@ -326,9 +326,17 @@ function RecentCallsTable({ calls }: { calls: AgentRecentCall[] }) {
             <div style={{ color: "var(--text-muted)" }}>{c.detected_supplier ?? "—"}</div>
             <div style={{ fontVariantNumeric: "tabular-nums" }}>{c.score ?? "—"}</div>
             <div>
-              <Pill tone={c.compliant ? "emerald" : "red"} dot>
-                {c.compliant ? "compliant" : "non-compliant"}
-              </Pill>
+              {/* 2026-05-24 — was a binary `c.compliant ? emerald : red`,
+                  which rendered every still-processing / unscored call
+                  (compliant === null) as a red "non-compliant" pill.
+                  Tri-state respects the pending state. */}
+              {c.compliant === true ? (
+                <Pill tone="emerald" dot>compliant</Pill>
+              ) : c.compliant === false ? (
+                <Pill tone="red" dot>non-compliant</Pill>
+              ) : (
+                <Pill tone="neutral" dot>pending</Pill>
+              )}
             </div>
             <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-faint)" }}>
               {c.id.slice(0, 8)}

@@ -58,12 +58,27 @@ def _override_get_db():
         db.close()
 
 
+_STUB_USER = {
+    "id": "test-reviewer",
+    "email": "reviewer@compliance-agent.local",
+    "name": "Test Reviewer",
+    "role": "lead",
+}
+
+
 def _make_app() -> FastAPI:
     from app.customers_routes import customers_router
+    from app.auth import current_user
+    from app.reviewers import current_reviewer, require_lead
 
     app = FastAPI()
     app.include_router(customers_router)
     app.dependency_overrides[get_db] = _override_get_db
+    # 2026-05-24 — routes are now auth-gated. Tests stub the JWT
+    # dependencies so the in-memory SQLite app doesn't need Supabase.
+    app.dependency_overrides[current_user] = lambda: _STUB_USER
+    app.dependency_overrides[current_reviewer] = lambda: _STUB_USER
+    app.dependency_overrides[require_lead] = lambda: _STUB_USER
     return app
 
 

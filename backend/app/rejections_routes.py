@@ -44,6 +44,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.audit import record_audit
 from app.auth import current_user
 from app.database import get_db
 from app.logger import log
@@ -770,9 +771,41 @@ def delete_rejection(
     user: dict = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    """Hard-delete a Rejection.
+
+    2026-05-24 audit — was log-silent. The hard delete destroys
+    compliance evidence (a Rejection is the auditable artefact of a
+    sub-80% call). Now writes one `record_audit` row + one
+    `RejectionAuditLog` row inside the same transaction so the delete
+    is forensically reconstructable from both the tamper-evident chain
+    and the per-rejection log.
+    """
     r = db.query(Rejection).filter(Rejection.id == rid).first()
     if not r:
         raise HTTPException(status_code=404, detail="Rejection not found")
+    actor_id = user.get("id") if isinstance(user, dict) else None
+    snapshot = {
+        "category": r.category,
+        "fix_required": r.fix_required,
+        "status": r.status,
+        "outcome": r.outcome,
+        "call_id": str(r.call_id) if getattr(r, "call_id", None) else None,
+        "deal_id": str(r.deal_id) if getattr(r, "deal_id", None) else None,
+    }
+    db.add(RejectionAuditLog(
+        rejection_id=r.id,
+        actor_id=actor_id,
+        action="deleted",
+        diff=snapshot,
+    ))
+    record_audit(
+        db,
+        action="rejection.delete",
+        entity_type="rejection",
+        entity_id=str(rid),
+        payload=snapshot,
+        actor_id=actor_id,
+    )
     db.delete(r)
     db.commit()
     return {"deleted": True, "id": str(rid)}

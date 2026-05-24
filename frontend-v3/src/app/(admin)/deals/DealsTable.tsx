@@ -107,10 +107,16 @@ function formatGBP(v: number | null): string {
   }).format(v);
 }
 
-function formatDate(iso: string | null): string {
+function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
   try {
-    return new Date(iso).toLocaleDateString("en-GB", {
+    const d = new Date(iso);
+    // 2026-05-24 — `new Date(null)` returns 1970-01-01 (no throw); `new
+    // Date("invalid")` returns Invalid Date (no throw, `toLocaleDateString`
+    // returns "Invalid Date" string). Catching only `try/catch` missed
+    // both: the column rendered "01 Jan 70" on a null `expected_live_date`.
+    if (Number.isNaN(d.getTime())) return "—";
+    return d.toLocaleDateString("en-GB", {
       day: "2-digit",
       month: "short",
       year: "2-digit",

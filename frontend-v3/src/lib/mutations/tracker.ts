@@ -32,14 +32,33 @@ async function patchTrackerRow({ rejectionId, fields }: EditTrackerVars): Promis
   });
 }
 
+// 2026-05-24 audit — every tracker mutation now invalidates the SAME set
+// of dependent caches so a reviewer edit on /tracker is visible across
+// every page that re-renders the same row. Previously only
+// `["admin","tracker"]` dropped → /rejections, /dashboard, /calls/[id],
+// /deals/[id], /agents/[name], /compliant, /non-compliant all showed
+// stale data until the user hard-refreshed.
+function _invalidateTrackerDependents(qc: ReturnType<typeof useQueryClient>): void {
+  qc.invalidateQueries({ queryKey: ["admin", "tracker"] });
+  qc.invalidateQueries({ queryKey: ["rejections"] });
+  qc.invalidateQueries({ queryKey: ["admin", "dashboard"] });
+  qc.invalidateQueries({ queryKey: ["calls"] });
+  qc.invalidateQueries({ queryKey: ["call"] });          // /calls/[id] detail
+  qc.invalidateQueries({ queryKey: ["deals"] });          // /deals list
+  qc.invalidateQueries({ queryKey: ["deal"] });           // /deals/[id]
+  qc.invalidateQueries({ queryKey: ["admin", "deal"] });  // composite-verdict
+  qc.invalidateQueries({ queryKey: ["admin", "customers"] });
+  qc.invalidateQueries({ queryKey: ["agents"] });         // leaderboard
+  qc.invalidateQueries({ queryKey: ["agent"] });          // drilldown
+  qc.invalidateQueries({ queryKey: ["compliant"] });
+  qc.invalidateQueries({ queryKey: ["non-compliant"] });
+}
+
 export function useEditTrackerRow() {
   const qc = useQueryClient();
   return useMutation<EditTrackerResponse, Error, EditTrackerVars>({
     mutationFn: patchTrackerRow,
-    onSuccess: () => {
-      // useTrackerRowsQuery uses ["admin", "tracker", filters] — prefix match.
-      qc.invalidateQueries({ queryKey: ["admin", "tracker"] });
-    },
+    onSuccess: () => _invalidateTrackerDependents(qc),
   });
 }
 
@@ -79,7 +98,7 @@ export function useConfirmVerdict() {
   const qc = useQueryClient();
   return useMutation<void, Error, string>({
     mutationFn: (rejectionId) => confirmRejection(rejectionId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "tracker"] }),
+    onSuccess: () => _invalidateTrackerDependents(qc),
   });
 }
 
@@ -87,7 +106,7 @@ export function useOverrideVerdict() {
   const qc = useQueryClient();
   return useMutation<void, Error, { rejectionId: string; body: OverridePayload }>({
     mutationFn: ({ rejectionId, body }) => overrideRejection(rejectionId, body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "tracker"] }),
+    onSuccess: () => _invalidateTrackerDependents(qc),
   });
 }
 
@@ -116,7 +135,7 @@ export function useSetAssignee() {
   const qc = useQueryClient();
   return useMutation<{ id: string; fix_assignee_id: string | null }, Error, SetAssigneeVars>({
     mutationFn: setAssignee,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "tracker"] }),
+    onSuccess: () => _invalidateTrackerDependents(qc),
   });
 }
 
@@ -158,22 +177,6 @@ export function useEditCallMeta() {
     EditCallMetaVars
   >({
     mutationFn: patchCallMeta,
-    onSuccess: () => {
-      // Invalidate every cache that renders fields touched by call-meta.
-      // 2026-05-24: the backend now dual-writes customer_name onto the
-      // linked CustomerDeal too, so the /deals list + /deals/[id] +
-      // /customers caches need to drop or they keep showing the old
-      // "(pending audio upload)" placeholder after Save resolves.
-      qc.invalidateQueries({ queryKey: ["admin", "tracker"] });
-      qc.invalidateQueries({ queryKey: ["calls"] });
-      qc.invalidateQueries({ queryKey: ["deals"] });          // /deals list
-      qc.invalidateQueries({ queryKey: ["deal"] });           // /deals/[id]
-      // 2026-05-24 code-review CRITICAL fix: the composite-verdict donut
-      // on /deals/[id] is keyed `["admin", "deal", id, "composite-verdict"]`
-      // (see lib/queries/deals.ts) — the `["deal"]` prefix above does NOT
-      // catch this because TanStack matches left-to-right.
-      qc.invalidateQueries({ queryKey: ["admin", "deal"] });
-      qc.invalidateQueries({ queryKey: ["admin", "customers"] });
-    },
+    onSuccess: () => _invalidateTrackerDependents(qc),
   });
 }

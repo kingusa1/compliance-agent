@@ -20,9 +20,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.audit import record_audit
 from app.database import get_db
 from app.intake.payload_schema import CustomerMeta as _CustomerMeta
 from app.intake.upsert import upsert_customer as _upsert_customer
+from app.reviewers import current_reviewer, require_lead
 
 
 customers_router = APIRouter(prefix="/api/customers", tags=["customers"])
@@ -128,6 +130,41 @@ def _real_name_predicate(expr: str = "d.customer_name") -> str:
 
 _REAL_NAME_PREDICATE: str = _real_name_predicate()
 
+
+# 2026-05-24 — `worst_action` was a plain `MAX(d.final_action)`. The
+# action vocabulary is `PASS | REVIEW | COACHING | FAIL | BLOCK | REJECT
+# | TRIAGE` and Postgres MAX() on a TEXT column is lexicographic, so
+# `TRIAGE > REVIEW > REJECT > PASS > FAIL > COACHING > BLOCK`. That meant
+# a customer with both a `REJECT` deal and a `REVIEW` deal would render
+# the soft-amber `REVIEW` pill instead of the red `REJECT` one — and the
+# `?action=REJECT` filter would silently hide that same customer because
+# the aggregate column resolved to `REVIEW`. This MAX(CASE…) expression
+# ranks actions by severity so the worst action is always the highest
+# rank. Unknown action strings fall through to NULL (treated as 0 by
+# MAX()) so we never under-state severity but also don't fabricate one.
+_WORST_ACTION_SQL = (
+    "MAX(CASE d.final_action "
+    "WHEN 'BLOCK' THEN 6 "
+    "WHEN 'REJECT' THEN 5 "
+    "WHEN 'FAIL' THEN 4 "
+    "WHEN 'TRIAGE' THEN 3 "
+    "WHEN 'REVIEW' THEN 2 "
+    "WHEN 'COACHING' THEN 1 "
+    "WHEN 'PASS' THEN 0 "
+    "END)"
+)
+_WORST_ACTION_DECODE_SQL = (
+    "CASE worst_rank "
+    "WHEN 6 THEN 'BLOCK' "
+    "WHEN 5 THEN 'REJECT' "
+    "WHEN 4 THEN 'FAIL' "
+    "WHEN 3 THEN 'TRIAGE' "
+    "WHEN 2 THEN 'REVIEW' "
+    "WHEN 1 THEN 'COACHING' "
+    "WHEN 0 THEN 'PASS' "
+    "ELSE NULL END"
+)
+
 _LIST_SQL = f"""
 SELECT
     LOWER(TRIM(d.customer_name))                                            AS slug,
@@ -143,7 +180,7 @@ SELECT
         ARRAY[]::text[]
     )                                                                       AS suppliers,
     MAX(c.created_at)                                                       AS last_seen,
-    MAX(d.final_action)                                                     AS worst_action,
+    {_WORST_ACTION_SQL}                                                     AS worst_rank,
     -- W1 (v3-watt-coverage): pick any non-null site_id across the customer's
     -- deals. MAX is fine for single-site customers (1 distinct value);
     -- multi-site customers get whichever site_id sorts highest — the deal-
@@ -258,12 +295,18 @@ class CustomerCreateResponse(BaseModel):
 def create_customer(
     payload: CustomerCreatePayload,
     db: Session = Depends(get_db),
+    user: dict = Depends(require_lead),
 ) -> CustomerCreateResponse:
     """Create-or-return a Customer row keyed by slug(legal_name + trading_as).
 
     Idempotent on slug: re-POSTing the same legal_name returns the existing
     row with the original id (HTTP 201 either way — clients always receive
     a usable {customer, slug} payload).
+
+    2026-05-24 audit — was unauthenticated and let any anonymous caller
+    pollute the customers table. Now gated by ``require_lead`` and writes
+    a ``record_audit`` row inside the same transaction so the create is
+    forensically reconstructable.
     """
     meta = _CustomerMeta(
         legal_name=payload.legal_name,
@@ -279,6 +322,14 @@ def create_customer(
         row = _upsert_customer(meta, db)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    record_audit(
+        db,
+        action="customer.create",
+        entity_type="customer",
+        entity_id=str(row.id),
+        payload={"slug": row.slug, "legal_name": row.legal_name},
+        actor_id=user.get("id") if isinstance(user, dict) else None,
+    )
     db.commit()
     return CustomerCreateResponse(
         customer=CustomerCreateRow(
@@ -299,7 +350,11 @@ def list_customers(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
 ) -> CustomerListResponse:
+    # SECURITY: `having` must only contain hardcoded SQL fragments. User
+    # values flow through `params` and are bound by SQLAlchemy — never
+    # interpolated into the `having` list directly.
     having: list[str] = []
     params: dict[str, Any] = {"limit": limit, "offset": offset}
     if q:
@@ -309,8 +364,21 @@ def list_customers(
         having.append("BOOL_OR(d.supplier = :supplier)")
         params["supplier"] = supplier
     if action:
-        having.append("MAX(d.final_action) = :action")
-        params["action"] = action
+        # 2026-05-24 — was `MAX(d.final_action) = :action` against the
+        # alphabetical MAX. That filter silently dropped customers whose
+        # severity-ranked worst was REJECT but whose alphabetical MAX
+        # resolved to TRIAGE/REVIEW. Now filter on the same CASE-ranked
+        # column the SELECT exposes so the user-visible worst_action pill
+        # and the ?action= filter agree.
+        action_rank = {
+            "BLOCK": 6, "REJECT": 5, "FAIL": 4, "TRIAGE": 3,
+            "REVIEW": 2, "COACHING": 1, "PASS": 0,
+        }.get(action)
+        if action_rank is not None:
+            having.append(f"{_WORST_ACTION_SQL} = :action_rank")
+            params["action_rank"] = action_rank
+        else:
+            having.append("FALSE")  # unknown action → empty result
 
     having_sql = ("HAVING " + " AND ".join(having)) if having else ""
     sql = f"""
@@ -318,7 +386,8 @@ def list_customers(
             {_LIST_SQL}
             {having_sql}
         )
-        SELECT *, COUNT(*) OVER() AS total_count
+        SELECT *, {_WORST_ACTION_DECODE_SQL} AS worst_action,
+               COUNT(*) OVER() AS total_count
         FROM agg
         ORDER BY last_seen DESC NULLS LAST
         LIMIT :limit OFFSET :offset
@@ -336,10 +405,17 @@ def list_customers(
 
 
 @customers_router.get("/{slug}", response_model=CustomerDetailResponse)
-def get_customer(slug: str, db: Session = Depends(get_db)) -> CustomerDetailResponse:
+def get_customer(
+    slug: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+) -> CustomerDetailResponse:
     summary_sql = f"""
-        {_LIST_SQL}
-        HAVING LOWER(TRIM(MAX(d.customer_name))) = :slug
+        WITH agg AS (
+            {_LIST_SQL}
+            HAVING LOWER(TRIM(MAX(d.customer_name))) = :slug
+        )
+        SELECT *, {_WORST_ACTION_DECODE_SQL} AS worst_action FROM agg
     """
     summary_row = db.execute(text(summary_sql), {"slug": slug}).fetchone()
     if not summary_row:
@@ -406,7 +482,11 @@ def _isoformat_loose(v: datetime | str | None) -> str | None:
 
 
 @customers_router.get("/{slug}/rollup")
-def customer_rollup(slug: str, db: Session = Depends(get_db)) -> dict:
+def customer_rollup(
+    slug: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+) -> dict:
     """Pure DB aggregation — no LLM. Per L4 design_decisions:
 
       total_deals               = COUNT(d)
@@ -420,16 +500,19 @@ def customer_rollup(slug: str, db: Session = Depends(get_db)) -> dict:
     base = db.execute(
         text(
             f"""
-            SELECT
-                COUNT(DISTINCT d.id)                              AS total_deals,
-                COUNT(DISTINCT c.id)                              AS total_calls,
-                COALESCE(SUM(d.deal_value_gbp), 0)                AS total_deal_value_gbp_annual_sum,
-                MAX(d.final_action)                               AS worst_action,
-                MAX(c.created_at)                                 AS last_activity_at
-            FROM customer_deals d
-            LEFT JOIN calls c ON c.deal_id = d.id
-            WHERE LOWER(TRIM(d.customer_name)) = :slug
-              AND {_REAL_NAME_PREDICATE}
+            WITH agg AS (
+                SELECT
+                    COUNT(DISTINCT d.id)                              AS total_deals,
+                    COUNT(DISTINCT c.id)                              AS total_calls,
+                    COALESCE(SUM(d.deal_value_gbp), 0)                AS total_deal_value_gbp_annual_sum,
+                    {_WORST_ACTION_SQL}                               AS worst_rank,
+                    MAX(c.created_at)                                 AS last_activity_at
+                FROM customer_deals d
+                LEFT JOIN calls c ON c.deal_id = d.id
+                WHERE LOWER(TRIM(d.customer_name)) = :slug
+                  AND {_REAL_NAME_PREDICATE}
+            )
+            SELECT *, {_WORST_ACTION_DECODE_SQL} AS worst_action FROM agg
             """
         ),
         {"slug": slug},
@@ -531,7 +614,11 @@ def customer_rollup(slug: str, db: Session = Depends(get_db)) -> dict:
 
 
 @customers_router.get("/{slug}/timeline")
-def customer_timeline(slug: str, db: Session = Depends(get_db)) -> dict:
+def customer_timeline(
+    slug: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+) -> dict:
     """Chronological all-calls-across-all-deals for a customer."""
     timeline_name_predicate = _real_name_predicate(
         "COALESCE(d.customer_name, c.customer_name)"

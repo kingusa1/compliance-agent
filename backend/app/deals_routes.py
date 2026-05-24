@@ -19,12 +19,13 @@ volumes we see in MVP.
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
 from app.auth import current_user
 from app.database import get_db
+from app.reviewers import current_reviewer, require_lead
 from app.deal_lifecycle import derive_lifecycle_status
 from app.deal_verdict import DealVerdict, aggregate_deal_verdict
 from app.deals_composite import compute_composite_verdict, composite_from_calls
@@ -99,9 +100,17 @@ def _serialise_call(c: Call) -> dict:
 @deals_router.post("", response_model=CustomerDealOut, status_code=status.HTTP_201_CREATED)
 def create_deal(
     payload: CustomerDealCreate,
-    request: Request,
     db: Session = Depends(get_db),
+    user: dict = Depends(require_lead),
 ) -> CustomerDealOut:
+    """Create a CustomerDeal row.
+
+    2026-05-24 audit — was unauthenticated and trusted a client-supplied
+    ``x-user-id`` header to stamp the audit chain's ``actor_id``, letting
+    any anonymous caller (a) flood the deals table, (b) forge an
+    arbitrary actor_id on the tamper-evident audit log. Now gated by
+    ``require_lead`` and the actor is read from the verified JWT user.
+    """
     deal = CustomerDeal(**payload.model_dump(exclude_unset=True))
     db.add(deal)
     # Flush to materialise the server-generated UUID before we capture it in
@@ -120,7 +129,7 @@ def create_deal(
             "meter_count": len(deal.meters or []),
             "external_watt_site_id": deal.external_watt_site_id,
         },
-        actor_id=request.headers.get("x-user-id"),
+        actor_id=user.get("id") if isinstance(user, dict) else None,
     )
     db.commit()
     db.refresh(deal)
@@ -135,6 +144,7 @@ def list_deals(
     limit: int = Query(100, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
 ) -> dict:
     """List deals with offset pagination + status / supplier / q
     filters. ``q`` does an ILIKE on customer_name."""
@@ -209,7 +219,11 @@ def list_deals(
 
 
 @deals_router.get("/{deal_id}")
-def get_deal(deal_id: UUID, db: Session = Depends(get_db)) -> dict:
+def get_deal(
+    deal_id: UUID,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+) -> dict:
     """Deal detail: header + lifecycle_status + linked calls. The
     page calls /verdict separately so we don't recompute the verdict
     on every header-only fetch."""
@@ -241,7 +255,11 @@ def get_deal(deal_id: UUID, db: Session = Depends(get_db)) -> dict:
 
 
 @deals_router.get("/{deal_id}/verdict", response_model=DealVerdict)
-def get_deal_verdict(deal_id: UUID, db: Session = Depends(get_db)) -> DealVerdict:
+def get_deal_verdict(
+    deal_id: UUID,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+) -> DealVerdict:
     try:
         return aggregate_deal_verdict(deal_id, db)
     except ValueError as e:
@@ -264,7 +282,11 @@ def get_deal_composite_verdict(
 
 
 @deals_router.get("/{deal_id}/calls")
-def get_deal_calls(deal_id: UUID, db: Session = Depends(get_db)) -> dict:
+def get_deal_calls(
+    deal_id: UUID,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+) -> dict:
     deal = db.query(CustomerDeal).filter(CustomerDeal.id == deal_id).one_or_none()
     if not deal:
         raise HTTPException(404, "deal not found")

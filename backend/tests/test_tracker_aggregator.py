@@ -99,6 +99,10 @@ def test_compliant_tab_returns_passing_calls(test_db):
         # rejection". A passing call must have compliant=True for the tab to
         # surface it; failing-but-no-rejection calls belong on /non-compliant.
         compliant=True,
+        # 2026-05-24: also requires `review_status=='reviewed'` so the same
+        # call never appears in BOTH the Awaiting-review AND Compliant tabs
+        # at the same time (owner-reported double-count).
+        review_status="reviewed",
     )
     # Add a second call with the same shape but compliant=False to lock in
     # the new semantics — it must NOT appear on the compliant tab.

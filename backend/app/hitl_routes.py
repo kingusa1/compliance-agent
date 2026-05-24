@@ -624,6 +624,23 @@ async def submit_verdict(
     # also lets the downstream ``auto_create_rejection_for_verdict`` see
     # the canonical uppercase form it expects internally.
     verdict_action_norm = (payload.verdict or "").strip().upper()
+    # 2026-05-24 audit — BLOCK and COACHING were silently leaving the
+    # call in a Pending limbo: the lifecycle / compliance_status /
+    # review_status block at the end of each branch only fired on
+    # FAIL / REVIEW / PASS, so a reviewer hitting "Block" or "Coaching"
+    # saw the toast succeed but the call kept rendering as
+    # `Pending` forever and never moved out of the queue.
+    #
+    # Mapping:
+    #   - BLOCK    → treat like FAIL (non_compliant, auto-create rejections)
+    #   - COACHING → treat like PASS (compliant; coaching is a low-severity
+    #                pass with reviewer notes captured on the verdict row).
+    # The verdict_history row preserves the original action so reporting
+    # tooling can distinguish a clean PASS from a COACHING PASS later.
+    if verdict_action_norm == "BLOCK":
+        verdict_action_norm = "FAIL"
+    elif verdict_action_norm == "COACHING":
+        verdict_action_norm = "PASS"
     if verdict_action_norm in ("FAIL", "REVIEW"):
         try:
             from app.rejections_routes import auto_create_rejection_for_verdict

@@ -691,9 +691,17 @@ def build_tracker_rows(
         # all 14 calls instead of the 5 the AI actually marked compliant.
         # Aligns this tab with the /compliant audit page (Call.compliant
         # === true) so reviewers see the same population in both surfaces.
+        #
+        # 2026-05-24 — additionally require `review_status == 'reviewed'`
+        # so the same call never appears in BOTH the Awaiting-review and
+        # Compliant tabs at the same time (owner-reported double-count).
+        # The awaiting_review tab already filters on review_status NOT
+        # 'reviewed' (or NULL); making compliant the inverse keeps the
+        # two sets disjoint.
         q = db.query(Call).filter(
             Call.status == "completed",
             Call.compliant.is_(True),
+            Call.review_status == "reviewed",
         )
         sub = db.query(Rejection.call_id).filter(Rejection.call_id == Call.id).exists()
         q = q.filter(~sub)

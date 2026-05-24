@@ -268,7 +268,10 @@ export default function AgentsPage() {
                       padding: "12px 24px",
                       borderBottom: "1px solid var(--border-subtle)",
                       background: r.needs_escalation ? "var(--bg-elev2)" : "transparent",
-                      borderLeft: `2px solid ${r.needs_escalation ? "var(--emerald)" : "transparent"}`,
+                      // 2026-05-24 — was emerald-green for ESCALATE rows
+                      // (inverted from the red ESCALATE pill on the right).
+                      // Reviewers scanning by colour rail missed escalations.
+                      borderLeft: `2px solid ${r.needs_escalation ? "var(--red)" : "transparent"}`,
                       fontSize: 13,
                       cursor: "pointer",
                       textDecoration: "none",

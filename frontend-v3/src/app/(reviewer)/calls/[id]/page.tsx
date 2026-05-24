@@ -364,6 +364,28 @@ export default function CallDetailPage({
     enabled: !!id,
     staleTime: 30_000,
   });
+
+  // 2026-05-24 audit — `EditMetadataDialog` was rendered with `deal={null}`
+  // so every supplier / MPAN / value / live-date / term / docusign edit
+  // landed only on the Call row; the backend then silently no-op'd the
+  // deal-side fields. Fetch the deal here so the dialog receives the
+  // canonical values and the change-only payload picks up real diffs.
+  const dealId: string | null = (detail.data as { deal_id?: string | null } | undefined)?.deal_id ?? null;
+  type _DealSeed = {
+    customer_name?: string | null;
+    supplier?: string | null;
+    mpan_or_mprn?: string | null;
+    expected_live_date?: string | null;
+    deal_value_gbp?: number | null;
+    term_months?: number | null;
+    notes?: string | null;
+  };
+  const dealQuery = useQuery({
+    queryKey: ["deal", dealId ?? "none"] as const,
+    queryFn: () => apiFetch<_DealSeed>(`/api/deals/${encodeURIComponent(dealId ?? "")}`),
+    enabled: !!dealId,
+    staleTime: 30_000,
+  });
   // Plan §5b: top-row pill filter restored (Pass / Partial / Non-Compliant)
   // with counts. Click a chip → narrow the checkpoint list to that status.
   const [cpFilter, setCpFilter] = useState<"all" | "passed" | "partial" | "fail" | "na">("all");
@@ -1905,7 +1927,7 @@ export default function CallDetailPage({
       {c && (
         <EditMetadataDialog
           call={{ id: c.id, customer_name: c.customer_name, agent_name: c.agent_name }}
-          deal={null}
+          deal={dealQuery.data ?? null}
           open={editOpen}
           onClose={() => setEditOpen(false)}
         />

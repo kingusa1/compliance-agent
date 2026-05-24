@@ -602,6 +602,7 @@ def export_calls_csv(
     compliance_status: str | None = None,
     review_status: str | None = None,
     db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
 ):
     """Stream every call matching the filters as CSV.
 
@@ -667,7 +668,12 @@ def export_calls_csv(
 
 
 @router.get("/api/calls", response_model=CallListResponse)
-def list_calls(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
+def list_calls(
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+):
     # Summary query: skip large TEXT/JSONB columns (transcript, word_data,
     # checkpoint_results, draft_snapshot, etc.) so the response stays small
     # enough to finish inside Supabase's statement_timeout.
@@ -1096,7 +1102,10 @@ def update_transcription_settings(body: dict, _=Depends(_require_admin)):
 
 
 @router.get("/api/stats", response_model=StatsResponse)
-def get_stats(db: Session = Depends(get_db)):
+def get_stats(
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+):
     total = db.query(func.count(Call.id)).scalar()
     compliant = db.query(func.count(Call.id)).filter(Call.compliant == True).scalar()
     non_compliant = db.query(func.count(Call.id)).filter(Call.compliant == False).scalar()
@@ -1415,24 +1424,41 @@ def _sse(event: str, data: dict) -> str:
 @router.post("/api/calls/cleanup")
 def cleanup_stuck_calls(
     db: Session = Depends(get_db),
-    # 2026-05-14 audit fix: bulk status mutation; was anonymous.
-    user=Depends(current_reviewer),
+    # 2026-05-24 audit — was a silent bulk-fail with no audit trail.
+    # Now gated on `require_lead` (any reviewer could kill in-flight
+    # pipelines anonymously before) and writes a `record_audit` row
+    # listing the call IDs it touched so the action is forensically
+    # reconstructable.
+    user=Depends(require_lead),
 ):
     """Mark stuck pending_stream / pending / processing calls as failed."""
     stuck = db.query(Call).filter(Call.status.in_(["pending_stream", "pending", "processing"])).all()
-    count = 0
+    touched_ids: list[str] = []
     for call in stuck:
         call.status = "failed"
         call.reason = "Processing was interrupted — call was stuck in pending state"
-        count += 1
+        touched_ids.append(str(call.id))
+    if touched_ids:
+        record_audit(
+            db,
+            action="call.cleanup",
+            entity_type="call",
+            entity_id=None,
+            payload={"call_ids": touched_ids, "count": len(touched_ids)},
+            actor_id=user.get("id") if isinstance(user, dict) else None,
+        )
     db.commit()
-    return {"cleaned": count}
+    return {"cleaned": len(touched_ids), "call_ids": touched_ids}
 
 
 # --- Serve Call Audio File ---
 
 @router.get("/api/calls/{call_id}/audio-url")
-def get_audio_url(call_id: str, db: Session = Depends(get_db)):
+def get_audio_url(
+    call_id: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+):
     """Return a short-lived signed URL for the call's audio in Supabase Storage.
 
     Frontend should call this right before playback; URL TTL is 1 hour.
@@ -1445,7 +1471,11 @@ def get_audio_url(call_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/api/calls/{call_id}/audio")
-async def get_call_audio(call_id: str, db: Session = Depends(get_db)):
+async def get_call_audio(
+    call_id: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+):
     """Serve audio for a call — redirect to Supabase signed URL if the file
     lives in Storage, else fall back to the on-disk path for legacy calls."""
     call = db.query(Call).filter_by(id=call_id).first()
@@ -1487,7 +1517,11 @@ async def get_call_audio(call_id: str, db: Session = Depends(get_db)):
 # --- Single Call Detail (MUST be after /stream, /retry, and /audio to avoid path conflict) ---
 
 @router.get("/api/calls/{call_id}/words")
-def get_call_words(call_id: str, db: Session = Depends(get_db)):
+def get_call_words(
+    call_id: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+):
     """Return per-word timestamp and confidence data for transcript player.
 
     Deepgram emits a numeric ``speaker`` id (0, 1, ...) per word. The
@@ -1619,7 +1653,11 @@ _V1_TPI_FALLBACK_CHECKPOINTS = [
 
 
 @router.get("/api/calls/{call_id}/script-checkpoints")
-def get_call_script_checkpoints(call_id: str, db: Session = Depends(get_db)):
+def get_call_script_checkpoints(
+    call_id: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+):
     """Return the script's checkpoint definitions matched to this call so the
     UI can show Expected vs Actual ('what the agent should have said').
 
@@ -1765,7 +1803,11 @@ def _resolve_segment_rubric(seg, script_obj) -> dict:
 
 
 @router.get("/api/calls/{call_id}/segments")
-def get_call_segments(call_id: str, db: Session = Depends(get_db)):
+def get_call_segments(
+    call_id: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+):
     """Return the per-segment verdicts the new pipeline writes.
 
     One row per CallSegment, with the stage / score / bucket / breach counts,
@@ -3383,6 +3425,23 @@ def delete_call(
                             f"\U0001f5d1\ufe0f DELETE customer cleanup skipped: {e}"
                         )
 
+    # 2026-05-24 audit \u2014 was log-only. Hard-delete of compliance evidence
+    # (call + 9 child tables + cascading Deal/Customer cleanup) now writes
+    # one tamper-evident audit row inside the same transaction so a
+    # destroyed call leaves a forensic trace in the audit_log chain.
+    record_audit(
+        db,
+        action="call.delete",
+        entity_type="call",
+        entity_id=call_id,
+        payload={
+            "filename": filename,
+            "deal_id": str(deal_id) if deal_id else None,
+            "deal_deleted": deal_deleted,
+            "customer_deleted": customer_deleted,
+        },
+        actor_id=user.get("id") if isinstance(user, dict) else None,
+    )
     db.commit()
 
     # Best-effort remove the audio file on disk

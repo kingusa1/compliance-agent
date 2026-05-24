@@ -201,6 +201,23 @@ def patch_tracker_row(
 
     reviewer_id = str(user.get("id")) if isinstance(user, dict) else None
 
+    # 2026-05-24 audit — `supplier` and `sales_agent` are on the
+    # REJECTION_FIELDS whitelist, but the aggregator and every other
+    # surface (/deals, /customers, /deals/[id]) reads them from the
+    # linked CustomerDeal / Call rows. Without a dual-write the rejection
+    # PATCH stored the reviewer's correction on the rejection row only;
+    # every other page kept showing the stale supplier/agent forever.
+    # Map for the dual-write target column on each side.
+    _REJECTION_TO_CALL = {"sales_agent": "agent_name"}
+    _REJECTION_TO_DEAL = {"supplier": "supplier"}
+
+    # Resolve the linked Call once per request so we don't refetch per
+    # field. `rej.call_id` is the FK; missing on legacy rows is tolerated.
+    call_row = None
+    if rej.call_id:
+        from app.models import Call
+        call_row = db.query(Call).filter(Call.id == rej.call_id).first()
+
     for k, raw_v in body.items():
         v = _coerce_value(k, raw_v)
         if k in REJECTION_FIELDS:
@@ -217,6 +234,60 @@ def patch_tracker_row(
                 )
                 setattr(rej, k, v)
                 set_source(rej, k, "human")
+
+            # Dual-write to the linked Deal + Call for the two cross-row
+            # fields. Reviewer intent on "supplier=British Gas" is "this
+            # IS the supplier" — not "this is the supplier the auditor
+            # cited" — so every surface needs to reflect it.
+            deal_col = _REJECTION_TO_DEAL.get(k)
+            if deal_col and deal is not None:
+                old_deal = getattr(deal, deal_col, None)
+                if old_deal != v:
+                    _record_reviewer_edit(
+                        db,
+                        rejection_id=str(rej.id),
+                        call_id=None,
+                        field=f"deal.{deal_col}",
+                        old_value=old_deal,
+                        new_value=v,
+                        reviewer_id=reviewer_id,
+                    )
+                    setattr(deal, deal_col, v)
+                    if hasattr(deal, "field_sources"):
+                        fs = dict(deal.field_sources or {})
+                        fs[deal_col] = "reviewer_edit"
+                        deal.field_sources = fs
+
+            call_col = _REJECTION_TO_CALL.get(k)
+            if call_col and call_row is not None:
+                old_call = getattr(call_row, call_col, None)
+                if old_call != v:
+                    _record_reviewer_edit(
+                        db,
+                        rejection_id=str(rej.id),
+                        call_id=str(call_row.id),
+                        field=f"call.{call_col}",
+                        old_value=old_call,
+                        new_value=v,
+                        reviewer_id=reviewer_id,
+                    )
+                    setattr(call_row, call_col, v)
+            # supplier also propagates to Call.detected_supplier so the
+            # tracker aggregator's `rej.supplier or call.detected_supplier`
+            # display stays consistent on every refetch.
+            if k == "supplier" and call_row is not None:
+                old_det = getattr(call_row, "detected_supplier", None)
+                if old_det != v:
+                    _record_reviewer_edit(
+                        db,
+                        rejection_id=str(rej.id),
+                        call_id=str(call_row.id),
+                        field="call.detected_supplier",
+                        old_value=old_det,
+                        new_value=v,
+                        reviewer_id=reviewer_id,
+                    )
+                    call_row.detected_supplier = v
         elif k in DEAL_FIELDS and deal is not None:
             old = getattr(deal, k, None)
             if old != v:
