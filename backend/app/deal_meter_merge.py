@@ -96,15 +96,38 @@ _COPY_FIELDS_IF_SURVIVOR_NULL = (
 # Strings that LOOK populated but mean "the upstream didn't really know" —
 # treat the same as NULL when deciding whether to overwrite from a victim.
 # `customer_name` is the canonical case: the column is `NOT NULL`, so when
-# `detect_business_name` returns nothing, the writer stamps "Unknown" as a
-# placeholder. A merge where the survivor has "Unknown" and the victim has
-# a real name should prefer the real name. Includes both ASCII "?" and
-# the full-width Unicode "？" (U+FF1F) — UK broker XLSX exports out of
-# Asian-locale Excel installs sometimes carry the full-width form.
+# `detect_business_name` returns nothing, the writer stamps a placeholder.
+# A merge where the survivor has a placeholder and the victim has a real
+# name should prefer the real name. Includes both ASCII "?" and the
+# full-width Unicode "？" (U+FF1F) — UK broker XLSX exports out of Asian-
+# locale Excel installs sometimes carry the full-width form.
+#
+# CRITICAL — these MUST be a superset of `customers_routes._PLACEHOLDER_NAMES`
+# (and must catch the dynamic-suffix variants like `(auto-detect pending
+# {hash})`) so a survivor that inherits a stub name doesn't get a real
+# victim name discarded. The customer page filters via _REAL_NAME_PREDICATE
+# in customers_routes.py; if a merged deal's customer_name passes our
+# check but FAILS the customer-page predicate, the deal vanishes from
+# /customers — which is exactly the 2026-05-25 user-reported bug.
 _PLACEHOLDER_VALUES = frozenset({
+    # Generic null-meaning strings.
     "", "unknown", "n/a", "na", "none", "null", "-", "tbd",
     "?", "？", "missing", "not provided", "pending",
+    # In-tree stub customer_names emitted by routes.py / intake paths.
+    # See routes.py:407 ("(auto-detect pending {hash})") +
+    # routes.py:577 ("(pending audio upload)") +
+    # customers_routes._PLACEHOLDER_NAMES.
+    "(pending audio upload)",
+    "(no customer)",
+    "untitled",
 })
+# Dynamic-prefix placeholders — when a customer_name STARTS with any of
+# these, treat it as a placeholder regardless of the suffix. The upload
+# route stamps the call_id slice on, e.g. `(auto-detect pending 4f3a905c)`,
+# so equality-checking against a fixed set will always miss.
+_PLACEHOLDER_PREFIXES = (
+    "(auto-detect pending",
+)
 
 
 def _is_placeholder(val) -> bool:
@@ -112,7 +135,14 @@ def _is_placeholder(val) -> bool:
     if val is None:
         return True
     if isinstance(val, str):
-        return val.strip().lower() in _PLACEHOLDER_VALUES
+        s = val.strip().lower()
+        if not s:
+            return True
+        if s in _PLACEHOLDER_VALUES:
+            return True
+        for prefix in _PLACEHOLDER_PREFIXES:
+            if s.startswith(prefix):
+                return True
     return False
 
 

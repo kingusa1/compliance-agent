@@ -35,6 +35,7 @@ from app.deal_meter_merge import (
     _canon_mpan,
     _canon_mprn,
     _find_meter_siblings,
+    _is_placeholder,
     _meter_keys_for_deal,
     consolidate_all_duplicate_deals,
     merge_deals_on_meter_match,
@@ -113,6 +114,53 @@ class TestCanonicalisers:
         mpan, mprn = _meter_keys_for_deal(deal)
         assert mpan == ""
         assert mprn == "5085812604"
+
+    @pytest.mark.parametrize(
+        "val,expected",
+        [
+            # Real customer names — must NOT be placeholders.
+            ("Jayashree Swaminathan", False),
+            ("BG Customer", False),
+            ("Awais Mustafa Ta Charles Palace", False),
+            # Null-ish.
+            (None, True),
+            ("", True),
+            ("   ", True),
+            # Common placeholders.
+            ("Unknown", True),
+            ("unknown", True),
+            ("UNKNOWN", True),
+            ("TBD", True),
+            ("?", True),
+            ("？", True),     # full-width question mark
+            ("not provided", True),
+            ("pending", True),
+            # ----- 2026-05-25 regression cases — bug found in prod ---------
+            # The customer-page filter rejected these but our merge code
+            # treated them as real names, so a survivor stub kept its
+            # placeholder name instead of inheriting the victim's real one,
+            # hiding the merged deal from /customers entirely.
+            ("(pending audio upload)", True),
+            ("(PENDING AUDIO UPLOAD)", True),
+            ("(no customer)", True),
+            ("Untitled", True),
+            # Dynamic-suffix variant that routes.py:407 stamps with the
+            # call_id slice — must match by PREFIX, not equality.
+            ("(auto-detect pending 4f3a905c)", True),
+            ("(auto-detect pending abc12345)", True),
+            ("(auto-detect pending)", True),
+        ],
+    )
+    def test_is_placeholder_matches_customer_page_filter(
+        self, val, expected
+    ) -> None:
+        """The 2026-05-25 bug: `customers_routes._REAL_NAME_PREDICATE`
+        rejects "(pending audio upload)" / "(auto-detect pending …)" /
+        "(no customer)" / "Untitled". Our merge code MUST treat the same
+        strings as placeholders so a survivor stub doesn't keep its
+        placeholder name and discard the victim's real customer_name —
+        which would hide the merged deal from /customers entirely."""
+        assert _is_placeholder(val) is expected
 
     def test_meter_keys_pull_from_legacy_combined_column(self) -> None:
         deal = CustomerDeal(
@@ -281,6 +329,71 @@ class TestMergeDealsOnMeterMatch:
         test_db.refresh(older)
         assert older.customer_name == "Real Customer Ltd"
         assert older.supplier == "British Gas"
+
+    def test_survivor_stub_inherits_real_name_2026_05_25_regression(
+        self, test_db
+    ) -> None:
+        """2026-05-25 regression: when the OLDEST deal in a cluster is a
+        stub created by the audio-upload route with customer_name
+        '(pending audio upload)' or '(auto-detect pending xxxxxxxx)',
+        the merge MUST inherit the victim's real customer name so the
+        deal stays visible on the /customers page.
+
+        Before this fix, the survivor kept its placeholder name, and
+        `customers_routes._REAL_NAME_PREDICATE` filtered the entire
+        deal out of the customer list — user-visible symptom was 'I
+        submitted a full case and nothing shows on the customer page'."""
+        t0 = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=3)
+        # Older stub from the initial Lead Gen upload — customer_name is
+        # the placeholder routes.py:577 writes.
+        older_stub = _make_deal(
+            test_db,
+            name="(pending audio upload)",
+            mprn="5085812604",
+            created_at=t0,
+        )
+        # Newer deal whose transcript yielded the real business name.
+        newer_real = _make_deal(
+            test_db,
+            name="Jayashree Swaminathan",
+            mprn="5085812604",
+        )
+        newer_call = _make_call(test_db, newer_real)
+
+        merge_deals_on_meter_match(newer_call, test_db)
+
+        test_db.refresh(older_stub)
+        # The survivor (older_stub) MUST now carry the real name so the
+        # customer page predicate stops filtering it out.
+        assert older_stub.customer_name == "Jayashree Swaminathan", (
+            f"survivor kept placeholder {older_stub.customer_name!r} — "
+            "deal will vanish from /customers"
+        )
+
+    def test_survivor_stub_auto_detect_prefix_inherits_real_name(
+        self, test_db
+    ) -> None:
+        """Same regression, but for the `(auto-detect pending {hash})`
+        variant that routes.py:407 stamps on the upload-time stub. The
+        hash suffix is dynamic, so we must match by PREFIX."""
+        t0 = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=2)
+        older_stub = _make_deal(
+            test_db,
+            name="(auto-detect pending 4f3a905c)",
+            mprn="5085812604",
+            created_at=t0,
+        )
+        newer_real = _make_deal(
+            test_db,
+            name="Awais Mustafa Trading As Shah's Palace",
+            mprn="5085812604",
+        )
+        newer_call = _make_call(test_db, newer_real)
+
+        merge_deals_on_meter_match(newer_call, test_db)
+
+        test_db.refresh(older_stub)
+        assert older_stub.customer_name == "Awais Mustafa Trading As Shah's Palace"
 
     def test_three_way_merge_in_one_invocation(self, test_db) -> None:
         """The user's actual case: three deals all sharing one MPRN. The
