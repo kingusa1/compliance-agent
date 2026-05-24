@@ -2436,6 +2436,61 @@ def admin_sweep_orphans(
     }
 
 
+@router.post("/api/admin/consolidate-duplicate-deals", status_code=200)
+def admin_consolidate_duplicate_deals(
+    dry_run: bool = False,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_lead),
+) -> dict:
+    """Backfill: fold every cluster of deals that shares a canonical MPAN
+    or MPRN into one survivor.
+
+    2026-05-24 — owner found three rejections in the tracker for the same
+    customer (Jayashree Swaminathan / E.ON Next / MPRN ``5085812604``) that
+    SHOULD have been one deal but were three. Root cause: at upload time
+    the L7 intake matcher can't see the MPAN/MPRN because they live in the
+    transcript, not the upload envelope; meter ids are only extracted later
+    at finalize. Until commit ``<this>``, finalize never re-tried the merge
+    once the meter id was known. ``app/pipeline.py:_step_finalize`` now
+    invokes ``merge_deals_on_meter_match`` automatically per-call — but
+    that doesn't retroactively heal pre-existing fragmentation. This
+    endpoint does that retroactive heal in one batch.
+
+    Idempotent — a second run after the first completes finds zero
+    clusters and is a no-op. Safe to call from a curl loop. Gated by
+    ``require_lead``.
+
+    ``dry_run=True`` returns the cluster map without re-pointing or
+    deleting anything — useful for confirming the surface area before
+    committing.
+    """
+    from app.deal_meter_merge import consolidate_all_duplicate_deals
+    summary = consolidate_all_duplicate_deals(db, dry_run=dry_run)
+    if not dry_run and summary.get("clusters_found"):
+        try:
+            record_audit(
+                db,
+                action="admin.consolidate_duplicate_deals",
+                entity_type="customer_deal",
+                entity_id=None,
+                payload={
+                    "deals_scanned": summary["deals_scanned"],
+                    "clusters_found": summary["clusters_found"],
+                    "merges": summary["merges"],
+                    "triggered_by": user.get("id") if isinstance(user, dict) else None,
+                },
+                actor_id=user.get("id") if isinstance(user, dict) else None,
+            )
+            db.commit()
+        except Exception as e:  # noqa: BLE001 — audit must never break the merge
+            log.warning(f"consolidate audit append failed: {e}")
+    log.info(
+        "CONSOLIDATE_DUPLICATE_DEALS dry_run=%s scanned=%d clusters=%d",
+        dry_run, summary.get("deals_scanned", 0), summary.get("clusters_found", 0),
+    )
+    return summary
+
+
 @router.post("/api/admin/ingest-phrase-packs", status_code=200)
 async def admin_ingest_phrase_packs(
     apply: bool = False,

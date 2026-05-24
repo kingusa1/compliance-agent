@@ -2399,6 +2399,27 @@ def _step_finalize(call_id: str, db: Session) -> dict:
     except Exception as e:
         log.error(f"L2_EXTRACTION_FAILED call_id={call_id} err={e!r}")
 
+    # 2026-05-24 — Post-extraction deal merge. The intake matcher can't see
+    # MPAN/MPRN at upload time (transcript doesn't exist yet) so it can't
+    # use them as hard keys, which means three calls for the same customer
+    # uploaded as audio files all get separate deals. AFTER meter extraction
+    # has populated deal.mpan_electricity / mprn_gas, this pass scans for
+    # any other deal with the same canonical meter id and folds them
+    # together. Re-points every Call on the duplicate to the older deal,
+    # copies any missing fields, and audit-logs the merge.
+    # NEVER raises — finalize must complete even if merge degrades.
+    try:
+        from app.deal_meter_merge import merge_deals_on_meter_match
+        outcome = merge_deals_on_meter_match(call, db)
+        if outcome.merged:
+            log.info(
+                f"\U0001f517 POST_EXTRACTION_MERGE call_id={call_id} "
+                f"survivor={outcome.survivor_id} absorbed={len(outcome.source_ids)} "
+                f"reason={outcome.reason!r}"
+            )
+    except Exception as e:  # noqa: BLE001 — merge is best-effort
+        log.warning(f"POST_EXTRACTION_MERGE_FAILED call_id={call_id} err={e!r}")
+
     db.commit()
     log.info(f"\U0001f4be SAVED call_id={call_id}")
     return {
