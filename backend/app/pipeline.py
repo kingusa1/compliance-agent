@@ -22,6 +22,7 @@ step's output from the DB rather than recomputing).
 import asyncio
 import json
 import os
+import re
 import tempfile
 import time
 from datetime import datetime
@@ -2505,43 +2506,117 @@ def _write_extraction_outputs(call: Call, db: Session) -> None:
     # ExtractedEntity rows but never propagate to CustomerDeal. Lift the
     # high-confidence (regex/LLM-confirmed) values across so the tracker
     # row populates without manual edits.
+    #
+    # 2026-05-24 — three fixes in this block:
+    #   1. The model column is `ExtractedEntity.key`, but the filter
+    #      below was reading `e.kind` — that attribute doesn't exist on
+    #      the SQLAlchemy row, so getattr returned None and EVERY row
+    #      was filtered out. Result: MPAN / MPRN / deal_value never
+    #      landed on the deal, and the tracker showed "—" forever.
+    #   2. The extractor writes deal value under `deal_value_gbp` (per
+    #      _LLM_KEYS in extraction/entities.py) — the filter only
+    #      checked legacy `deal_value` / `value_gbp` / `amount_gbp`.
+    #   3. The MPAN writer set only the legacy `mpan_or_mprn` column,
+    #      but tracker_aggregator._compose_mpan_mprn prefers the split
+    #      `mpan_electricity` / `mprn_gas` columns. We now stamp both
+    #      so legacy AND new readers stay in sync.
     try:
         from app.models import CustomerDeal as _DealEnt
         if call.deal_id and entities:
             deal_e = db.query(_DealEnt).filter_by(id=call.deal_id).first()
             if deal_e:
-                # Pick the highest-confidence MPAN or MPRN (either lights up
-                # the tracker's "MPAN/MPRN" column).
-                meter_ents = [
+                # Pick the highest-confidence MPAN.
+                mpan_ents = [
                     e for e in entities
-                    if getattr(e, "kind", None) in ("mpan", "mprn")
-                    and getattr(e, "value", None)
+                    if getattr(e, "key", None) == "mpan" and getattr(e, "value", None)
                 ]
-                if meter_ents and not deal_e.mpan_or_mprn:
-                    best = max(meter_ents, key=lambda e: getattr(e, "confidence", 0) or 0)
-                    if can_overwrite(deal_e, "mpan_or_mprn", "ai"):
+                if mpan_ents:
+                    best = max(mpan_ents, key=lambda e: float(getattr(e, "confidence", 0) or 0))
+                    if not getattr(deal_e, "mpan_electricity", None) and can_overwrite(deal_e, "mpan_electricity", "ai"):
+                        deal_e.mpan_electricity = best.value
+                        set_source(deal_e, "mpan_electricity", "ai")
+                    if not deal_e.mpan_or_mprn and can_overwrite(deal_e, "mpan_or_mprn", "ai"):
                         deal_e.mpan_or_mprn = best.value
                         set_source(deal_e, "mpan_or_mprn", "ai")
 
-                # Same for deal value when extractor surfaced a £ figure.
+                # Same for MPRN.
+                mprn_ents = [
+                    e for e in entities
+                    if getattr(e, "key", None) == "mprn" and getattr(e, "value", None)
+                ]
+                if mprn_ents:
+                    best = max(mprn_ents, key=lambda e: float(getattr(e, "confidence", 0) or 0))
+                    if not getattr(deal_e, "mprn_gas", None) and can_overwrite(deal_e, "mprn_gas", "ai"):
+                        deal_e.mprn_gas = best.value
+                        set_source(deal_e, "mprn_gas", "ai")
+                    if not deal_e.mpan_or_mprn and can_overwrite(deal_e, "mpan_or_mprn", "ai"):
+                        deal_e.mpan_or_mprn = best.value
+                        set_source(deal_e, "mpan_or_mprn", "ai")
+
+                # Deal value — accept the canonical key + legacy aliases
+                # so prior writes don't get stranded.
                 value_ents = [
                     e for e in entities
-                    if getattr(e, "kind", None) in ("deal_value", "value_gbp", "amount_gbp")
+                    if getattr(e, "key", None) in ("deal_value_gbp", "deal_value", "value_gbp", "amount_gbp", "annual_cost")
                     and getattr(e, "value", None)
                 ]
                 if value_ents and deal_e.deal_value_gbp is None:
-                    best = max(value_ents, key=lambda e: getattr(e, "confidence", 0) or 0)
-                    try:
-                        cleaned = (
-                            str(best.value).replace(",", "").replace("£", "").strip()
-                        )
-                        if cleaned:
-                            deal_e.deal_value_gbp = float(cleaned)
-                            set_source(deal_e, "deal_value_gbp", "ai")
-                    except (ValueError, TypeError):
-                        pass
+                    best = max(value_ents, key=lambda e: float(getattr(e, "confidence", 0) or 0))
+                    parsed = _parse_money_to_gbp(str(best.value))
+                    if parsed is not None:
+                        deal_e.deal_value_gbp = parsed
+                        set_source(deal_e, "deal_value_gbp", "ai")
     except Exception as e:
         log.warning(f"deal backfill skipped call_id={call.id}: {e}")
+
+
+# ── 2026-05-24 — informal money parser for deal_value backfill ──────────
+# Common transcript shapes the regex extractor in extraction/entities.py
+# misses because it requires a literal £:
+#   "67k", "67 k"          → 67_000
+#   "67 thousand"          → 67_000
+#   "200 k"                → 200_000
+#   "1.5 million"          → 1_500_000
+#   "£67,000.50"           → 67_000.50
+#   "67000" (bare)         → 67_000
+# Returns None when nothing parseable; never throws.
+_MONEY_K = re.compile(r"^\s*£?\s*([\d,]+(?:\.\d+)?)\s*[kK]\s*$")
+_MONEY_THOUSAND = re.compile(r"^\s*£?\s*([\d,]+(?:\.\d+)?)\s*(?:thousand|grand)\s*$", re.IGNORECASE)
+_MONEY_MILLION = re.compile(r"^\s*£?\s*([\d,]+(?:\.\d+)?)\s*(?:m|million|mil)\s*$", re.IGNORECASE)
+_MONEY_PLAIN = re.compile(r"^\s*£?\s*([\d,]+(?:\.\d+)?)\s*$")
+
+
+def _parse_money_to_gbp(raw: str | None) -> float | None:
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    m = _MONEY_K.match(s)
+    if m:
+        try:
+            return float(m.group(1).replace(",", "")) * 1000.0
+        except (TypeError, ValueError):
+            return None
+    m = _MONEY_THOUSAND.match(s)
+    if m:
+        try:
+            return float(m.group(1).replace(",", "")) * 1000.0
+        except (TypeError, ValueError):
+            return None
+    m = _MONEY_MILLION.match(s)
+    if m:
+        try:
+            return float(m.group(1).replace(",", "")) * 1_000_000.0
+        except (TypeError, ValueError):
+            return None
+    m = _MONEY_PLAIN.match(s)
+    if m:
+        try:
+            return float(m.group(1).replace(",", ""))
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 # ── Sprint A5: rejection auto-create helpers ────────────────────────────

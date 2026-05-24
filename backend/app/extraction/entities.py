@@ -24,10 +24,23 @@ log = logging.getLogger(__name__)
 
 # Phase-1 regex set. First match per key wins (we want one row per key).
 # Each pattern's first capture group is the value we persist.
+#
+# 2026-05-24 — `deal_value_gbp` previously required a literal "£" which
+# missed common transcript shapes:
+#   "67k" / "67 k"          (informal kilo)
+#   "200 thousand" / "200 grand"
+#   "1.5 million" / "1.5m"
+# The new pattern catches all of those + the legacy `£` form. The
+# `_money_to_gbp` helper in the writer (entities.py:_write_entities)
+# normalises the captured value to a numeric GBP figure.
 _REGEX_PATTERNS: dict[str, re.Pattern[str]] = {
     "mpan":           re.compile(r"(?:supply number|MPAN|meter point)[^0-9]{0,50}(\d{6,13})", re.IGNORECASE),
     "mprn":           re.compile(r"(?:gas|MPRN)[^0-9]{0,50}(\d{10})", re.IGNORECASE),
-    "deal_value_gbp": re.compile(r"£\s*([\d,]+(?:\.\d{2})?)"),
+    "deal_value_gbp": re.compile(
+        r"(£\s*[\d,]+(?:\.\d+)?(?:\s*[kKmM])?"               # £67,000 or £67k / £1.5m
+        r"|\b[\d,]+(?:\.\d+)?\s*(?:k|K|million|mil|thousand|grand)\b"  # 67k, 67 thousand, 1.5 million
+        r")"
+    ),
     "commission":     re.compile(r"(\d+(?:\.\d+)?)\s*%[^.]{0,40}commission", re.IGNORECASE),
 }
 
