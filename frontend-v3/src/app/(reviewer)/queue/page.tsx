@@ -21,6 +21,7 @@ import {
   Pause,
   Download,
   Inbox as InboxIcon,
+  Clock,
 } from "lucide-react";
 
 import {
@@ -293,6 +294,77 @@ function HeaderCell({ children }: { children: React.ReactNode }) {
   );
 }
 
+// 2026-05-24 preview-panel redesign helpers.
+const CALL_TYPE_LABEL: Record<string, string> = {
+  lead_gen: "Lead Gen",
+  pre_sales: "Pre-Sales",
+  verbal: "Verbal",
+  loa: "LOA",
+};
+const STAGE_TONE: Record<string, "emerald" | "blue" | "amber" | "violet"> = {
+  lead_gen: "emerald",
+  pre_sales: "blue",
+  verbal: "amber",
+  loa: "violet",
+};
+
+function parseScorePct(score: string | null | undefined): number | null {
+  if (!score) return null;
+  const slash = score.match(/^\s*(\d+)\s*\/\s*(\d+)\s*$/);
+  if (slash) {
+    const n = parseInt(slash[1], 10);
+    const d = parseInt(slash[2], 10);
+    if (d > 0) return Math.round((n / d) * 100);
+  }
+  const pct = score.match(/^\s*(\d+(?:\.\d+)?)\s*%\s*$/);
+  if (pct) return Math.round(parseFloat(pct[1]));
+  const flt = score.match(/^\s*(0\.\d+|1(?:\.0+)?)\s*$/);
+  if (flt) return Math.round(parseFloat(flt[1]) * 100);
+  return null;
+}
+function parseScoreBreakdown(score: string | null | undefined): string | null {
+  if (!score) return null;
+  const m = score.match(/^\s*(\d+)\s*\/\s*(\d+)\s*$/);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
+function KvCell({ label, value, dim = false }: { label: string; value: string; dim?: boolean }) {
+  return (
+    <div
+      style={{
+        background: "var(--bg-elev1)",
+        padding: "8px 20px",
+      }}
+    >
+      <div
+        style={{
+          fontSize: 10,
+          textTransform: "uppercase",
+          letterSpacing: "0.06em",
+          color: "var(--text-faint)",
+          marginBottom: 2,
+        }}
+      >
+        {label}
+      </div>
+      <div
+        title={value}
+        style={{
+          fontSize: 12.5,
+          color: dim ? "var(--text-muted)" : "var(--text-primary)",
+          fontStyle: dim ? "italic" : "normal",
+          fontWeight: dim ? 400 : 500,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
 function PreviewPanel({ row }: { row: QueueCall | null }) {
   const detail = useCallDetailQuery(row?.id ?? "");
   const wordsQuery = useCallWordsQuery(row?.id ?? "");
@@ -387,32 +459,127 @@ function PreviewPanel({ row }: { row: QueueCall | null }) {
     });
   })();
 
+  // 2026-05-24 redesign — surfaces every triage signal at the top so
+  // the reviewer can decide without leaving the panel. Hero is the
+  // customer (the entity being audited), not the supplier (already
+  // implicit in the deal). Filename is de-emphasised to a tooltip on
+  // the title; supplier moves to the subtitle alongside age + duration.
+  const customerName = (row.customer_name ?? "").trim();
+  const agentName = (row.agent_name ?? "").trim();
+  // Call types come from row.segments[] (one per pipeline segment).
+  // Render up to 3 stage pills next to status; if zero segments, show
+  // nothing rather than an empty placeholder so the row stays tight.
+  const segmentStages = (row.segments ?? [])
+    .map((s) => (s.stage || "").toLowerCase())
+    .filter(Boolean);
+  const stagesLabel = segmentStages
+    .map((s) => CALL_TYPE_LABEL[s] ?? s)
+    .join(" · ");
+  const scorePct = parseScorePct(row.score);
+  const scoreBreakdown = parseScoreBreakdown(row.score);
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-      {/* header */}
+      {/* ── hero header — customer + supplier · age · duration ─────── */}
       <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border-subtle)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-          <Pill tone="neutral" mono>
-            {row.filename}
-          </Pill>
-          {statusPill(row.review_status)}
+        <div
+          title={row.filename}
+          style={{
+            fontSize: 17,
+            fontWeight: 600,
+            letterSpacing: "-0.014em",
+            color: "var(--text-primary)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {customerName || row.supplier || row.filename}
         </div>
         <div
           style={{
-            fontSize: 18,
-            fontWeight: 600,
-            letterSpacing: "-0.014em",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
             marginTop: 4,
-            color: "var(--text-primary)",
+            fontSize: 12,
+            color: "var(--text-muted)",
           }}
         >
-          {row.supplier || "Unknown supplier"}
+          <span>{row.supplier ?? "supplier pending"}</span>
+          <span style={{ color: "var(--text-faint)" }}>·</span>
+          <Clock size={12} aria-hidden />
+          <span>{formatRelative(row.created_at)}</span>
+          {row.duration != null && (
+            <>
+              <span style={{ color: "var(--text-faint)" }}>·</span>
+              <span style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}>
+                {formatMmSs(row.duration)}
+              </span>
+            </>
+          )}
         </div>
-        <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>
-          {row.duration ? `${formatMmSs(row.duration)} · ` : ""}
-          {formatRelative(row.created_at)}
+        {/* triage pills — stage(s) / status / score */}
+        <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+          {segmentStages.slice(0, 3).map((s) => (
+            <Pill key={s} tone={STAGE_TONE[s] ?? "neutral"} mono>
+              {CALL_TYPE_LABEL[s] ?? s}
+            </Pill>
+          ))}
+          {statusPill(row.review_status)}
+          {scorePct != null && (
+            <Pill
+              tone={scorePct >= 80 ? "emerald" : scorePct >= 50 ? "amber" : "red"}
+              mono
+            >
+              {scorePct}%{scoreBreakdown ? ` · ${scoreBreakdown}` : ""}
+            </Pill>
+          )}
         </div>
       </div>
+
+      {/* ── Agent / Call-stages strip ─────────────────────────────── */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 1,
+          background: "var(--border-subtle)",
+          borderBottom: "1px solid var(--border-subtle)",
+        }}
+      >
+        <KvCell label="Agent" value={agentName || "—"} dim={!agentName} />
+        <KvCell
+          label={segmentStages.length > 1 ? "Segments" : "Call type"}
+          value={stagesLabel || "—"}
+          dim={!stagesLabel}
+        />
+      </div>
+
+      {/* ── AI verdict (when populated) ────────────────────────────── */}
+      {(detail.data?.reason || detail.data?.excerpt) && (
+        <div
+          style={{
+            padding: "12px 20px",
+            borderBottom: "1px solid var(--border-subtle)",
+            background: "var(--bg-elev1)",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 10.5,
+              textTransform: "uppercase",
+              letterSpacing: "0.06em",
+              color: "var(--text-faint)",
+              marginBottom: 4,
+            }}
+          >
+            AI verdict
+          </div>
+          <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--text-primary)" }}>
+            {detail.data?.reason ?? detail.data?.excerpt}
+          </div>
+        </div>
+      )}
 
       {/* mini waveform */}
       <div
