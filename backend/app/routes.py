@@ -2352,6 +2352,90 @@ def admin_backfill_compliant_strict(
     }
 
 
+@router.post("/api/admin/sweep-orphans", status_code=200)
+def admin_sweep_orphans(
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_lead),
+) -> dict[str, int]:
+    """One-shot sweep of orphan rows that surface after destructive ops.
+
+    2026-05-24 — owner deleted every call from the system and noticed
+    /tracker still listed 3 "Unknown" rows on the awaiting tab. Root
+    cause: ``rejections.call_id`` FK is ``ON DELETE SET NULL`` (not
+    CASCADE), and ``/api/deals/stub`` creates stub deals that never get
+    a call linked. After a destructive call cleanup the DB carries:
+
+    - ``rejections`` with ``call_id IS NULL`` (FK SET NULL leftovers)
+    - ``customer_deals`` with no calls referencing them (stub deals
+      whose multi-file upload session never produced audio)
+    - ``customers`` with no deals referencing them (the deal sweep can
+      orphan customers too)
+
+    Sweep order matters: rejections first (FK to deals), then deals
+    (FK to customers), then customers. Each pass returns the count for
+    the audit row.
+
+    Idempotent — re-running flips zero rows. Gated by ``require_lead``
+    so a reviewer can't bulk-delete reviewable records.
+    """
+    from app.models import CustomerDeal, Rejection, Customer, Call
+
+    # 1. Rejections with no parent call (FK on_delete=SET NULL leftovers).
+    rej_subq = db.query(Rejection.id).filter(Rejection.call_id.is_(None)).subquery()
+    rejections_deleted = (
+        db.query(Rejection)
+        .filter(Rejection.id.in_(rej_subq))
+        .delete(synchronize_session=False)
+    )
+
+    # 2. Deals with no calls referencing them — `/api/deals/stub`
+    # leftovers plus any deal whose calls were all deleted.
+    deal_with_calls_subq = (
+        db.query(Call.deal_id).filter(Call.deal_id.isnot(None)).subquery()
+    )
+    deals_deleted = (
+        db.query(CustomerDeal)
+        .filter(~CustomerDeal.id.in_(deal_with_calls_subq))
+        .delete(synchronize_session=False)
+    )
+
+    # 3. Customers with no deals referencing them.
+    deal_with_customer_subq = (
+        db.query(CustomerDeal.customer_id)
+        .filter(CustomerDeal.customer_id.isnot(None))
+        .subquery()
+    )
+    customers_deleted = (
+        db.query(Customer)
+        .filter(~Customer.id.in_(deal_with_customer_subq))
+        .delete(synchronize_session=False)
+    )
+
+    if rejections_deleted or deals_deleted or customers_deleted:
+        record_audit(
+            db,
+            action="admin.sweep_orphans",
+            entity_type="batch",
+            entity_id=None,
+            payload={
+                "rejections_deleted": rejections_deleted,
+                "deals_deleted": deals_deleted,
+                "customers_deleted": customers_deleted,
+            },
+            actor_id=user.get("id") if isinstance(user, dict) else None,
+        )
+    db.commit()
+    log.info(
+        "SWEEP_ORPHANS rejections=%d deals=%d customers=%d",
+        rejections_deleted, deals_deleted, customers_deleted,
+    )
+    return {
+        "rejections_deleted": rejections_deleted,
+        "deals_deleted": deals_deleted,
+        "customers_deleted": customers_deleted,
+    }
+
+
 @router.post("/api/admin/ingest-phrase-packs", status_code=200)
 async def admin_ingest_phrase_packs(
     apply: bool = False,
