@@ -23,8 +23,42 @@ from app.main import app
 def _clear_db_override():
     """Other test modules permanently override ``get_db`` to point at private
     in-memory SQLite engines. We need the real Postgres ``get_db`` so the
-    handler's session and our ``SessionLocal`` queries see the same audit_log."""
+    handler's session and our ``SessionLocal`` queries see the same audit_log.
+
+    2026-05-24 wiring audit C2/C3 — POST /api/calls/upload and
+    POST /api/deals/stub now require an authenticated reviewer. Install
+    a stub current_user/current_reviewer/require_lead override + seed a
+    test-admin Profile row so audit_log.actor_id's FK doesn't violate.
+    """
     app.dependency_overrides.pop(get_db, None)
+
+    from app.auth import current_user, require_lead
+    from app.reviewers import current_reviewer
+    from app.models import Profile
+
+    _stub_admin = {
+        "id": "test-admin",
+        "email": "test-admin@compliance-agent.local",
+        "name": "Test Admin",
+        "role": "admin",
+    }
+    app.dependency_overrides[current_user] = lambda: _stub_admin
+    app.dependency_overrides[current_reviewer] = lambda: _stub_admin
+    app.dependency_overrides[require_lead] = lambda: _stub_admin
+
+    db = SessionLocal()
+    try:
+        if not db.query(Profile).filter_by(id="test-admin").first():
+            db.add(Profile(
+                id="test-admin",
+                email="test-admin@compliance-agent.local",
+                name="Test Admin",
+                role="admin",
+                active=True,
+            ))
+            db.commit()
+    finally:
+        db.close()
     yield
 
 

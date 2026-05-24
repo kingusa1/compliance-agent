@@ -148,130 +148,18 @@ def _reset_dependency_overrides_after_test():
         pass
 
 
-def pytest_configure(config):
-    """Register the `no_auth_stub` marker so tests can opt out of the
-    autouse auth fixture below."""
-    config.addinivalue_line(
-        "markers",
-        "no_auth_stub: skip the autouse current_user/require_lead override "
-        "(use on tests that assert 401-without-auth or identity-specific behaviour)",
-    )
-
-
-# Test-name fragments that indicate a test is exercising auth behaviour and
-# must see the real dependency surface (no stub override).
-_AUTH_TEST_NAME_FRAGMENTS = (
-    "without_auth",
-    "requires_auth",
-    "no_auth",
-    "401",
-    "admin_only",
-    "non_admin",
-    "rejects_missing",
-    "rejects_inactive",
-    "rejects_reviewer",
-    "rejects_expired",
-    "rejects_wrong",
-    "rejects_non_bearer",
-    "by_other_reviewer",
-    "by_lead",
-    "by_admin",
-    "accepts_lead",
-    "accepts_admin",
-)
-
-
-@pytest.fixture(autouse=True)
-def _auto_authenticate_test_client(request):
-    """Auto-install reviewer/lead auth dependency overrides for every test
-    EXCEPT auth-behaviour tests + tests marked ``@pytest.mark.no_auth_stub``.
-
-    2026-05-24 wiring audit closed 10 anonymous routes by adding
-    ``Depends(current_reviewer)`` or ``Depends(require_lead)``. Most
-    test files hit those routes without bearer tokens; this fixture
-    stubs the deps so they authenticate as a synthetic admin.
-
-    Skipped when:
-    - The test carries ``@pytest.mark.no_auth_stub``
-    - The test name matches an auth-behaviour pattern (without_auth /
-      requires_auth / 401 / etc.) — those tests are asserting against
-      real auth + need the real dependency surface
-    - The test's own setup has already installed an override for
-      current_user (some tests like test_queue seed an identity-specific
-      stub that returns role="reviewer" for a named profile)
-    """
-    if request.node.get_closest_marker("no_auth_stub") is not None:
-        yield
-        return
-    name = request.node.name.lower()
-    if any(frag in name for frag in _AUTH_TEST_NAME_FRAGMENTS):
-        yield
-        return
-    # Tests that build real Supabase-signed JWTs via the `auth` helper
-    # rely on `mock_jwks` to verify them against the test ES256 key.
-    # When they're in the fixture chain, the test wants the REAL
-    # current_user flow (sub-claim → Profile lookup → identity-bound
-    # role). Skip the stub so the test's `headers=auth("sarah")` path
-    # actually exercises auth.py.
-    if "mock_jwks" in request.fixturenames or "auth" in request.fixturenames:
-        yield
-        return
-    try:
-        from app.main import app as _app
-        from app.auth import current_user, require_lead
-        # `app.reviewers.current_reviewer` is `from app.auth import current_user as current_reviewer`
-        # — same function object, but some import paths cache it
-        # separately. Override BOTH names so route decorators using
-        # `Depends(current_reviewer)` see the stub regardless of how
-        # they imported the symbol.
-        from app.reviewers import current_reviewer
-
-        # Respect any override the test (or its own fixtures) already
-        # installed before this fixture body ran.
-        if current_user in _app.dependency_overrides:
-            yield
-            return
-
-        _stub_admin = {
-            "id": "test-admin",
-            "email": "test-admin@compliance-agent.local",
-            "name": "Test Admin",
-            "role": "admin",
-        }
-        _app.dependency_overrides[current_user] = lambda: _stub_admin
-        _app.dependency_overrides[current_reviewer] = lambda: _stub_admin
-        _app.dependency_overrides[require_lead] = lambda: _stub_admin
-
-        # 2026-05-24 wiring audit C3 — POST /api/deals/stub now stamps
-        # the audit log with user["id"] (was a client-controlled
-        # x-user-id header). The audit_log.actor_id has an FK to
-        # profiles; the stub user "test-admin" must exist as a Profile
-        # row for the FK not to violate. Seed (idempotent) using the
-        # real engine the route handler will hit.
-        try:
-            from app.database import SessionLocal as _SL
-            from app.models import Profile as _Profile
-            _db = _SL()
-            try:
-                if not _db.query(_Profile).filter_by(id="test-admin").first():
-                    _db.add(_Profile(
-                        id="test-admin",
-                        email="test-admin@compliance-agent.local",
-                        name="Test Admin",
-                        role="admin",
-                        active=True,
-                    ))
-                    _db.commit()
-            finally:
-                _db.close()
-        except Exception:
-            # Tests that point get_db at their own in-memory engine
-            # will seed their own profiles; don't fail here when the
-            # real DB isn't reachable.
-            pass
-    except Exception:
-        pass
-    yield
+# 2026-05-24 wiring audit — the previous autouse `_auto_authenticate_test_client`
+# fixture (added in 8aa815b / d369c5d / 822a371) tried to be clever about which
+# tests to stub vs which to leave alone, by inspecting `request.fixturenames`
+# and the test name. On CI the heuristics were unreliable — `test_verdict.py`
+# tests that explicitly use the `auth` + `mock_jwks` fixtures still saw the
+# stub fire, blowing up identity assertions.
+#
+# Pivot: per-file install. The only tests that need the stub are the ones
+# hitting routes I gated in this wave WITHOUT using the existing `auth`
+# helper — currently `test_audit_coverage.py`, `test_deals_stub.py`, and
+# `test_upload_deal_linkage.py`. Each of those test files installs the
+# override in its own autouse fixture; this conftest stays out of the way.
 
 
 @pytest.fixture
