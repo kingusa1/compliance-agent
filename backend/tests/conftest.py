@@ -219,6 +219,12 @@ def _auto_authenticate_test_client(request):
     try:
         from app.main import app as _app
         from app.auth import current_user, require_lead
+        # `app.reviewers.current_reviewer` is `from app.auth import current_user as current_reviewer`
+        # — same function object, but some import paths cache it
+        # separately. Override BOTH names so route decorators using
+        # `Depends(current_reviewer)` see the stub regardless of how
+        # they imported the symbol.
+        from app.reviewers import current_reviewer
 
         # Respect any override the test (or its own fixtures) already
         # installed before this fixture body ran.
@@ -233,7 +239,36 @@ def _auto_authenticate_test_client(request):
             "role": "admin",
         }
         _app.dependency_overrides[current_user] = lambda: _stub_admin
+        _app.dependency_overrides[current_reviewer] = lambda: _stub_admin
         _app.dependency_overrides[require_lead] = lambda: _stub_admin
+
+        # 2026-05-24 wiring audit C3 — POST /api/deals/stub now stamps
+        # the audit log with user["id"] (was a client-controlled
+        # x-user-id header). The audit_log.actor_id has an FK to
+        # profiles; the stub user "test-admin" must exist as a Profile
+        # row for the FK not to violate. Seed (idempotent) using the
+        # real engine the route handler will hit.
+        try:
+            from app.database import SessionLocal as _SL
+            from app.models import Profile as _Profile
+            _db = _SL()
+            try:
+                if not _db.query(_Profile).filter_by(id="test-admin").first():
+                    _db.add(_Profile(
+                        id="test-admin",
+                        email="test-admin@compliance-agent.local",
+                        name="Test Admin",
+                        role="admin",
+                        active=True,
+                    ))
+                    _db.commit()
+            finally:
+                _db.close()
+        except Exception:
+            # Tests that point get_db at their own in-memory engine
+            # will seed their own profiles; don't fail here when the
+            # real DB isn't reachable.
+            pass
     except Exception:
         pass
     yield
