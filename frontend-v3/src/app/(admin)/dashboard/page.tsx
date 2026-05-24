@@ -33,6 +33,7 @@ import {
 
 import { apiFetch } from "@/lib/api";
 import { UploadModal } from "@/app/(admin)/calls/UploadModal";
+import { useRealtimeInvalidate } from "@/lib/hooks/useRealtimeInvalidate";
 import { fetchQueue } from "@/lib/queries/reviewer";
 import { IntelligencePanel } from "./IntelligencePanel";
 
@@ -160,6 +161,20 @@ export default function DashboardPage() {
   const router = useRouter();
   const isFreshInstall = (stats.data?.total_calls ?? 0) === 0;
   const backlog = queueBacklog.data?.metrics?.backlog ?? 0;
+
+  // 2026-05-24 wiring audit MEDIUM — fan-out realtime: stats KPIs +
+  // recent calls + queue backlog should refresh on call/rejection
+  // events so a reviewer landing on /dashboard during ingest sees
+  // the latest counts without window focus.
+  useRealtimeInvalidate("calls", [
+    ["dashboard:stats"],
+    ["dashboard:recent-calls"],
+    ["dashboard:queue-backlog"],
+  ]);
+  useRealtimeInvalidate("rejections", [
+    ["dashboard:stats"],
+    ["dashboard:queue-backlog"],
+  ]);
 
   const kpis: KPI[] = [
     {

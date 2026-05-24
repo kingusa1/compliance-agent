@@ -267,21 +267,10 @@ export default function ObservabilityPage() {
               {stuckRows.length > 3 ? ` (+${stuckRows.length - 3})` : ""}
             </div>
           </div>
-          <button
-            style={{
-              height: 28,
-              padding: "0 10px",
-              background: "var(--bg-elev2)",
-              border: "1px solid var(--border-subtle)",
-              color: "var(--text-primary)",
-              borderRadius: 6,
-              fontSize: 12,
-              cursor: "pointer",
-              fontFamily: "inherit",
-            }}
-          >
-            Cancel auto
-          </button>
+          {/* 2026-05-24 wiring audit HIGH — removed the "Cancel auto"
+              button. It had no onClick (auto-cancel is not implemented
+              backend-side) so it was a dead CTA. If we add a cancel
+              mutation later, reintroduce with a proper onClick. */}
           <button
             disabled={redispatch.isPending}
             data-testid="redispatch-now"

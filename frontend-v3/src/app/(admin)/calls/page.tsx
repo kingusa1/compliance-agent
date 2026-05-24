@@ -15,6 +15,7 @@ import { Search, Inbox } from "lucide-react";
 import { useAdminCallsQuery } from "@/lib/queries/admin";
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import { useUrlState } from "@/lib/hooks/useUrlState";
+import { useRealtimeInvalidate } from "@/lib/hooks/useRealtimeInvalidate";
 import { CallsList } from "./CallsList";
 import { EmptyState } from "@/components/design/EmptyState";
 
@@ -24,6 +25,11 @@ export default function CallsPage() {
   const debouncedSearch = useDebouncedValue(search, 300);
   const calls = useAdminCallsQuery({ limit: 200 });
   const rows = calls.data?.calls ?? [];
+
+  // 2026-05-24 wiring audit MEDIUM — mount realtime invalidation so
+  // new uploads + verdict updates push into the list without window
+  // focus; matches the pattern in queue / tracker / rejections.
+  useRealtimeInvalidate("calls", [["admin", "calls"]]);
 
   const filtered = useMemo(() => {
     const q = debouncedSearch.trim().toLowerCase();
