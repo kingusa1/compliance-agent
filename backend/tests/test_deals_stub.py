@@ -54,6 +54,11 @@ def _install_auth_stub():
     finally:
         db.close()
     yield
+    # Explicit teardown so the override doesn't leak into test files
+    # that follow alphabetically.
+    app.dependency_overrides.pop(current_user, None)
+    app.dependency_overrides.pop(current_reviewer, None)
+    app.dependency_overrides.pop(require_lead, None)
 
 
 def test_post_deals_stub_returns_uuid():

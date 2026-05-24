@@ -60,6 +60,13 @@ def _clear_db_override():
     finally:
         db.close()
     yield
+    # Explicit teardown — pop everything we installed so the override
+    # doesn't leak into test files that follow alphabetically (e.g.
+    # test_verdict.py's `without_auth_returns_401` test expects no
+    # current_user override).
+    app.dependency_overrides.pop(current_user, None)
+    app.dependency_overrides.pop(current_reviewer, None)
+    app.dependency_overrides.pop(require_lead, None)
 
 
 @pytest.fixture

@@ -62,7 +62,27 @@ def clean_db():
     app.dependency_overrides[get_db] = _override_get_db
     Base.metadata.drop_all(_engine)
     Base.metadata.create_all(_engine)
+
+    # 2026-05-24 wiring audit C4 added Depends(current_reviewer) to
+    # POST /api/agent/chat. Stub it so the test client authenticates as
+    # admin (these tests assert success paths). Pop in teardown so the
+    # override doesn't leak into later files.
+    from app.auth import current_user, require_lead
+    from app.reviewers import current_reviewer
+
+    _stub_admin = {
+        "id": "test-admin",
+        "email": "test-admin@compliance-agent.local",
+        "name": "Test Admin",
+        "role": "admin",
+    }
+    app.dependency_overrides[current_user] = lambda: _stub_admin
+    app.dependency_overrides[current_reviewer] = lambda: _stub_admin
+    app.dependency_overrides[require_lead] = lambda: _stub_admin
     yield
+    app.dependency_overrides.pop(current_user, None)
+    app.dependency_overrides.pop(current_reviewer, None)
+    app.dependency_overrides.pop(require_lead, None)
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────

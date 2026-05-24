@@ -57,6 +57,11 @@ def _clear_db_override():
         db.close()
 
     yield
+    # Explicit teardown so the override doesn't leak into test files
+    # that follow alphabetically (test_verdict, test_workflows, etc.).
+    app.dependency_overrides.pop(current_user, None)
+    app.dependency_overrides.pop(current_reviewer, None)
+    app.dependency_overrides.pop(require_lead, None)
 
 
 @pytest.fixture(autouse=True)
