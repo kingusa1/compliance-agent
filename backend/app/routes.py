@@ -2099,13 +2099,24 @@ def admin_backfill_deal_entities(
     LLM cost — pure DB join.
     """
     from app.models import Call, CustomerDeal, ExtractedEntity
-    from app.pipeline import _parse_money_to_gbp
+    from app.pipeline import _parse_money_to_gbp, _is_clean_meter_id, _PIPELINE_PII_TOKEN_RE
     from app.field_sources import can_overwrite, set_source
 
     deals = db.query(CustomerDeal).all()
-    stamped = {"mpan": 0, "mprn": 0, "deal_value_gbp": 0, "scanned_deals": len(deals)}
+    stamped = {"mpan": 0, "mprn": 0, "deal_value_gbp": 0, "scanned_deals": len(deals), "pii_tokens_cleared": 0}
 
     for deal in deals:
+        # 2026-05-24 — clear any column currently holding a PII redaction
+        # token like `[numerical_pii_1]`. The bug fixed in fb70392 wrote
+        # one of these to `mpan_or_mprn` because the entity-writer didn't
+        # validate before persist. Sweep them out so the column re-fills
+        # from a clean entity on the next finalize.
+        for col in ("mpan_or_mprn", "mpan_electricity", "mprn_gas"):
+            cur = getattr(deal, col, None)
+            if isinstance(cur, str) and _PIPELINE_PII_TOKEN_RE.search(cur):
+                setattr(deal, col, None)
+                stamped["pii_tokens_cleared"] += 1
+
         # Gather every entity across this deal's calls.
         call_ids = [
             row[0]

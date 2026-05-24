@@ -59,13 +59,48 @@ _LLM_KEYS: tuple[str, ...] = (
 )
 
 
+# 2026-05-24 — Deepgram + AssemblyAI PII redaction replaces real MPAN /
+# MPRN digit runs with tokens like `[numerical_pii_1]` / `[PERSON_NAME]`
+# BEFORE the transcript reaches the extractor. The regex above happily
+# matches these tokens — the value `[numerical_pii_1]` is the only
+# "MPRN" the prod backfill found on the user's tracker. Filter them out.
+_PII_TOKEN_RE = re.compile(r"\[[a-zA-Z][a-zA-Z_]*(?:_\d+)?\]")
+
+
+def _is_real_digits(value: str, expected_lengths: tuple[int, ...]) -> bool:
+    """True only when `value` is a pure digit run of one of the expected
+    lengths. MPAN core = 13, MPRN = 6-10. Rejects PII tokens, partial
+    captures, and anything containing letters / punctuation.
+    """
+    if not value:
+        return False
+    if _PII_TOKEN_RE.search(value):
+        return False
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if not digits:
+        return False
+    return len(digits) in expected_lengths
+
+
 def _regex_pass(transcript: str) -> dict[str, str]:
     """Run the Phase-1 regex set; return {key: value} for the keys that hit."""
     found: dict[str, str] = {}
     for key, pat in _REGEX_PATTERNS.items():
         m = pat.search(transcript)
-        if m and m.group(1):
-            found[key] = m.group(1).strip()
+        if not m or not m.group(1):
+            continue
+        value = m.group(1).strip()
+        # 2026-05-24 — never persist a PII redaction token as the value;
+        # validate digit-only fields against their expected length so a
+        # near-miss capture (e.g. 6 digits where MPAN needs 13) doesn't
+        # leak through.
+        if _PII_TOKEN_RE.search(value):
+            continue
+        if key == "mpan" and not _is_real_digits(value, (13,)):
+            continue
+        if key == "mprn" and not _is_real_digits(value, (6, 7, 8, 9, 10)):
+            continue
+        found[key] = value
     return found
 
 

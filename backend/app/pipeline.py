@@ -2525,10 +2525,11 @@ def _write_extraction_outputs(call: Call, db: Session) -> None:
         if call.deal_id and entities:
             deal_e = db.query(_DealEnt).filter_by(id=call.deal_id).first()
             if deal_e:
-                # Pick the highest-confidence MPAN.
+                # Pick the highest-confidence MPAN. Reject PII tokens.
                 mpan_ents = [
                     e for e in entities
-                    if getattr(e, "key", None) == "mpan" and getattr(e, "value", None)
+                    if getattr(e, "key", None) == "mpan"
+                    and _is_clean_meter_id(getattr(e, "value", None), (13,))
                 ]
                 if mpan_ents:
                     best = max(mpan_ents, key=lambda e: float(getattr(e, "confidence", 0) or 0))
@@ -2542,7 +2543,8 @@ def _write_extraction_outputs(call: Call, db: Session) -> None:
                 # Same for MPRN.
                 mprn_ents = [
                     e for e in entities
-                    if getattr(e, "key", None) == "mprn" and getattr(e, "value", None)
+                    if getattr(e, "key", None) == "mprn"
+                    and _is_clean_meter_id(getattr(e, "value", None), (6, 7, 8, 9, 10))
                 ]
                 if mprn_ents:
                     best = max(mprn_ents, key=lambda e: float(getattr(e, "confidence", 0) or 0))
@@ -2554,11 +2556,13 @@ def _write_extraction_outputs(call: Call, db: Session) -> None:
                         set_source(deal_e, "mpan_or_mprn", "ai")
 
                 # Deal value — accept the canonical key + legacy aliases
-                # so prior writes don't get stranded.
+                # so prior writes don't get stranded. Reject PII tokens
+                # via _parse_money_to_gbp (returns None on garbage).
                 value_ents = [
                     e for e in entities
                     if getattr(e, "key", None) in ("deal_value_gbp", "deal_value", "value_gbp", "amount_gbp", "annual_cost")
                     and getattr(e, "value", None)
+                    and not _PIPELINE_PII_TOKEN_RE.search(str(getattr(e, "value", "")))
                 ]
                 if value_ents and deal_e.deal_value_gbp is None:
                     best = max(value_ents, key=lambda e: float(getattr(e, "confidence", 0) or 0))
@@ -2568,6 +2572,23 @@ def _write_extraction_outputs(call: Call, db: Session) -> None:
                         set_source(deal_e, "deal_value_gbp", "ai")
     except Exception as e:
         log.warning(f"deal backfill skipped call_id={call.id}: {e}")
+
+
+# ── 2026-05-24 — PII redaction tokens must never land in deal columns ───
+# Deepgram + AssemblyAI redact MPAN/MPRN digits to placeholders like
+# `[numerical_pii_1]` BEFORE the extractor sees them; the extractor's
+# regex happily matched these literal tokens until 2026-05-24's fix.
+# We add belt-and-suspenders here at the lifter so existing rows that
+# carry those tokens (from pre-fix extraction passes) don't leak into
+# the customer_deals columns where reviewers see them on the tracker.
+_PIPELINE_PII_TOKEN_RE = re.compile(r"\[[a-zA-Z][a-zA-Z_]*(?:_\d+)?\]")
+
+
+def _is_clean_meter_id(value: str | None, expected: tuple[int, ...]) -> bool:
+    if not value or _PIPELINE_PII_TOKEN_RE.search(value):
+        return False
+    digits = "".join(ch for ch in value if ch.isdigit())
+    return bool(digits) and len(digits) in expected
 
 
 # ── 2026-05-24 — informal money parser for deal_value backfill ──────────
