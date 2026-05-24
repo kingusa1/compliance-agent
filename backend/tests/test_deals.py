@@ -1,5 +1,45 @@
+import pytest
 from fastapi.testclient import TestClient
+from app.auth import current_user
+from app.database import SessionLocal
 from app.main import app
+from app.models import Profile
+from app.reviewers import current_reviewer, require_lead
+
+# 2026-05-24 — POST /api/deals now requires `require_lead`; GETs require
+# `current_reviewer`. Stub both + seed the test-lead Profile so the
+# record_audit chain extension doesn't FK-violate on actor_id.
+_STUB_LEAD = {
+    "id": "test-lead",
+    "email": "lead@compliance-agent.local",
+    "name": "Test Lead",
+    "role": "lead",
+}
+
+
+@pytest.fixture(autouse=True)
+def _stub_auth():
+    app.dependency_overrides[current_user] = lambda: _STUB_LEAD
+    app.dependency_overrides[current_reviewer] = lambda: _STUB_LEAD
+    app.dependency_overrides[require_lead] = lambda: _STUB_LEAD
+    db = SessionLocal()
+    try:
+        if not db.query(Profile).filter_by(id="test-lead").first():
+            db.add(Profile(
+                id="test-lead",
+                email="lead@compliance-agent.local",
+                name="Test Lead",
+                role="lead",
+                active=True,
+            ))
+            db.commit()
+    finally:
+        db.close()
+    yield
+    app.dependency_overrides.pop(current_user, None)
+    app.dependency_overrides.pop(current_reviewer, None)
+    app.dependency_overrides.pop(require_lead, None)
+
 
 client = TestClient(app)
 

@@ -34,6 +34,7 @@ Audit log
 """
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timedelta
 from app._clock import utcnow
@@ -796,7 +797,9 @@ def delete_rejection(
         rejection_id=r.id,
         actor_id=actor_id,
         action="deleted",
-        diff=snapshot,
+        from_status=r.status,
+        to_status=None,
+        notes=json.dumps(snapshot, default=str),
     ))
     record_audit(
         db,

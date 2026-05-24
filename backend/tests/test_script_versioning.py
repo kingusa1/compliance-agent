@@ -8,8 +8,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.auth import current_user
 from app.database import Base, get_db
 from app.models import Script, ScriptVersion
+from app.reviewers import current_reviewer, require_lead
 from app.script_routes import script_router
 
 # ---------------------------------------------------------------------------
@@ -37,6 +39,16 @@ def override_get_db():
 
 
 app.dependency_overrides[get_db] = override_get_db
+# 2026-05-24 — script_routes mutations now require_lead; GETs current_reviewer.
+_STUB_LEAD = {
+    "id": "test-lead",
+    "email": "lead@compliance-agent.local",
+    "name": "Test Lead",
+    "role": "lead",
+}
+app.dependency_overrides[current_user] = lambda: _STUB_LEAD
+app.dependency_overrides[current_reviewer] = lambda: _STUB_LEAD
+app.dependency_overrides[require_lead] = lambda: _STUB_LEAD
 client = TestClient(app)
 
 
