@@ -148,25 +148,83 @@ def _reset_dependency_overrides_after_test():
         pass
 
 
+def pytest_configure(config):
+    """Register the `no_auth_stub` marker so tests can opt out of the
+    autouse auth fixture below."""
+    config.addinivalue_line(
+        "markers",
+        "no_auth_stub: skip the autouse current_user/require_lead override "
+        "(use on tests that assert 401-without-auth or identity-specific behaviour)",
+    )
+
+
+# Test-name fragments that indicate a test is exercising auth behaviour and
+# must see the real dependency surface (no stub override).
+_AUTH_TEST_NAME_FRAGMENTS = (
+    "without_auth",
+    "requires_auth",
+    "no_auth",
+    "401",
+    "admin_only",
+    "non_admin",
+    "rejects_missing",
+    "rejects_inactive",
+    "rejects_reviewer",
+    "rejects_expired",
+    "rejects_wrong",
+    "rejects_non_bearer",
+    "by_other_reviewer",
+    "by_lead",
+    "by_admin",
+    "accepts_lead",
+    "accepts_admin",
+)
+
+
 @pytest.fixture(autouse=True)
-def _auto_authenticate_test_client():
-    """Auto-install reviewer/lead auth dependency overrides for every test.
+def _auto_authenticate_test_client(request):
+    """Auto-install reviewer/lead auth dependency overrides for every test
+    EXCEPT auth-behaviour tests + tests marked ``@pytest.mark.no_auth_stub``.
 
     2026-05-24 wiring audit closed 10 anonymous routes by adding
-    ``Depends(current_reviewer)`` or ``Depends(require_lead)``. The
-    existing test suite hit those routes without bearer tokens, which now
-    returns 401. Rather than retrofit each test file with explicit
-    overrides + a stub Profile, this autouse fixture stubs both deps to
-    return a synthetic admin so every TestClient request authenticates.
+    ``Depends(current_reviewer)`` or ``Depends(require_lead)``. Most
+    test files hit those routes without bearer tokens; this fixture
+    stubs the deps so they authenticate as a synthetic admin.
 
-    Tests that exercise the actual auth machinery (test_auth.py) call
-    ``app.dependency_overrides.clear()`` in their own setup before
-    asserting against the real ``current_user`` and ``require_lead``
-    behaviour. Cleared after each test by the sibling fixture above.
+    Skipped when:
+    - The test carries ``@pytest.mark.no_auth_stub``
+    - The test name matches an auth-behaviour pattern (without_auth /
+      requires_auth / 401 / etc.) — those tests are asserting against
+      real auth + need the real dependency surface
+    - The test's own setup has already installed an override for
+      current_user (some tests like test_queue seed an identity-specific
+      stub that returns role="reviewer" for a named profile)
     """
+    if request.node.get_closest_marker("no_auth_stub") is not None:
+        yield
+        return
+    name = request.node.name.lower()
+    if any(frag in name for frag in _AUTH_TEST_NAME_FRAGMENTS):
+        yield
+        return
+    # Tests that build real Supabase-signed JWTs via the `auth` helper
+    # rely on `mock_jwks` to verify them against the test ES256 key.
+    # When they're in the fixture chain, the test wants the REAL
+    # current_user flow (sub-claim → Profile lookup → identity-bound
+    # role). Skip the stub so the test's `headers=auth("sarah")` path
+    # actually exercises auth.py.
+    if "mock_jwks" in request.fixturenames or "auth" in request.fixturenames:
+        yield
+        return
     try:
         from app.main import app as _app
         from app.auth import current_user, require_lead
+
+        # Respect any override the test (or its own fixtures) already
+        # installed before this fixture body ran.
+        if current_user in _app.dependency_overrides:
+            yield
+            return
 
         _stub_admin = {
             "id": "test-admin",
@@ -177,8 +235,6 @@ def _auto_authenticate_test_client():
         _app.dependency_overrides[current_user] = lambda: _stub_admin
         _app.dependency_overrides[require_lead] = lambda: _stub_admin
     except Exception:
-        # If the import side-effects fail (e.g. on tests that mock app.main),
-        # silently skip — those tests own their own override stack.
         pass
     yield
 
