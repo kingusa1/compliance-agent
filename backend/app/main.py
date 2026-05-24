@@ -182,6 +182,46 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001
         app_log.warning(f"profile_cache: startup pre-load skipped: {type(e).__name__}: {e}")
 
+    # 2026-05-25 — One-shot self-heal on every startup. Two passes, both
+    # idempotent (second run finds zero work):
+    #   1. Consolidate any deals that share a canonical MPAN/MPRN — folds
+    #      duplicates onto the oldest survivor.
+    #   2. Promote a real customer_name from Call.customer_name onto any
+    #      deal still carrying a stub like "(pending audio upload)" or
+    #      "(auto-detect pending {hash})". Without this the deal stays
+    #      hidden from /customers because `_REAL_NAME_PREDICATE` filters
+    #      it out — the 2026-05-25 user-reported bug.
+    #
+    # Wrapped in its own try/except + Session so a heal failure NEVER
+    # blocks the app from accepting traffic — readyz still returns 200.
+    # Gated by AUTO_HEAL_ON_STARTUP env var (default ON) so prod can opt
+    # out without a redeploy if heal ever starts misbehaving.
+    if os.environ.get("AUTO_HEAL_ON_STARTUP", "true").strip().lower() not in ("false", "0", "no"):
+        try:
+            from app.deal_meter_merge import (
+                backfill_placeholder_customer_names,
+                consolidate_all_duplicate_deals,
+            )
+            _heal_db = SessionLocal()
+            try:
+                consolidated = consolidate_all_duplicate_deals(_heal_db, dry_run=False)
+                backfilled = backfill_placeholder_customer_names(_heal_db, dry_run=False)
+                _heal_db.commit()
+                app_log.info(
+                    "AUTO_HEAL_ON_STARTUP done | "
+                    "consolidate scanned=%d clusters=%d | "
+                    "name_promote scanned=%d candidates=%d promoted=%d",
+                    consolidated.get("deals_scanned", 0),
+                    consolidated.get("clusters_found", 0),
+                    backfilled.get("deals_scanned", 0),
+                    backfilled.get("deals_with_placeholder", 0),
+                    backfilled.get("promoted", 0),
+                )
+            finally:
+                _heal_db.close()
+        except Exception as e:  # noqa: BLE001 — heal must never break boot
+            app_log.warning(f"AUTO_HEAL_ON_STARTUP skipped/failed: {type(e).__name__}: {e}")
+
     # Start the idle-claim sweeper. Runs every 120s on its own Session, so it
     # doesn't compete with request-scoped sessions for connection-pool slots.
     idle_task = asyncio.create_task(_idle_release_loop())

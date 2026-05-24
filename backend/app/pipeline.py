@@ -2420,6 +2420,39 @@ def _step_finalize(call_id: str, db: Session) -> dict:
     except Exception as e:  # noqa: BLE001 — merge is best-effort
         log.warning(f"POST_EXTRACTION_MERGE_FAILED call_id={call_id} err={e!r}")
 
+    # 2026-05-25 — Per-call placeholder-name promotion. The merge above
+    # only acts when there's a sibling deal sharing a meter id. For the
+    # single-deal-with-stub-name case (e.g. user uploaded a "full case"
+    # for one customer; all calls landed on one deal but the deal's name
+    # is still "(pending audio upload)"), we also need to promote this
+    # call's customer_name onto the deal IF the call has a real name
+    # and the deal doesn't. Cheap idempotent check on every finalize.
+    try:
+        if call.deal_id and call.customer_name:
+            from app.deal_meter_merge import _is_placeholder
+            from app.models import CustomerDeal as _Deal
+            from app.models import Customer as _Cust
+            cur_deal = db.query(_Deal).filter_by(id=call.deal_id).first()
+            if (
+                cur_deal is not None
+                and _is_placeholder(cur_deal.customer_name)
+                and not _is_placeholder(call.customer_name)
+            ):
+                old = cur_deal.customer_name
+                cur_deal.customer_name = call.customer_name
+                # Lift onto Customer.legal_name when that is also a stub
+                # so the slug-keyed /customers query finds it.
+                if cur_deal.customer_id:
+                    cust = db.query(_Cust).filter_by(id=cur_deal.customer_id).first()
+                    if cust is not None and _is_placeholder(cust.legal_name):
+                        cust.legal_name = call.customer_name
+                log.info(
+                    f"✍️ NAME_PROMOTE call_id={call_id} "
+                    f"deal_id={cur_deal.id} {old!r} -> {call.customer_name!r}"
+                )
+    except Exception as e:  # noqa: BLE001 — promote is best-effort
+        log.warning(f"NAME_PROMOTE_FAILED call_id={call_id} err={e!r}")
+
     db.commit()
     log.info(f"\U0001f4be SAVED call_id={call_id}")
     return {

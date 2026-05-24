@@ -37,10 +37,11 @@ from app.deal_meter_merge import (
     _find_meter_siblings,
     _is_placeholder,
     _meter_keys_for_deal,
+    backfill_placeholder_customer_names,
     consolidate_all_duplicate_deals,
     merge_deals_on_meter_match,
 )
-from app.models import Call, CustomerDeal
+from app.models import Call, Customer, CustomerDeal
 
 
 @pytest.fixture
@@ -496,3 +497,151 @@ class TestConsolidateAllDuplicateDeals:
         consolidate_all_duplicate_deals(test_db, dry_run=False)
         test_db.refresh(lonely)
         assert lonely.mprn_gas == "9999999999"
+
+
+# ─── backfill_placeholder_customer_names ────────────────────────────────────
+
+
+class TestBackfillPlaceholderCustomerNames:
+    """The 2026-05-25 "single deal stuck on placeholder name" heal.
+
+    Covers the case where a deal is correctly coalesced (no duplicates)
+    but its `customer_name` is still a stub like `(pending audio upload)`
+    because the audio-upload route stamped it at intake and the later
+    detect_business_name only wrote `Call.customer_name`, never bubbling
+    up to the deal. The customer page hides such deals via
+    `_REAL_NAME_PREDICATE`. The backfill promotes the real name.
+    """
+
+    def test_promotes_real_name_from_calls(self, test_db) -> None:
+        d = _make_deal(test_db, name="(pending audio upload)")
+        c = _make_call(test_db, d)
+        c.customer_name = "Jayashree Swaminathan"
+        test_db.flush()
+
+        summary = backfill_placeholder_customer_names(test_db, dry_run=False)
+        assert summary["deals_with_placeholder"] == 1
+        assert summary["promoted"] == 1
+
+        test_db.refresh(d)
+        assert d.customer_name == "Jayashree Swaminathan"
+
+    def test_dynamic_prefix_stub_promoted(self, test_db) -> None:
+        d = _make_deal(test_db, name="(auto-detect pending 4f3a905c)")
+        c = _make_call(test_db, d)
+        c.customer_name = "Awais Mustafa Ta Charles Palace"
+        test_db.flush()
+
+        backfill_placeholder_customer_names(test_db, dry_run=False)
+        test_db.refresh(d)
+        assert d.customer_name == "Awais Mustafa Ta Charles Palace"
+
+    def test_dry_run_does_not_mutate(self, test_db) -> None:
+        d = _make_deal(test_db, name="(pending audio upload)")
+        c = _make_call(test_db, d)
+        c.customer_name = "Real Customer Ltd"
+        test_db.flush()
+
+        summary = backfill_placeholder_customer_names(test_db, dry_run=True)
+        assert summary["promoted"] == 0
+        assert len(summary["details"]) == 1
+        assert summary["details"][0]["new_name"] == "Real Customer Ltd"
+
+        test_db.refresh(d)
+        assert d.customer_name == "(pending audio upload)"
+
+    def test_leaves_real_named_deals_alone(self, test_db) -> None:
+        d = _make_deal(test_db, name="Already A Real Name Ltd")
+        c = _make_call(test_db, d)
+        c.customer_name = "Different Name"
+        test_db.flush()
+
+        summary = backfill_placeholder_customer_names(test_db, dry_run=False)
+        assert summary["deals_with_placeholder"] == 0
+        assert summary["promoted"] == 0
+        test_db.refresh(d)
+        assert d.customer_name == "Already A Real Name Ltd"
+
+    def test_skips_deal_with_no_real_name_on_calls(self, test_db) -> None:
+        d = _make_deal(test_db, name="(pending audio upload)")
+        c = _make_call(test_db, d)
+        c.customer_name = "Unknown"  # also a placeholder
+        test_db.flush()
+
+        summary = backfill_placeholder_customer_names(test_db, dry_run=False)
+        assert summary["promoted"] == 0
+        assert summary["skipped_no_real_name_on_calls"] == 1
+
+    def test_idempotent_second_run_is_noop(self, test_db) -> None:
+        d = _make_deal(test_db, name="(pending audio upload)")
+        c = _make_call(test_db, d)
+        c.customer_name = "ACME Ltd"
+        test_db.flush()
+
+        first = backfill_placeholder_customer_names(test_db, dry_run=False)
+        assert first["promoted"] == 1
+        second = backfill_placeholder_customer_names(test_db, dry_run=False)
+        assert second["promoted"] == 0
+        assert second["deals_with_placeholder"] == 0
+
+    def test_promotes_onto_customer_legal_name_when_also_stub(self, test_db) -> None:
+        cust = Customer(
+            id=uuid.uuid4(),
+            legal_name="(pending audio upload)",
+            slug="pending-audio-upload",
+        )
+        test_db.add(cust)
+        test_db.flush()
+        d = _make_deal(test_db, name="(pending audio upload)")
+        d.customer_id = cust.id
+        c = _make_call(test_db, d)
+        c.customer_name = "Watt Customer Ltd"
+        test_db.flush()
+
+        backfill_placeholder_customer_names(test_db, dry_run=False)
+        test_db.refresh(d)
+        test_db.refresh(cust)
+        assert d.customer_name == "Watt Customer Ltd"
+        assert cust.legal_name == "Watt Customer Ltd"
+
+    def test_does_not_touch_customer_legal_name_if_already_real(
+        self, test_db
+    ) -> None:
+        cust = Customer(
+            id=uuid.uuid4(),
+            legal_name="Real Customer Legal Name Plc",
+            slug="real-customer-legal-name-plc",
+        )
+        test_db.add(cust)
+        test_db.flush()
+        d = _make_deal(test_db, name="(pending audio upload)")
+        d.customer_id = cust.id
+        c = _make_call(test_db, d)
+        c.customer_name = "Trading As Brand"
+        test_db.flush()
+
+        backfill_placeholder_customer_names(test_db, dry_run=False)
+        test_db.refresh(cust)
+        # Customer keeps its existing real legal_name.
+        assert cust.legal_name == "Real Customer Legal Name Plc"
+
+    def test_falls_back_to_customer_legal_name_when_calls_have_no_real_name(
+        self, test_db
+    ) -> None:
+        cust = Customer(
+            id=uuid.uuid4(),
+            legal_name="Backup Customer Ltd",
+            slug="backup-customer-ltd",
+        )
+        test_db.add(cust)
+        test_db.flush()
+        d = _make_deal(test_db, name="(pending audio upload)")
+        d.customer_id = cust.id
+        c = _make_call(test_db, d)
+        c.customer_name = "Unknown"  # placeholder
+        test_db.flush()
+
+        backfill_placeholder_customer_names(test_db, dry_run=False)
+        test_db.refresh(d)
+        # Falls back to the Customer.legal_name when calls don't help.
+        assert d.customer_name == "Backup Customer Ltd"

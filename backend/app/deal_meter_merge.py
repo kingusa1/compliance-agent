@@ -494,6 +494,143 @@ def merge_deals_on_meter_match(call: Call, db: Session) -> MergeOutcome:
         return MergeOutcome(False, None, [], f"error: {type(e).__name__}")
 
 
+def backfill_placeholder_customer_names(
+    db: Session,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """Promote a real customer name onto deals whose `customer_name` is
+    still a placeholder.
+
+    Why this exists alongside `consolidate_all_duplicate_deals`:
+        The meter-merge consolidator only acts when ≥2 deals share a
+        canonical MPAN/MPRN. It does nothing for the single-deal case
+        where the deal is already correctly coalesced but its
+        `customer_name` is still e.g. `"(pending audio upload)"` because
+        the audio-upload route stamped that stub at intake and no later
+        write promoted the real name. The `/customers` page filters via
+        `_REAL_NAME_PREDICATE` which excludes those placeholders, so the
+        deal is invisible to the reviewer even though everything else
+        about it is correct.
+
+    What it does:
+        For each deal where `_is_placeholder(customer_name)` is True,
+        look at the deal's calls and pick the first non-placeholder
+        `Call.customer_name`. If found, promote it onto the deal (and
+        onto the linked Customer row's `legal_name` if THAT is also a
+        placeholder). The pipeline already writes `Call.customer_name`
+        via `detect_metadata` and `detect_business_name` — the data is
+        usually there; it just never bubbled up onto the deal.
+
+    Idempotent: a second run after the first finds zero deals to heal.
+
+    Transaction ownership: flushes only — caller commits. Same contract
+    as `consolidate_all_duplicate_deals`.
+
+    Returns a summary the caller (admin endpoint or lifespan startup)
+    can log + audit. When `dry_run=True`, lists what WOULD have been
+    promoted without mutating.
+    """
+    # Pull the candidate deals in one query. We can't push `_is_placeholder`
+    # into SQL because of the dynamic-prefix `(auto-detect pending ...)`
+    # check, so filter in Python.
+    cutoff_naive = (
+        datetime.now(timezone.utc) - timedelta(days=MERGE_LOOKBACK_DAYS)
+    ).replace(tzinfo=None)
+    deals = (
+        db.query(CustomerDeal)
+        .filter(CustomerDeal.created_at >= cutoff_naive)
+        .order_by(CustomerDeal.created_at.asc())
+        .all()
+    )
+
+    candidates = [d for d in deals if _is_placeholder(d.customer_name)]
+    summary: dict = {
+        "dry_run": dry_run,
+        "deals_scanned": len(deals),
+        "deals_with_placeholder": len(candidates),
+        "promoted": 0,
+        "skipped_no_real_name_on_calls": 0,
+        "details": [],
+    }
+    if not candidates:
+        return summary
+
+    # Pull all calls for the candidate deals in one query (bounded N+1).
+    # Order by Call.created_at so the "first real name" we pick later is the
+    # earliest one — deterministic across runs and reproducible in tests.
+    deal_ids = [d.id for d in candidates]
+    call_rows = (
+        db.query(Call.deal_id, Call.customer_name)
+        .filter(Call.deal_id.in_(deal_ids))
+        .filter(Call.customer_name.isnot(None))
+        .order_by(Call.created_at.asc().nullslast())
+        .all()
+    )
+    calls_by_deal: dict = {}
+    for deal_id, cname in call_rows:
+        calls_by_deal.setdefault(deal_id, []).append(cname)
+
+    # Best-effort Customer lookup so we can also lift the Customer.legal_name
+    # when the deal carries a customer_id pointing at a placeholder Customer.
+    from app.models import Customer
+    customer_ids = {d.customer_id for d in candidates if d.customer_id}
+    customer_map: dict = {}
+    if customer_ids:
+        for c in db.query(Customer).filter(Customer.id.in_(customer_ids)).all():
+            customer_map[c.id] = c
+
+    for d in candidates:
+        names = calls_by_deal.get(d.id, [])
+        # Pick the first non-placeholder name. Order is insertion order
+        # which matches Call.created_at because the parent query is bounded
+        # only by deal_id, but practical-enough: any real name is better
+        # than the stub.
+        real_name = next((n for n in names if not _is_placeholder(n)), None)
+        # Fallback: the linked Customer.legal_name if the calls didn't help.
+        if real_name is None and d.customer_id:
+            cust = customer_map.get(d.customer_id)
+            if cust and not _is_placeholder(cust.legal_name):
+                real_name = cust.legal_name
+        if real_name is None:
+            summary["skipped_no_real_name_on_calls"] += 1
+            continue
+
+        old_name = d.customer_name
+        entry = {
+            "deal_id": str(d.id),
+            "old_name": old_name,
+            "new_name": real_name,
+        }
+        summary["details"].append(entry)
+        if not dry_run:
+            d.customer_name = real_name
+            # Also lift onto the parent Customer row if THAT is a stub.
+            if d.customer_id:
+                cust = customer_map.get(d.customer_id)
+                if cust and _is_placeholder(cust.legal_name):
+                    cust.legal_name = real_name
+            try:
+                record_audit(
+                    db,
+                    action="deal.customer_name_promoted",
+                    entity_type="customer_deal",
+                    entity_id=str(d.id),
+                    payload={
+                        "old_name": old_name,
+                        "new_name": real_name,
+                        "trigger": "backfill_placeholder_customer_names",
+                    },
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("audit append failed during name promotion: %s", e)
+            summary["promoted"] += 1
+
+    if not dry_run:
+        db.flush()
+    return summary
+
+
 def consolidate_all_duplicate_deals(
     db: Session,
     *,

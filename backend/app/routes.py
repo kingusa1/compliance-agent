@@ -2498,6 +2498,62 @@ def admin_consolidate_duplicate_deals(
     return summary
 
 
+@router.post("/api/admin/backfill-placeholder-customer-names", status_code=200)
+def admin_backfill_placeholder_customer_names(
+    dry_run: bool = False,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_lead),
+) -> dict:
+    """Promote a real customer name onto every deal still carrying a
+    stub like ``(pending audio upload)`` / ``(auto-detect pending …)``.
+
+    2026-05-25 — user reported that a fully-merged single-deal case
+    still wasn't showing on /customers because the survivor kept the
+    audio-upload stub name. Per-call merge (commit ``acce043``) prevents
+    new fragmentation but doesn't heal a deal whose stub name was
+    locked in BEFORE that fix shipped — that's what this endpoint is for.
+
+    Idempotent. Safe to call from a cron loop. ``dry_run=true`` returns
+    the would-be promotions without writing.
+
+    Auto-runs once at app startup (see ``main.lifespan``) so the next
+    Railway deploy heals all existing prod data without a manual JWT
+    curl. Setting ``AUTO_HEAL_PLACEHOLDER_NAMES=false`` on Railway
+    disables the startup path; the endpoint remains available.
+    """
+    from app.deal_meter_merge import backfill_placeholder_customer_names
+    summary = backfill_placeholder_customer_names(db, dry_run=dry_run)
+    if not dry_run and summary.get("promoted"):
+        try:
+            record_audit(
+                db,
+                action="admin.backfill_placeholder_customer_names",
+                entity_type="customer_deal",
+                entity_id=None,
+                payload={
+                    "deals_scanned": summary["deals_scanned"],
+                    "promoted": summary["promoted"],
+                    "skipped_no_real_name_on_calls": summary["skipped_no_real_name_on_calls"],
+                    "triggered_by": user.get("id") if isinstance(user, dict) else None,
+                },
+                actor_id=user.get("id") if isinstance(user, dict) else None,
+            )
+            db.commit()
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"backfill audit append failed, rolling back: {e}")
+            db.rollback()
+            summary["audit_error"] = str(e)[:240]
+            summary["rolled_back"] = True
+    log.info(
+        "BACKFILL_PLACEHOLDER_NAMES dry_run=%s scanned=%d candidates=%d promoted=%d",
+        dry_run,
+        summary.get("deals_scanned", 0),
+        summary.get("deals_with_placeholder", 0),
+        summary.get("promoted", 0),
+    )
+    return summary
+
+
 @router.post("/api/admin/ingest-phrase-packs", status_code=200)
 async def admin_ingest_phrase_packs(
     apply: bool = False,
