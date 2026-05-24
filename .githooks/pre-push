@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# LAW_OF_SKILLS v2.1 — pre-push gate (the hard gate).
+#
+# Runs the full audit on the committed range about to be pushed. Blocks
+# the push on any of:
+#   - secrets in diff
+#   - identity mismatch (must be kingusa1 <IT@bbmgroup.io>)
+#   - auto-trigger fired but no Skill_Ledger row
+#   - alembic head misalignment (>1 head, or revision id > 32 chars)
+#   - doctrine drift (someone edited a LAW file without blessing)
+#
+# Override only via:
+#   python scripts/doctrine/audit.py pre-push --waive "<verbatim user quote>"
+# which stamps a waiver row into the ledger and reports WAIVED.
+#
+# NEVER use git push --no-verify — that's a LAW violation. The audit
+# is the only path to a verified push.
+set -eu
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+resolve_python() {
+  local candidate
+  for candidate in \
+    "${LAW_PYTHON:-}" \
+    "python" \
+    "python3" \
+    "${REPO_ROOT}/backend/venv/Scripts/python.exe" \
+    "${REPO_ROOT}/backend/venv/bin/python" \
+    "${REPO_ROOT}/venv/Scripts/python.exe" \
+    "${REPO_ROOT}/venv/bin/python"; do
+    [ -z "$candidate" ] && continue
+    if "$candidate" -c "import sys" >/dev/null 2>&1; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+PYTHON="$(resolve_python || true)"
+if [ -z "${PYTHON:-}" ]; then
+  echo "pre-push: no working Python found. Set LAW_PYTHON env var to override." >&2
+  exit 1
+fi
+
+# Resolve the upstream ref so the range covers the actual commits being pushed.
+SINCE="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo origin/main)"
+
+echo "pre-push: auditing range ${SINCE}..HEAD"
+
+# 1. Doctrine integrity — refuses if a LAW file changed without bless.
+#    Use `if ! ... ; then` so set -e doesn't abort before printing the
+#    recovery instructions.
+if ! "$PYTHON" "$REPO_ROOT/scripts/doctrine/integrity.py" verify; then
+  echo "" >&2
+  echo "pre-push: doctrine integrity FAIL — a doctrine file changed without bless." >&2
+  echo "Recover with:" >&2
+  echo "  $PYTHON scripts/doctrine/integrity.py bless --reason \"<verbatim user quote>\"" >&2
+  echo "  git add BRAIN/06_Operations/Doctrine_Integrity.md" >&2
+  echo "  git commit --amend --no-edit   # fold manifest into the doctrine edit commit" >&2
+  echo "  git push" >&2
+  exit 1
+fi
+
+# 2. The main audit.
+if ! "$PYTHON" "$REPO_ROOT/scripts/doctrine/audit.py" pre-push --since "$SINCE"; then
+  echo "" >&2
+  echo "pre-push: LAW_OF_SKILLS v2.1 audit BLOCKED this push." >&2
+  echo "" >&2
+  echo "Recover by:" >&2
+  echo "  1. Invoke the missing verifier(s) via Agent / Skill tool." >&2
+  echo "  2. Append a row to BRAIN/06_Operations/Skill_Ledger.md via" >&2
+  echo "       $PYTHON scripts/doctrine/ledger.py append --skill <name> --role verification --task-id <slug> --status success --evidence \"<ref>\"" >&2
+  echo "  3. Re-run: git push" >&2
+  echo "" >&2
+  echo "Or, if the user explicitly authorised skipping a step:" >&2
+  echo "  $PYTHON scripts/doctrine/audit.py pre-push --waive \"<verbatim user quote>\"" >&2
+  echo "  git push" >&2
+  exit 1
+fi

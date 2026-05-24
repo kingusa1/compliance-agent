@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# LAW_OF_SKILLS v2.1 — pre-commit gate.
+#
+# Blocks commits that leak secrets in staged diff. Warns on trigger-fired
+# files so the assistant remembers to invoke verifiers before push.
+#
+# Installed via scripts/doctrine/install-hooks.sh (sets core.hooksPath
+# to .githooks).
+set -eu
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Detect hooksPath tampering (security-reviewer M8). If a malicious
+# postinstall reset core.hooksPath, this hook still runs (because git
+# only invokes hooks at the configured path), but a manual git config
+# core.hooksPath /dev/null would silently disable us — so make the
+# value visible and refuse to proceed if it points elsewhere.
+HOOKSPATH="$(git config core.hooksPath 2>/dev/null || echo "")"
+if [ -n "$HOOKSPATH" ] && [ "$HOOKSPATH" != ".githooks" ]; then
+  echo "pre-commit: SECURITY — core.hooksPath is '$HOOKSPATH' (expected '.githooks')." >&2
+  echo "  Restore with: git config core.hooksPath .githooks" >&2
+  exit 1
+fi
+
+# Resolve a python interpreter that ACTUALLY runs Python (the Windows
+# 11 App Installer stub at WindowsApps\python.exe passes `command -v`
+# but exits with a "go install Python" message instead of executing).
+resolve_python() {
+  local candidate
+  for candidate in \
+    "${LAW_PYTHON:-}" \
+    "python" \
+    "python3" \
+    "${REPO_ROOT}/backend/venv/Scripts/python.exe" \
+    "${REPO_ROOT}/backend/venv/bin/python" \
+    "${REPO_ROOT}/venv/Scripts/python.exe" \
+    "${REPO_ROOT}/venv/bin/python"; do
+    [ -z "$candidate" ] && continue
+    # Probe with -c so the App Installer stub fails out.
+    if "$candidate" -c "import sys" >/dev/null 2>&1; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+PYTHON="$(resolve_python || true)"
+if [ -z "${PYTHON:-}" ]; then
+  echo "pre-commit: no working Python found. Set LAW_PYTHON env var to override." >&2
+  exit 1
+fi
+
+# Use `if ! ... ; then` so set -e doesn't abort before we print the
+# recovery instructions. This was a CRITICAL bug in v2.1 first-cut.
+if ! "$PYTHON" "$REPO_ROOT/scripts/doctrine/audit.py" pre-commit; then
+  echo "" >&2
+  echo "pre-commit: LAW_OF_SKILLS v2.1 audit BLOCKED this commit." >&2
+  echo "Fix the FAIL items above OR re-run with:" >&2
+  echo "  $PYTHON scripts/doctrine/audit.py pre-commit --waive \"<verbatim user quote>\"" >&2
+  exit 1
+fi

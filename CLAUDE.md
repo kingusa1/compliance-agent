@@ -1,8 +1,26 @@
 # Compliance Agent — Session Context
 
 > **🛑 BINDING DOCTRINE — read before any tool call:**
-> - [BRAIN/00_LAW_OF_ENTERPRISE_GRADE.md](BRAIN/00_LAW_OF_ENTERPRISE_GRADE.md) — every fix must meet the 12-line enterprise-grade checklist (schema, tests, observability, realtime, errors, idempotency, backwards-compat, UX, performance, security, audit, docs). A patch that misses any line is not done.
-> - [BRAIN/00_LAW_OF_SKILLS.md](BRAIN/00_LAW_OF_SKILLS.md) — **v2 hard enforcement**: a skill is "fired" ONLY when the `Skill` or `Agent` tool was invoked by name in this session's transcript and the row is recorded in [BRAIN/06_Operations/Skill_Ledger.md](BRAIN/06_Operations/Skill_Ledger.md). Mentioning the skill in prose does NOT count. [BRAIN/06_Operations/Session_Self_Audit.md](BRAIN/06_Operations/Session_Self_Audit.md) runs before every "done" reply.
+> - [BRAIN/00_LAW_OF_ENTERPRISE_GRADE.md](BRAIN/00_LAW_OF_ENTERPRISE_GRADE.md) — every fix must meet the 12-line enterprise-grade checklist. A patch that misses any line is not done.
+> - [BRAIN/00_LAW_OF_SKILLS.md](BRAIN/00_LAW_OF_SKILLS.md) **v2.1 — executable enforcement**. A skill is "fired" ONLY when the `Skill` or `Agent` tool was invoked by name AND a row exists in `BRAIN/06_Operations/Skill_Ledger.md`. The pre-push git hook calls `scripts/doctrine/audit.py pre-push`; a push that fails the audit is rejected by git itself. Override: `python scripts/doctrine/audit.py pre-push --waive "<verbatim user quote>"`.
+
+## Session-start bootstrap (run once per session)
+
+Before the first state-mutating tool call, do these in order:
+
+```bash
+# 1. Verify the doctrine wasn't tampered with
+python scripts/doctrine/integrity.py verify
+
+# 2. Check the retroactive review queue — clear blocking items FIRST
+type BRAIN\06_Operations\Retroactive_Review_Queue.md   # Windows
+cat  BRAIN/06_Operations/Retroactive_Review_Queue.md    # POSIX
+
+# 3. List any prior-session ledger rows still in Active (should be empty)
+python scripts/doctrine/ledger.py list-active
+```
+
+If integrity.py fails: the LAW changed without a `bless` row — stop and ask the user before continuing. If the retro queue has Active rows: clear them with `Agent({ subagent_type: "<missing verifier>", ... })` + a ledger row BEFORE starting new work.
 >
 > **Then session context:**
 > 1. [BRAIN/00_INDEX.md](BRAIN/00_INDEX.md) — vault map + "Read FIRST" pointer
@@ -85,9 +103,41 @@ When >1 skill is listed for a task, batch them in **one** tool-call block. Agent
 
 ### Ledger and audit are mandatory
 
-After every `Skill` / `Agent` tool call returns, append one row to `BRAIN/06_Operations/Skill_Ledger.md` §Active session with timestamp, role (primary/parallel/verification/auto-trigger), task-id, status, and evidence-ref (commit sha / file:line / agent summary).
+After every `Skill` / `Agent` tool call returns, append one row to `BRAIN/06_Operations/Skill_Ledger.md` §Active session. Single-line form works in bash / Git Bash / PowerShell / cmd:
 
-Before any final "done" reply, run `BRAIN/06_Operations/Session_Self_Audit.md` and paste the verdict line. No "done" without a `PASS` (or explicit `WAIVED` with the user's verbatim quote).
+```
+python scripts/doctrine/ledger.py append --skill <name> --role <primary|parallel|verification|auto-trigger> --task-id <slug> --status <success|error|skipped|waived> --evidence "<commit sha / file:line / agent summary id>"
+```
+
+Valid roles: `primary`, `parallel`, `verification`, `auto-trigger`, `waiver`. Valid statuses: `success`, `error`, `skipped`, `waived` (each may be followed by `: <one-line detail>`).
+
+Before any final "done" reply, run `BRAIN/06_Operations/Session_Self_Audit.md` AND `python scripts/doctrine/audit.py session-end --transcript <path> --since origin/main`. Paste the JSON verdict (or the rendered block) into the reply. No "done" without a `PASS` (or explicit `WAIVED` with the user's verbatim quote in `--waive`).
+
+### Pre-push gate is git-level (you can't skip it)
+
+`.githooks/pre-push` runs:
+1. `scripts/doctrine/integrity.py verify` — doctrine tamper detection
+2. `scripts/doctrine/audit.py pre-push` — trigger / ledger / secret / identity / alembic checks
+
+Install once per clone: `bash scripts/doctrine/install-hooks.sh`. After install, `git push` re-runs the full audit; a FAIL rejects the push.
+
+**Forbidden: `git push --no-verify`.** That flag bypasses the pre-push hook entirely and is treated as a LAW violation. If the assistant ever runs `--no-verify`, the next session opens with a `chore: retroactive review of <sha>` task that must clear before new work.
+
+To accept a doctrine edit and rebase the integrity manifest:
+```bash
+python scripts/doctrine/integrity.py bless --reason "<verbatim user quote or PR link>"
+git add BRAIN/06_Operations/Doctrine_Integrity.md
+```
+Then commit the doctrine edit + the manifest update in the same commit.
+
+### Session-end rotate (before writing the session log)
+
+```bash
+python scripts/doctrine/ledger.py rotate-active --slug <kebab-session-slug>
+python scripts/doctrine/metrics.py update
+```
+
+`rotate-active` moves the Active rows into History under today's session-slug heading. `metrics.py update` regenerates `BRAIN/06_Operations/Skill_Metrics.md` from the History.
 
 ## Domain-specific rules (this project)
 
