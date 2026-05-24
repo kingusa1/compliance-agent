@@ -46,6 +46,7 @@ Public API:
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from dataclasses import dataclass
@@ -84,8 +85,11 @@ _COPY_FIELDS_IF_SURVIVOR_NULL = (
     "term_months",
     "docusign_reference",
     "external_watt_site_id",
-    "lifecycle_status",
-    "loa_status",
+    # `lifecycle_status` and `loa_status` are intentionally OMITTED —
+    # both are derived state owned by `derive_lifecycle_status` /
+    # `derive_loa_status` and hand-copying them across a merge could
+    # desync from the post-merge call set. They get re-derived on the
+    # next call lifecycle update.
     "loa_document_url",
 )
 
@@ -94,9 +98,12 @@ _COPY_FIELDS_IF_SURVIVOR_NULL = (
 # `customer_name` is the canonical case: the column is `NOT NULL`, so when
 # `detect_business_name` returns nothing, the writer stamps "Unknown" as a
 # placeholder. A merge where the survivor has "Unknown" and the victim has
-# a real name should prefer the real name.
+# a real name should prefer the real name. Includes both ASCII "?" and
+# the full-width Unicode "？" (U+FF1F) — UK broker XLSX exports out of
+# Asian-locale Excel installs sometimes carry the full-width form.
 _PLACEHOLDER_VALUES = frozenset({
-    "", "unknown", "n/a", "na", "none", "null", "-", "tbd", "?", "?", "missing",
+    "", "unknown", "n/a", "na", "none", "null", "-", "tbd",
+    "?", "？", "missing", "not provided", "pending",
 })
 
 
@@ -267,13 +274,11 @@ def _absorb(survivor: CustomerDeal, victim: CustomerDeal, db: Session) -> int:
     # Phase 4 — merge `meters` jsonb (Watt's multi-meter shape). Union by
     # serialised JSON form to dedup dual-fuel entries that already appear
     # on both sides.
-    import json as _json
-
     surv_meters_raw = list(survivor.meters or [])
     vict_meters_raw = list(victim.meters or [])
-    seen: set[str] = {_json.dumps(m, sort_keys=True) for m in surv_meters_raw}
+    seen: set[str] = {json.dumps(m, sort_keys=True) for m in surv_meters_raw}
     for m in vict_meters_raw:
-        key = _json.dumps(m, sort_keys=True)
+        key = json.dumps(m, sort_keys=True)
         if key not in seen:
             surv_meters_raw.append(m)
             seen.add(key)
@@ -303,6 +308,39 @@ def _absorb(survivor: CustomerDeal, victim: CustomerDeal, db: Session) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _naive_dt(dt) -> datetime:
+    """Normalise a possibly-tz-aware datetime to naive UTC for sort comparison.
+
+    `customer_deals.created_at` is declared as `DateTime` (no tz), but
+    historical inserts via paths that used `datetime.now(timezone.utc)`
+    can produce tz-aware rows. Python 3.11+ raises `TypeError` when you
+    sort mixed naive/aware datetimes — that would silently demote the
+    whole merge to a no-op via the outer try/except.
+    """
+    if dt is None:
+        return datetime.min
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _lock_survivor(db: Session, deal_id: uuid.UUID) -> Optional[CustomerDeal]:
+    """Re-fetch the survivor with SELECT FOR UPDATE so concurrent finalises
+    serialise on it. Falls back to a plain SELECT on SQLite (tests) which
+    has no row-level locking.
+
+    Postgres semantics: the second worker blocks here until the first
+    worker commits or rolls back. After acquiring the lock the second
+    worker re-validates — if the survivor row was deleted in the
+    meantime, returns None and the caller short-circuits.
+    """
+    is_pg = db.bind.dialect.name == "postgresql" if db.bind else False
+    q = db.query(CustomerDeal).filter(CustomerDeal.id == deal_id)
+    if is_pg:
+        q = q.with_for_update()
+    return q.first()
+
+
 def merge_deals_on_meter_match(call: Call, db: Session) -> MergeOutcome:
     """Coalesce `call`'s current deal with any other deal that shares its
     canonical MPAN/MPRN. Returns `MergeOutcome(merged=False, …)` when
@@ -314,6 +352,12 @@ def merge_deals_on_meter_match(call: Call, db: Session) -> MergeOutcome:
     call on a call without a deal_id (no-ops). Safe to call when no
     meter id has been extracted yet (no-ops). Never raises — internal
     errors are logged and converted to MergeOutcome(merged=False).
+
+    Concurrency: under Supavisor transaction-mode pooling two finalises
+    on the same MPAN can race. We mitigate by SELECT FOR UPDATE on the
+    survivor row before re-pointing — the loser blocks until the winner
+    commits, then re-reads and short-circuits when the victims are
+    already gone.
     """
     try:
         if not call.deal_id:
@@ -330,16 +374,46 @@ def merge_deals_on_meter_match(call: Call, db: Session) -> MergeOutcome:
 
         # Pick the OLDEST deal among (current, *siblings) as the survivor.
         all_candidates = [current] + siblings
-        all_candidates.sort(key=lambda d: d.created_at or datetime.min)
-        survivor = all_candidates[0]
-        victims = [d for d in all_candidates if d.id != survivor.id]
+        all_candidates.sort(key=lambda d: _naive_dt(d.created_at))
+        survivor_target = all_candidates[0]
+        victim_ids_planned = [d.id for d in all_candidates if d.id != survivor_target.id]
+
+        # Lock survivor for the duration of the merge — under Postgres this
+        # blocks any other concurrent finalise from re-electing the same
+        # survivor. SQLite (tests) silently no-ops the FOR UPDATE.
+        survivor = _lock_survivor(db, survivor_target.id)
+        if survivor is None:
+            # A concurrent merge already absorbed our survivor — short-circuit.
+            return MergeOutcome(False, None, [], "survivor disappeared under lock")
 
         absorbed_ids: list[uuid.UUID] = []
+        rejection_ids_moved: list[str] = []
+        cross_customer_warnings: list[str] = []
         total_calls_moved = 0
-        for v in victims:
+
+        for vid in victim_ids_planned:
+            v = db.query(CustomerDeal).filter_by(id=vid).first()
+            if v is None:
+                # A concurrent merge already absorbed this victim — skip
+                # silently. The loser of the race ends up doing less work.
+                continue
+            # HIGH-2 — Cross-customer orphan warning. We still merge (meter
+            # IDs are globally unique by physical meter), but log it so an
+            # operator can decide whether to also merge the customer rows
+            # via /api/admin/sweep-orphans.
+            if v.customer_id and survivor.customer_id and v.customer_id != survivor.customer_id:
+                cross_customer_warnings.append(
+                    f"victim {vid} customer_id {v.customer_id} != survivor customer_id {survivor.customer_id}"
+                )
+            # Track the rejection_id transfer for audit traceability.
+            if v.rejection_id is not None and survivor.rejection_id is None:
+                rejection_ids_moved.append(str(v.rejection_id))
             moved = _absorb(survivor, v, db)
             total_calls_moved += moved
-            absorbed_ids.append(v.id)
+            absorbed_ids.append(vid)
+
+        if not absorbed_ids:
+            return MergeOutcome(False, survivor.id, [], "all victims gone (concurrent merge)")
 
         meter_label = f"mpan={mpan}" if mpan else ""
         if mprn:
@@ -352,9 +426,12 @@ def merge_deals_on_meter_match(call: Call, db: Session) -> MergeOutcome:
             total_calls_moved,
             meter_label,
         )
+        for w in cross_customer_warnings:
+            log.warning("deal_meter_merge cross_customer_orphan_risk: %s", w)
 
         # Audit chain — one row per absorbed deal so reviewers can trace
-        # what folded into what.
+        # what folded into what. Includes rejection-id transfer + cross-
+        # customer warnings so an operator can reconstruct the merge.
         for vid in absorbed_ids:
             try:
                 record_audit(
@@ -368,6 +445,8 @@ def merge_deals_on_meter_match(call: Call, db: Session) -> MergeOutcome:
                         "meter_mprn": mprn or None,
                         "trigger": "post_extraction_meter_match",
                         "trigger_call_id": str(call.id),
+                        "transferred_rejection_ids": rejection_ids_moved or None,
+                        "cross_customer_warnings": cross_customer_warnings or None,
                     },
                     organization_id=str(call.organization_id) if call.organization_id else None,
                 )
@@ -400,6 +479,12 @@ def consolidate_all_duplicate_deals(
     Returns a structured summary the admin route can echo to the caller.
     When `dry_run` is True, walks the cluster graph without re-pointing or
     deleting anything; the summary lists what WOULD have merged.
+
+    Transaction ownership: this function flushes but does NOT commit. The
+    caller (admin route) commits AFTER appending its own audit row so the
+    merges and the audit live in a single transaction. Atomicity matters
+    here because a partial-failure window between merges-committed and
+    audit-uncommitted would leave a forensic gap.
     """
     cutoff_naive = (
         datetime.now(timezone.utc) - timedelta(days=MERGE_LOOKBACK_DAYS)
@@ -419,8 +504,8 @@ def consolidate_all_duplicate_deals(
     )
 
     # Build clusters keyed on canonical meter id. A deal that carries both
-    # an MPAN and an MPRN can land in two clusters; the survivor for one
-    # cluster becomes the survivor for the other in the second pass.
+    # an MPAN and an MPRN can land in two clusters; we collapse those so
+    # the same set of deals doesn't get processed twice.
     by_mpan: dict[str, list[CustomerDeal]] = {}
     by_mprn: dict[str, list[CustomerDeal]] = {}
     for d in deals:
@@ -430,16 +515,26 @@ def consolidate_all_duplicate_deals(
         if mprn:
             by_mprn.setdefault(mprn, []).append(d)
 
+    # Dedup by frozenset of deal IDs — handles the dual-fuel case where
+    # the same cluster of deals appears under both an mpan key and an
+    # mprn key. Identity comparison (`is`) on list objects would FAIL
+    # because by_mpan[k] and by_mprn[k] are distinct list instances even
+    # when they contain the same deals.
     clusters: list[tuple[str, list[CustomerDeal]]] = []
+    processed_id_sets: set[frozenset] = set()
     for key, members in by_mpan.items():
         if len(members) > 1:
+            id_set = frozenset(m.id for m in members)
+            if id_set in processed_id_sets:
+                continue
+            processed_id_sets.add(id_set)
             clusters.append((f"mpan={key}", members))
     for key, members in by_mprn.items():
         if len(members) > 1:
-            # Skip if every member is already in an mpan cluster — avoids
-            # double-processing dual-fuel deals.
-            if any(c[1] is members for c in clusters):
+            id_set = frozenset(m.id for m in members)
+            if id_set in processed_id_sets:
                 continue
+            processed_id_sets.add(id_set)
             clusters.append((f"mprn={key}", members))
 
     summary: dict = {
@@ -450,7 +545,7 @@ def consolidate_all_duplicate_deals(
     }
 
     for label, members in clusters:
-        members.sort(key=lambda d: d.created_at or datetime.min)
+        members.sort(key=lambda d: _naive_dt(d.created_at))
         survivor = members[0]
         victims = members[1:]
         merge_entry: dict = {
@@ -460,8 +555,16 @@ def consolidate_all_duplicate_deals(
             "calls_moved": 0,
         }
         if not dry_run:
+            transferred_rejections: list[str] = []
+            cross_customer_warnings: list[str] = []
             for v in victims:
                 try:
+                    if v.customer_id and survivor.customer_id and v.customer_id != survivor.customer_id:
+                        cross_customer_warnings.append(
+                            f"victim {v.id} customer_id {v.customer_id} != survivor {survivor.customer_id}"
+                        )
+                    if v.rejection_id is not None and survivor.rejection_id is None:
+                        transferred_rejections.append(str(v.rejection_id))
                     moved = _absorb(survivor, v, db)
                     merge_entry["calls_moved"] += moved
                 except Exception as e:  # noqa: BLE001
@@ -482,12 +585,18 @@ def consolidate_all_duplicate_deals(
                         "absorbed_deal_ids": merge_entry["victims"],
                         "meter": label,
                         "trigger": "consolidate_all_duplicate_deals",
+                        "transferred_rejection_ids": transferred_rejections or None,
+                        "cross_customer_warnings": cross_customer_warnings or None,
                     },
                 )
             except Exception as e:  # noqa: BLE001
                 log.warning("audit append failed during consolidate: %s", e)
+            for w in cross_customer_warnings:
+                log.warning("consolidate cross_customer_orphan_risk: %s", w)
         summary["merges"].append(merge_entry)
 
+    # Flush but DO NOT commit — caller owns the transaction boundary so its
+    # own audit row lives in the same transaction as the merges.
     if not dry_run:
-        db.commit()
+        db.flush()
     return summary

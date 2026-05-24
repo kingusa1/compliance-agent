@@ -2467,6 +2467,10 @@ def admin_consolidate_duplicate_deals(
     from app.deal_meter_merge import consolidate_all_duplicate_deals
     summary = consolidate_all_duplicate_deals(db, dry_run=dry_run)
     if not dry_run and summary.get("clusters_found"):
+        # consolidate_all_duplicate_deals flushed but did NOT commit so this
+        # route owns the single commit point. The admin-level audit row
+        # below lives in the SAME transaction as the merges; if record_audit
+        # raises, the rollback in the except branch reverts both.
         try:
             record_audit(
                 db,
@@ -2483,7 +2487,10 @@ def admin_consolidate_duplicate_deals(
             )
             db.commit()
         except Exception as e:  # noqa: BLE001 — audit must never break the merge
-            log.warning(f"consolidate audit append failed: {e}")
+            log.warning(f"consolidate audit append failed, rolling back merges: {e}")
+            db.rollback()
+            summary["audit_error"] = str(e)[:240]
+            summary["rolled_back"] = True
     log.info(
         "CONSOLIDATE_DUPLICATE_DEALS dry_run=%s scanned=%d clusters=%d",
         dry_run, summary.get("deals_scanned", 0), summary.get("clusters_found", 0),

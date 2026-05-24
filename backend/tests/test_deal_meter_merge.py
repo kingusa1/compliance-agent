@@ -375,10 +375,11 @@ class TestConsolidateAllDuplicateDeals:
         assert second["merges"] == []
 
     def test_leaves_unrelated_deals_alone(self, test_db) -> None:
-        a = _make_deal(test_db, mprn="5085812604")
-        b = _make_deal(test_db, mprn="5085812604")
+        # Cluster of two so the consolidator actually does work.
+        _make_deal(test_db, mprn="5085812604")
+        _make_deal(test_db, mprn="5085812604")
+        # Distinct meter — must survive the consolidation untouched.
         lonely = _make_deal(test_db, mprn="9999999999")
         consolidate_all_duplicate_deals(test_db, dry_run=False)
-        # The lonely deal must still exist with its meter intact.
         test_db.refresh(lonely)
         assert lonely.mprn_gas == "9999999999"
