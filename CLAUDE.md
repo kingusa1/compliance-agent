@@ -2,13 +2,37 @@
 
 > **🛑 BINDING DOCTRINE — read before any tool call:**
 > - [BRAIN/00_LAW_OF_ENTERPRISE_GRADE.md](BRAIN/00_LAW_OF_ENTERPRISE_GRADE.md) — every fix must meet the 12-line enterprise-grade checklist (schema, tests, observability, realtime, errors, idempotency, backwards-compat, UX, performance, security, audit, docs). A patch that misses any line is not done.
-> - [BRAIN/00_LAW_OF_SKILLS.md](BRAIN/00_LAW_OF_SKILLS.md) — skill-first execution; never code without selecting the right skill(s) from the catalogue.
+> - [BRAIN/00_LAW_OF_SKILLS.md](BRAIN/00_LAW_OF_SKILLS.md) — **v2 hard enforcement**: a skill is "fired" ONLY when the `Skill` or `Agent` tool was invoked by name in this session's transcript and the row is recorded in [BRAIN/06_Operations/Skill_Ledger.md](BRAIN/06_Operations/Skill_Ledger.md). Mentioning the skill in prose does NOT count. [BRAIN/06_Operations/Session_Self_Audit.md](BRAIN/06_Operations/Session_Self_Audit.md) runs before every "done" reply.
 >
 > **Then session context:**
 > 1. [BRAIN/00_INDEX.md](BRAIN/00_INDEX.md) — vault map + "Read FIRST" pointer
 > 2. [BRAIN/05_State/Live_State.md](BRAIN/05_State/Live_State.md) — current tip commit, deploy URLs, DB state
-> 3. [BRAIN/06_Operations/Skill_Routing.md](BRAIN/06_Operations/Skill_Routing.md) — task→skill matrix (this file's source of truth)
-> 4. [BRAIN/06_Operations/Available_Skills.md](BRAIN/06_Operations/Available_Skills.md) — full ~1500-skill roster
+> 3. [BRAIN/06_Operations/Skill_Routing.md](BRAIN/06_Operations/Skill_Routing.md) — task→skill matrix with paste-ready tool calls
+> 4. [BRAIN/06_Operations/Skill_Ledger.md](BRAIN/06_Operations/Skill_Ledger.md) — append-only invocation record
+> 5. [BRAIN/06_Operations/Session_Self_Audit.md](BRAIN/06_Operations/Session_Self_Audit.md) — end-of-session validation
+> 6. [BRAIN/06_Operations/Available_Skills.md](BRAIN/06_Operations/Available_Skills.md) — full ~2000-skill roster
+
+## Skill execution contract (LAW v2 — non-negotiable)
+
+The 2026-05-24 morning session shipped 3 commits and invoked **zero** verification skills. The session log claimed compliance because it *named* the skills in prose. That failure mode is closed:
+
+1. **Trio declaration first.** The first three TodoWrite entries on every code task MUST be the Skill Trio Declaration:
+   ```
+   1. Skill trio declared · Primary: <name> · Parallel: <names | "none"> · Verification: <names>
+   2. Invoke Primary <name> via Skill/Agent tool — proof in transcript
+   3. Invoke Verification <name(s)> via Skill/Agent tool — proof in transcript
+   ```
+   No state-mutating tool (Edit/Write/Bash that changes things) runs until those are typed.
+
+2. **Invocation = literal tool call.** A skill is fired ONLY by:
+   - `Skill({ skill: "X" })`
+   - `Agent({ subagent_type: "X", description: "...", prompt: "..." })`
+
+   Prose like "I'll run `python-reviewer`" is NOT firing. The audit greps the transcript and catches the gap.
+
+3. **Ledger every invocation.** Append one row to `BRAIN/06_Operations/Skill_Ledger.md` immediately after the tool returns. No backfilling.
+
+4. **Audit before "done".** Run `BRAIN/06_Operations/Session_Self_Audit.md` and paste the verdict (`PASS` / `FAIL · re-running` / `WAIVED`) into the final user-facing reply. A `FAIL` verdict means the task is incomplete.
 
 ## Project identity
 
@@ -19,37 +43,51 @@
 - **GitHub:** `kingusa1/compliance-agent` (must override the global `sheerazfame` identity when committing — use `-c user.name=kingusa1 -c user.email=IT@bbmgroup.io`)
 - **Vercel:** project `prj_eHIyIFyxusNdCd6mR9Ff469NrcKO` on team `team_fNQJtpp1M2P2dkcoWvQIziCr`; auto-deploy NOT wired, trigger via API.
 
-## Skill auto-routing (compact)
+## Skill auto-routing (compact — v2 with literal tool calls)
 
-Fire these without being asked when the task shape matches. Full matrix in `BRAIN/06_Operations/Skill_Routing.md`.
+Fire these without being asked when the task shape matches. Each row maps to a concrete tool call — naming the skill in prose is not firing. Full matrix in `BRAIN/06_Operations/Skill_Routing.md`.
 
-| Task shape | Fire | Verify with |
+| Task shape | Primary tool call | Verifier tool call |
 |---|---|---|
-| Plan-then-execute (multi-file) | `planner` Agent | `code-reviewer` post-edit |
-| Bug fix / regression | `debugger` Agent | `code-reviewer` + unit test |
-| Refactor / simplify | `simplify` skill or `code-simplifier` Agent | `code-reviewer` |
-| New TS/React code | direct edit | `senior-frontend` + `tsc --noEmit` |
-| New Python code | direct edit | `python-reviewer` + AST smoke |
-| New Go code | direct edit | `go-reviewer` + `go build` |
-| New Kotlin code | direct edit | `kotlin-reviewer` |
-| SQL / migration | direct edit | `database-reviewer` (BOTH pre- and post-write) |
-| Auth / secrets / SQL builder | direct edit | `security-reviewer` (BOTH pre- and post-write) |
-| Build broken | `build-error-resolver` Agent | re-run failing build |
-| Pre-push gate | `comprehensive-review-full-review` | — |
-| Multi-perspective review | 3-4× Agent **in a single tool-call block** | — |
-| E2E flow | `e2e-runner` Agent (Vercel Browser, Playwright fallback) | — |
-| BRAIN-worthy outcome | direct write to `BRAIN/`, always update `00_INDEX.md` | — |
+| Plan-then-execute (multi-file) | `Agent({ subagent_type: "planner" })` | `Agent({ subagent_type: "code-reviewer" })` |
+| Bug fix / regression | `Agent({ subagent_type: "debugger" })` | `Agent({ subagent_type: "code-reviewer" })` + unit test |
+| Refactor / simplify | `Skill({ skill: "simplify" })` or `Agent({ subagent_type: "code-simplifier" })` | `Agent({ subagent_type: "code-reviewer" })` |
+| New TS/React code | direct edit + `Skill({ skill: "react-best-practices" })` | `Agent({ subagent_type: "senior-frontend" })` + `tsc --noEmit` |
+| New Python code | direct edit + `Skill({ skill: "python-patterns" })` | `Agent({ subagent_type: "python-reviewer" })` + AST smoke |
+| New Go code | direct edit | `Agent({ subagent_type: "go-reviewer" })` + `go build` |
+| New Kotlin code | direct edit | `Agent({ subagent_type: "kotlin-reviewer" })` |
+| SQL / migration | direct edit + `Skill({ skill: "postgres-best-practices" })` | `Agent({ subagent_type: "database-reviewer" })` (BOTH pre- AND post-write) |
+| Auth / secrets / SQL builder | direct edit | `Agent({ subagent_type: "security-reviewer" })` (BOTH pre- AND post-write) |
+| Build broken | `Agent({ subagent_type: "build-error-resolver" })` | re-run failing build |
+| Multi-perspective review | 3-4× `Agent({ ... })` **in a single tool-call block** | — |
+| E2E flow | `Agent({ subagent_type: "e2e-runner" })` (Vercel Browser, Playwright fallback) | — |
+| BRAIN-worthy outcome | direct Write to `BRAIN/` + update `00_INDEX.md` | — |
 
-### Auto-trigger on code patterns (no slash needed)
+### Deterministic auto-trigger table (no decision required)
 
-- File imports `anthropic` / `@anthropic-ai/sdk` → `claude-api` skill
-- Prompt-caching / thinking / tool-use feature work → `prompt-caching` skill
-- Editing an Anthropic SDK app → `agent-sdk-dev:agent-sdk-verifier-*` after the change
+Match the trigger against `git diff --name-only` for this session. If the trigger fires and the corresponding tool call doesn't appear in the transcript, [Session_Self_Audit](BRAIN/06_Operations/Session_Self_Audit.md) fails the session.
+
+| Files / pattern touched | Mandatory tool call |
+|---|---|
+| File imports `anthropic` / `@anthropic-ai/sdk` | `Skill({ skill: "claude-api" })` |
+| Prompt-caching / thinking / tool-use feature work | `Skill({ skill: "prompt-caching" })` |
+| Editing an Anthropic SDK app | `Agent({ subagent_type: "agent-sdk-dev:agent-sdk-verifier-py" })` (or `-ts`) |
+| Any `backend/**/*.py` modified | `Agent({ subagent_type: "python-reviewer" })` after the change |
+| Any `frontend-v3/src/**/*.{ts,tsx}` modified (not `tests/e2e/`) | `Agent({ subagent_type: "code-reviewer" })` (and/or `senior-frontend`) |
+| `backend/alembic/versions/*.py` modified | `Agent({ subagent_type: "database-reviewer" })` |
+| `Depends(current_*)` or `_require_admin` added/removed | `Agent({ subagent_type: "security-reviewer" })` |
+| Tracker page touched | parallel `code-reviewer` + `python-reviewer` (single message) |
+| Post-deploy walk-through | Playwright MCP `browser_navigate` + `browser_snapshot` per page |
 
 ### Parallel execution rule
 
-When >1 skill is listed for a task, batch them in **one** tool-call block. Agents
-run in isolated context windows; serial chaining triples wall time for no benefit.
+When >1 skill is listed for a task, batch them in **one** tool-call block. Agents run in isolated context windows; serial chaining triples wall time for no benefit.
+
+### Ledger and audit are mandatory
+
+After every `Skill` / `Agent` tool call returns, append one row to `BRAIN/06_Operations/Skill_Ledger.md` §Active session with timestamp, role (primary/parallel/verification/auto-trigger), task-id, status, and evidence-ref (commit sha / file:line / agent summary).
+
+Before any final "done" reply, run `BRAIN/06_Operations/Session_Self_Audit.md` and paste the verdict line. No "done" without a `PASS` (or explicit `WAIVED` with the user's verbatim quote).
 
 ## Domain-specific rules (this project)
 
