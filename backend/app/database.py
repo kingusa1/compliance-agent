@@ -1,7 +1,6 @@
 import logging
 
 from sqlalchemy import create_engine, event
-from sqlalchemy.exc import DisconnectionError
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.config import settings
@@ -10,6 +9,8 @@ log = logging.getLogger("compliance.database")
 
 # Substrings that mean "the TCP/TLS pipe to Postgres is gone, this connection
 # can never recover". Matched against the lowered str() of the raised exception.
+# This is the SINGLE source of truth — main.py imports it from here so the
+# engine listener and the FastAPI handler can never drift out of sync.
 _DISCONNECT_SIGNATURES = (
     "ssl connection has been closed unexpectedly",
     "server closed the connection unexpectedly",
@@ -47,13 +48,25 @@ engine = create_engine(
 
 @event.listens_for(engine, "handle_error")
 def _handle_disconnect(ctx) -> None:
-    """Detect mid-query connection drops and recycle the dead connection.
+    """Detect mid-query connection drops and force pool invalidation.
 
     pool_pre_ping catches stale connections BEFORE a query runs. This handles
     the other case: the connection is killed WHILE the query is in flight
     (Supavisor restart, IPv6 RST, k8s pod recycle). Without this hook the
     same dead psycopg2 connection can be returned to the pool and reused on
     the next request, multiplying one network blip into dozens of failures.
+
+    CRITICAL — we set `ctx.is_disconnect = True` rather than raising
+    DisconnectionError. SQLAlchemy's dispatcher reads that flag in its
+    finally block and calls `pool._invalidate(...)`. If we raised, the
+    exception class reaching Starlette would be DisconnectionError (which
+    is NOT a DBAPIError subclass), the FastAPI handler in main.py would
+    never match, and Starlette would dump the 30-line traceback we set
+    out to suppress — defeating the whole point of the hook.
+
+    The signature list is also broader than the psycopg2 dialect's built-in
+    disconnect detection, so this listener catches edge-case wordings
+    (Supavisor variants) the dialect would miss.
     """
     orig = ctx.original_exception
     if orig is None:
@@ -65,10 +78,11 @@ def _handle_disconnect(ctx) -> None:
         "db_disconnect_detected",
         extra={"err_type": type(orig).__name__, "err": str(orig).strip()[:240]},
     )
-    # Re-raise as DisconnectionError so SQLAlchemy invalidates the connection
-    # AND the whole pool's "ping" generation, forcing the next checkout to
-    # open a brand-new TCP/TLS session instead of reusing the dead one.
-    raise DisconnectionError(str(orig)) from orig
+    # SQLAlchemy will: (a) invalidate the dead pool connection in the
+    # finally block, (b) wrap `orig` in the dialect's normal
+    # OperationalError, (c) let it propagate up to FastAPI where our
+    # main.py exception handler converts it to a 503 + one-line warning.
+    ctx.is_disconnect = True
 
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)

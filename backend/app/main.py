@@ -233,16 +233,10 @@ app = FastAPI(
 )
 
 
-# Substrings that indicate the underlying psycopg2 connection died mid-query.
-# Matched case-insensitively against str(exc) so wrapping in DBAPIError still hits.
-_DB_DISCONNECT_SIGNATURES = (
-    "ssl connection has been closed unexpectedly",
-    "server closed the connection unexpectedly",
-    "connection already closed",
-    "terminating connection due to administrator command",
-    "could not receive data from server",
-    "could not send data to server",
-)
+# Single source of truth lives on the engine (database.py) so the listener
+# and this handler can never drift apart. Re-exported under a clearer name
+# for callsites that only see the handler.
+from app.database import _DISCONNECT_SIGNATURES as _DB_DISCONNECT_SIGNATURES
 
 
 def _is_disconnect(exc: BaseException) -> bool:
@@ -278,7 +272,8 @@ async def _db_operational_error_handler(request: Request, exc: DBAPIError):
             headers={"Retry-After": "1"},
         )
     # Non-disconnect DB errors (constraint violations, syntax, deadlocks) keep
-    # full visibility — those are real bugs to investigate.
+    # full visibility — those are real bugs to investigate. FastAPI handlers
+    # short-circuit Sentry's middleware, so we explicitly capture here.
     app_log.error(
         "db_error path=%s method=%s err_type=%s err=%s",
         request.url.path,
@@ -286,6 +281,10 @@ async def _db_operational_error_handler(request: Request, exc: DBAPIError):
         type(exc).__name__,
         str(exc)[:500],
     )
+    try:
+        sentry_sdk.capture_exception(exc)
+    except Exception:  # noqa: BLE001 — Sentry must never break a request
+        pass
     return JSONResponse({"detail": "Database error"}, status_code=500)
 
 
