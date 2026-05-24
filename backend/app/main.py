@@ -4,7 +4,7 @@ import os
 from contextlib import asynccontextmanager
 
 import sentry_sdk
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -12,6 +12,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError, DisconnectionError, OperationalError
 
 import inngest.fast_api
 
@@ -230,6 +231,62 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+# Substrings that indicate the underlying psycopg2 connection died mid-query.
+# Matched case-insensitively against str(exc) so wrapping in DBAPIError still hits.
+_DB_DISCONNECT_SIGNATURES = (
+    "ssl connection has been closed unexpectedly",
+    "server closed the connection unexpectedly",
+    "connection already closed",
+    "terminating connection due to administrator command",
+    "could not receive data from server",
+    "could not send data to server",
+)
+
+
+def _is_disconnect(exc: BaseException) -> bool:
+    if isinstance(exc, DisconnectionError):
+        return True
+    msg = str(exc).lower()
+    return any(sig in msg for sig in _DB_DISCONNECT_SIGNATURES)
+
+
+@app.exception_handler(OperationalError)
+@app.exception_handler(DBAPIError)
+async def _db_operational_error_handler(request: Request, exc: DBAPIError):
+    """Convert in-flight DB connection drops into a single-line warning + 503.
+
+    Without this handler every disconnect dumps a 30-line traceback to stdout
+    via Starlette's default ServerErrorMiddleware. Under a small burst that
+    blows past Railway's 500-line/sec log ceiling and starts dropping ALL
+    logs (including unrelated ones). The handler also returns Retry-After so
+    well-behaved clients back off instead of hammering the just-recovered pool.
+    """
+    from app.logger import log as app_log
+
+    if _is_disconnect(exc):
+        app_log.warning(
+            "db_disconnect_request_failed path=%s method=%s err=%s",
+            request.url.path,
+            request.method,
+            type(exc.orig).__name__ if getattr(exc, "orig", None) else type(exc).__name__,
+        )
+        return JSONResponse(
+            {"detail": "Database connection was reset. Please retry."},
+            status_code=503,
+            headers={"Retry-After": "1"},
+        )
+    # Non-disconnect DB errors (constraint violations, syntax, deadlocks) keep
+    # full visibility — those are real bugs to investigate.
+    app_log.error(
+        "db_error path=%s method=%s err_type=%s err=%s",
+        request.url.path,
+        request.method,
+        type(exc).__name__,
+        str(exc)[:500],
+    )
+    return JSONResponse({"detail": "Database error"}, status_code=500)
 
 
 @app.get("/healthz", tags=["ops"])
