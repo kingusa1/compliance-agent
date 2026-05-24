@@ -175,7 +175,7 @@ async def test_classify_handles_code_fenced_json(monkeypatch):
         {"segment_type": "lead_gen", "start_word_idx": 0, "end_word_idx": 100, "confidence": 0.9, "reasoning": "ok"},
     ]) + "\n```"
 
-    async def _llm(prompt, timeout=60.0):
+    async def _llm(prompt, timeout=60.0, **kwargs):  # accept cheap= etc
         return body
 
     monkeypatch.setattr(content_classifier, "_call_llm", _llm)
@@ -186,7 +186,7 @@ async def test_classify_handles_code_fenced_json(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_classify_returns_empty_on_unparseable_response(monkeypatch):
-    async def _llm(prompt, timeout=60.0):
+    async def _llm(prompt, timeout=60.0, **kwargs):
         return "not json at all"
 
     monkeypatch.setattr(content_classifier, "_call_llm", _llm)
@@ -200,11 +200,11 @@ async def test_classify_returns_empty_on_unparseable_response(monkeypatch):
 
 
 def _llm_returning(payload):
-    async def _llm(prompt, timeout=60.0):
+    async def _llm(prompt, timeout=60.0, **kwargs):  # accept cheap= etc
         return json.dumps(payload)
 
     return _llm
 
 
-async def _never_called(prompt, timeout=60.0):
+async def _never_called(prompt, timeout=60.0, **kwargs):
     raise AssertionError("LLM should not have been called")

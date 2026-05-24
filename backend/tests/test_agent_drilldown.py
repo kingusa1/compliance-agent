@@ -51,10 +51,17 @@ def _override_get_db():
 
 def _make_app() -> FastAPI:
     from app.agents_routes import agents_router
+    from app.auth import current_user, require_lead
 
     app = FastAPI()
     app.include_router(agents_router)
     app.dependency_overrides[get_db] = _override_get_db
+    # 2026-05-24 wiring audit C5 added Depends(current_reviewer) / require_lead
+    # on /api/agents/* routes. Tests need stub auth so the TestClient
+    # requests authenticate without bearer-header plumbing.
+    _stub_admin = {"id": "test", "email": "t@test.local", "name": "T", "role": "admin"}
+    app.dependency_overrides[current_user] = lambda: _stub_admin
+    app.dependency_overrides[require_lead] = lambda: _stub_admin
     return app
 
 

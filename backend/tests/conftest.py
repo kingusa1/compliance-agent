@@ -148,6 +148,41 @@ def _reset_dependency_overrides_after_test():
         pass
 
 
+@pytest.fixture(autouse=True)
+def _auto_authenticate_test_client():
+    """Auto-install reviewer/lead auth dependency overrides for every test.
+
+    2026-05-24 wiring audit closed 10 anonymous routes by adding
+    ``Depends(current_reviewer)`` or ``Depends(require_lead)``. The
+    existing test suite hit those routes without bearer tokens, which now
+    returns 401. Rather than retrofit each test file with explicit
+    overrides + a stub Profile, this autouse fixture stubs both deps to
+    return a synthetic admin so every TestClient request authenticates.
+
+    Tests that exercise the actual auth machinery (test_auth.py) call
+    ``app.dependency_overrides.clear()`` in their own setup before
+    asserting against the real ``current_user`` and ``require_lead``
+    behaviour. Cleared after each test by the sibling fixture above.
+    """
+    try:
+        from app.main import app as _app
+        from app.auth import current_user, require_lead
+
+        _stub_admin = {
+            "id": "test-admin",
+            "email": "test-admin@compliance-agent.local",
+            "name": "Test Admin",
+            "role": "admin",
+        }
+        _app.dependency_overrides[current_user] = lambda: _stub_admin
+        _app.dependency_overrides[require_lead] = lambda: _stub_admin
+    except Exception:
+        # If the import side-effects fail (e.g. on tests that mock app.main),
+        # silently skip — those tests own their own override stack.
+        pass
+    yield
+
+
 @pytest.fixture
 def seed_profiles(test_db):
     """Seed 4 test profiles (3 reviewers + 1 lead). Call from tests that need identity.
