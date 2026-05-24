@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     deepgram_base_url: str = "https://api.eu.deepgram.com"
     # UK English locale for British/Scottish/Welsh accents — Nova-3 supports en-GB.
     deepgram_language: str = "en-GB"
+    # 2026-05-24 — owner explicitly opted into raw PII in stored
+    # transcripts so MPAN / MPRN / £ amounts survive for the entity
+    # extractor + the AI name detector. When False (default), Deepgram's
+    # `redact` option is empty + AAI's redact_pii flags are not set + the
+    # post-process UK National Insurance scrub is skipped. Set to True
+    # only if legal / customer policy ever requires re-redaction.
+    transcript_redact_pii: bool = False
     # ─── LLM provider keys + model defaults ──────────────────────────
     # Production runs Opus 4.7 via OpenRouter. Opus is the right tier
     # for compliance audit accuracy (27 rejection reasons, 8 standards,

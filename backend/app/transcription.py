@@ -22,10 +22,23 @@ _UK_NI_RE = re.compile(
 
 
 def redact_uk_ni(text: str) -> str:
-    """Replace any UK NI numbers in `text` with [REDACTED-NI]."""
+    """Replace any UK NI numbers in `text` with [REDACTED-NI].
+
+    2026-05-24 — owner explicitly opted into raw PII in transcripts so
+    MPAN/MPRN/value extraction works ("no legal issue, accuracy first").
+    Honour the `TRANSCRIPT_REDACT_PII` env flag (default OFF). When OFF,
+    return text unchanged so meter IDs and other digit runs survive.
+    """
     if not text:
         return text
+    if not getattr(settings, "transcript_redact_pii", False):
+        return text
     return _UK_NI_RE.sub("[REDACTED-NI]", text)
+
+
+def _redact_policy() -> list[str]:
+    """Deepgram `redact` option list. Empty when owner opted out (default)."""
+    return ["pci", "numbers", "ssn"] if getattr(settings, "transcript_redact_pii", False) else []
 
 
 def _get_deepgram_client() -> DeepgramClient:
@@ -170,10 +183,11 @@ async def transcribe_audio(file_path: str) -> str:
         # PII redaction at source — covers credit cards, generic ID numbers,
         # and SSN-shaped tokens. UK National Insurance numbers are not in
         # Deepgram's redaction set, so we strip them with redact_uk_ni below.
-        redact=["pci", "numbers", "ssn"],
+        redact=_redact_policy(),
     )
 
-    log.info("\U0001f399\ufe0f DEEPGRAM calling Nova-3 with diarization (en-GB, redaction on)...")
+    redact_on = bool(getattr(settings, "transcript_redact_pii", False))
+    log.info(f"\U0001f399\ufe0f DEEPGRAM Nova-3 (en-GB, redaction {'on' if redact_on else 'OFF \u2014 raw PII'})")
     response = await _call_deepgram(client, source, options)
     words = response.results.channels[0].alternatives[0].words
 
@@ -229,7 +243,7 @@ async def transcribe_audio_full(file_path: str) -> dict:
         language=settings.deepgram_language,
         # PII redaction at source. UK National Insurance numbers are added
         # via redact_uk_ni() post-process since Deepgram does not include NI.
-        redact=["pci", "numbers", "ssn"],
+        redact=_redact_policy(),
     )
 
     log.info("\U0001f399\ufe0f DEEPGRAM Nova-3 — diarize + sentiment + intents + topics + summary")

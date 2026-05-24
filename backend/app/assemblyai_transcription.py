@@ -130,11 +130,19 @@ async def transcribe_audio_assemblyai(file_path: str, supplier_hint: str | None 
             "sentiment_analysis": True,
             # L9 additions
             "keyterms_prompt": glossary,
-            "redact_pii": True,
-            "redact_pii_audio": False,
-            "redact_pii_policies": PII_POLICIES,
-            "redact_pii_sub": PII_REDACT_SUB,
         }
+        # 2026-05-24 — owner opted into raw PII in transcripts (no legal
+        # concern; need MPAN/MPRN/value digits intact for downstream
+        # extraction). Honour the same `TRANSCRIPT_REDACT_PII` flag the
+        # Deepgram path uses. When OFF (default), don't set redact_*
+        # keys at all so AAI returns the unredacted transcript.
+        if getattr(settings, "transcript_redact_pii", False):
+            submit_payload.update({
+                "redact_pii": True,
+                "redact_pii_audio": False,
+                "redact_pii_policies": PII_POLICIES,
+                "redact_pii_sub": PII_REDACT_SUB,
+            })
 
         # Webhook support: add delivery params when both env vars are set.
         # Falls back to polling-only when either is missing (e.g. local dev).
