@@ -21,7 +21,7 @@ from app.config import settings
 from app.database import get_db, SessionLocal
 from app.logger import log
 from app.models import Call, CallCheckpoint, CustomerDeal, Profile, Script
-from app.reviewers import current_reviewer
+from app.reviewers import current_reviewer, require_lead
 from app.pipeline import process_call
 from app.schemas import CallListResponse, CallResponse, StatsResponse
 from app.storage import download_audio, signed_url, upload_audio
@@ -154,6 +154,10 @@ async def upload_call(
     # customer_name + call_type + deal_id below.
     metadata: str | None = Form(default=None),
     db: Session = Depends(get_db),
+    # 2026-05-24 wiring audit C2 — uploads burn LLM quota and create
+    # Call/Deal rows; must require an authenticated reviewer. Previously
+    # exposed to anonymous internet traffic on the Railway URL.
+    user: dict = Depends(current_reviewer),
 ):
     # ── L7: parse structured-intake envelope (when present) ───────────
     intake_payload = None
@@ -563,7 +567,13 @@ async def _process_in_background(call_id: str, file_path: str, script_id: str | 
 # group them" handshake. CustomerDeal.status has no CHECK constraint
 # (only loa_status / lifecycle_status do, per migration c3d4e5f6a7b8).
 @router.post("/api/deals/stub")
-async def post_deal_stub(request: Request, db: Session = Depends(get_db)):
+async def post_deal_stub(
+    db: Session = Depends(get_db),
+    user: dict = Depends(current_reviewer),
+):
+    # 2026-05-24 wiring audit C3 — was unauthenticated and trusted a
+    # client-supplied `x-user-id` header for the audit chain, letting
+    # any anonymous caller flood the deals table and forge actor_id.
     deal = CustomerDeal(
         customer_name="(pending audio upload)",
         status="pending_audio",
@@ -579,7 +589,7 @@ async def post_deal_stub(request: Request, db: Session = Depends(get_db)):
         entity_type="deal",
         entity_id=str(deal.id),
         payload={"status": deal.status, "stub": True},
-        actor_id=request.headers.get("x-user-id"),
+        actor_id=user["id"],
     )
     db.commit()
     log.info(f"\U0001f4c4 DEAL stub created id={deal.id} (same-deal upload mode)")
@@ -719,6 +729,20 @@ async def retry_call(
     call.checkpoint_results = None
     call.score = None
     call.completed_at = None
+    # 2026-05-24 wiring audit HIGH — retry is materially destructive
+    # (drops checkpoints + clears verdict). Write the audit row inside
+    # the same txn so the reset + audit trail commit atomically.
+    record_audit(
+        db,
+        action="call.retry",
+        entity_type="call",
+        entity_id=str(call.id),
+        payload={
+            "prior_status": call.status if call.status != "processing" else None,
+            "prior_compliant": call.compliant,
+        },
+        actor_id=user.get("id") if isinstance(user, dict) else None,
+    )
     db.commit()
 
     # Kick off processing. Mirrors the upload route's dispatch logic so the
@@ -1970,7 +1994,10 @@ async def admin_wipe_all_calls(
 
 
 @router.post("/api/admin/backfill-tracker", status_code=200)
-async def admin_backfill_tracker(db: Session = Depends(get_db)):
+async def admin_backfill_tracker(
+    db: Session = Depends(get_db),
+    _user: dict = Depends(require_lead),
+):
     """Backfill tracker columns on legacy calls + rejections.
 
     Walks every completed call missing one of:
@@ -2060,6 +2087,7 @@ async def admin_ingest_phrase_packs(
     apply: bool = False,
     only_phase: str | None = None,
     db: Session = Depends(get_db),
+    _user: dict = Depends(require_lead),
 ):
     """Convert the Watt phrase-detection dataset into per-call_type
     phrase packs stored as synthetic `Script` rows with
@@ -2158,6 +2186,7 @@ async def admin_reanalyze_all(
     apply: bool = False,
     only_script_id: str | None = None,
     db: Session = Depends(get_db),
+    _user: dict = Depends(require_lead),
 ):
     """Re-run the analyzer + score + finalize pipeline steps SYNCHRONOUSLY
     against every completed call with a transcript + word_data + script.
@@ -2232,6 +2261,7 @@ def admin_backfill_agent_names(
     apply: bool = False,
     only_missing: bool = True,
     db: Session = Depends(get_db),
+    _user: dict = Depends(require_lead),
 ):
     """Repair Call.agent_name for completed calls whose name extraction
     failed at first-pass time.
@@ -2324,6 +2354,7 @@ async def admin_repair_broken_names(
     only_broken: bool = True,
     limit: int = 200,
     db: Session = Depends(get_db),
+    _user: dict = Depends(require_lead),
 ):
     """Repair Call.agent_name + Call.customer_name on EXISTING calls.
 
@@ -2651,6 +2682,7 @@ async def admin_ingest_script_checkpoints(
     apply: bool = False,
     only_empty: bool = True,
     db: Session = Depends(get_db),
+    _user: dict = Depends(require_lead),
 ):
     """Walk every `Script` row, locate its source markdown in
     `.planning/phase2-docs/`, ask Opus 4.7 to extract the canonical
@@ -2806,6 +2838,7 @@ async def admin_backfill_call_types(
     apply: bool = False,
     only_full: bool = True,
     db: Session = Depends(get_db),
+    _user: dict = Depends(require_lead),
 ):
     """Re-classify Call.call_type via AI for every call with a transcript.
 
@@ -3045,9 +3078,11 @@ def _bucket_token_overlap(a: str, b: str) -> bool:
 def delete_call(
     call_id: str,
     db: Session = Depends(get_db),
-    # 2026-05-14 audit fix: this hard-deletes a call (cascades to 9 child
-    # tables) — must require auth. Previously anonymous.
-    user=Depends(current_reviewer),
+    # 2026-05-24 wiring audit HIGH — hard-deletes a call (cascades to 9
+    # child tables, orphan-cleans Deal + Customer). A junior reviewer
+    # shouldn't be able to permanently destroy compliance evidence; gate
+    # behind lead/admin role. Was current_reviewer per 2026-05-14 fix.
+    user=Depends(require_lead),
 ):
     """Delete a call and clean up orphan parents.
 

@@ -26,12 +26,13 @@ arbitrary client payload.
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -41,6 +42,55 @@ from app.reviewers import current_reviewer
 
 
 tracker_edit_router = APIRouter()
+
+
+def _record_reviewer_edit(
+    db: Session,
+    *,
+    rejection_id: str | None,
+    call_id: str | None,
+    field: str,
+    old_value: Any,
+    new_value: Any,
+    reviewer_id: str | None,
+) -> None:
+    """Append a ReviewerEdit row, deduping React StrictMode double-invokes
+    and short-window network retries.
+
+    2026-05-24 wiring audit C10 — reviewer_edits has no DB unique
+    constraint (composite would require a complex partial index across
+    nullable columns). App-level guard skips an identical write within
+    the last 2 seconds by the same reviewer on the same (target, field,
+    old, new) tuple. Anything older is treated as a genuine re-edit.
+    """
+    cutoff = datetime.utcnow() - timedelta(seconds=2)
+    new_str = str(new_value) if new_value is not None else None
+    old_str = str(old_value) if old_value is not None else None
+    q = db.query(ReviewerEdit).filter(
+        ReviewerEdit.field == field,
+        ReviewerEdit.reviewer_id == reviewer_id,
+        ReviewerEdit.at >= cutoff,
+        ReviewerEdit.new_value == new_str,
+        ReviewerEdit.old_value == old_str,
+    )
+    if rejection_id is not None:
+        q = q.filter(ReviewerEdit.rejection_id == rejection_id)
+    else:
+        q = q.filter(ReviewerEdit.rejection_id.is_(None))
+    if call_id is not None:
+        q = q.filter(ReviewerEdit.call_id == call_id)
+    else:
+        q = q.filter(ReviewerEdit.call_id.is_(None))
+    if q.first() is not None:
+        return  # dedupe — identical edit already pending in this 2s window
+    db.add(ReviewerEdit(
+        rejection_id=rejection_id,
+        call_id=call_id,
+        field=field,
+        old_value=old_str,
+        new_value=new_str,
+        reviewer_id=reviewer_id,
+    ))
 
 
 # Rejection-level whitelisted fields. Existing 9 plus deadline (2026-05-15).
@@ -156,25 +206,29 @@ def patch_tracker_row(
         if k in REJECTION_FIELDS:
             old = getattr(rej, k, None)
             if old != v:
-                db.add(ReviewerEdit(
+                _record_reviewer_edit(
+                    db,
                     rejection_id=str(rej.id),
+                    call_id=None,
                     field=k,
-                    old_value=str(old) if old is not None else None,
-                    new_value=str(v) if v is not None else None,
+                    old_value=old,
+                    new_value=v,
                     reviewer_id=reviewer_id,
-                ))
+                )
                 setattr(rej, k, v)
                 set_source(rej, k, "human")
         elif k in DEAL_FIELDS and deal is not None:
             old = getattr(deal, k, None)
             if old != v:
-                db.add(ReviewerEdit(
+                _record_reviewer_edit(
+                    db,
                     rejection_id=str(rej.id),
+                    call_id=None,
                     field=f"deal.{k}",
-                    old_value=str(old) if old is not None else None,
-                    new_value=str(v) if v is not None else None,
+                    old_value=old,
+                    new_value=v,
                     reviewer_id=reviewer_id,
-                ))
+                )
                 setattr(deal, k, v)
                 # Deal-level provenance map uses "reviewer_edit" to match
                 # the existing /customers field-source legend.
@@ -182,8 +236,25 @@ def patch_tracker_row(
                     fs = dict(deal.field_sources or {})
                     fs[k] = "reviewer_edit"
                     deal.field_sources = fs
-    db.commit()
+    try:
+        db.commit()
+    except (IntegrityError, OperationalError) as exc:
+        db.rollback()
+        # 2026-05-24 wiring audit HIGH-tracker-edit — surface DB integrity
+        # failures (CHECK violations, FK races) as 409 with a safe message
+        # rather than leaking stack traces with column values in a 500.
+        raise HTTPException(409, f"edit could not be saved: {exc.__class__.__name__}")
     db.refresh(rej)
+    # Realtime fan-out so other reviewers' tabs see the edit without poll.
+    try:
+        from app import realtime
+        realtime.publish(
+            rej.call_id or "",
+            "rejection_updated",
+            {"rejection_id": str(rej.id), "fields": list(body.keys())},
+        )
+    except Exception:
+        pass  # best-effort; never block the response on realtime
     return {
         "id": str(rej.id),
         "field_sources": rej.field_sources,
@@ -217,16 +288,22 @@ def set_tracker_assignee(
     old = rej.fix_assignee_id
     if old != new_id:
         reviewer_id = str(user.get("id")) if isinstance(user, dict) else None
-        db.add(ReviewerEdit(
+        _record_reviewer_edit(
+            db,
             rejection_id=str(rej.id),
+            call_id=None,
             field="fix_assignee_id",
             old_value=old,
             new_value=new_id,
             reviewer_id=reviewer_id,
-        ))
+        )
         rej.fix_assignee_id = new_id
         set_source(rej, "fix_assignee_id", "human")
-        db.commit()
+        try:
+            db.commit()
+        except (IntegrityError, OperationalError) as exc:
+            db.rollback()
+            raise HTTPException(409, f"assignee update failed: {exc.__class__.__name__}")
         db.refresh(rej)
     return {"id": str(rej.id), "fix_assignee_id": rej.fix_assignee_id}
 
@@ -347,26 +424,28 @@ def patch_call_meta(
             v = raw_v or None
             old_call = call.detected_supplier
             if old_call != v:
-                db.add(ReviewerEdit(
+                _record_reviewer_edit(
+                    db,
                     rejection_id=None,
                     call_id=str(call.id),
                     field="call.detected_supplier",
                     old_value=old_call,
                     new_value=v,
                     reviewer_id=reviewer_id,
-                ))
+                )
                 call.detected_supplier = v
             if deal is not None:
                 old_deal = deal.supplier
                 if old_deal != v:
-                    db.add(ReviewerEdit(
+                    _record_reviewer_edit(
+                        db,
                         rejection_id=None,
                         call_id=str(call.id),
                         field="deal.supplier",
                         old_value=old_deal,
                         new_value=v,
                         reviewer_id=reviewer_id,
-                    ))
+                    )
                     deal.supplier = v
                     if hasattr(deal, "field_sources"):
                         fs = dict(deal.field_sources or {})
@@ -378,14 +457,15 @@ def patch_call_meta(
             v = raw_v or None
             old = getattr(call, k, None)
             if old != v:
-                db.add(ReviewerEdit(
+                _record_reviewer_edit(
+                    db,
                     rejection_id=None,
                     call_id=str(call.id),
                     field=f"call.{k}",
-                    old_value=str(old) if old is not None else None,
-                    new_value=str(v) if v is not None else None,
+                    old_value=old,
+                    new_value=v,
                     reviewer_id=reviewer_id,
-                ))
+                )
                 setattr(call, k, v)
             continue
 
@@ -393,22 +473,37 @@ def patch_call_meta(
         v = _coerce_value(k, raw_v)
         old = getattr(deal, k, None) if deal is not None else None
         if deal is not None and old != v:
-            db.add(ReviewerEdit(
+            _record_reviewer_edit(
+                db,
                 rejection_id=None,
                 call_id=str(call.id),
                 field=f"deal.{k}",
-                old_value=str(old) if old is not None else None,
-                new_value=str(v) if v is not None else None,
+                old_value=old,
+                new_value=v,
                 reviewer_id=reviewer_id,
-            ))
+            )
             setattr(deal, k, v)
             if hasattr(deal, "field_sources"):
                 fs = dict(deal.field_sources or {})
                 fs[k] = "reviewer_edit"
                 deal.field_sources = fs
 
-    db.commit()
+    try:
+        db.commit()
+    except (IntegrityError, OperationalError) as exc:
+        db.rollback()
+        raise HTTPException(409, f"call metadata update failed: {exc.__class__.__name__}")
     db.refresh(call)
+    # Realtime fan-out so other tabs see the call-meta edit immediately.
+    try:
+        from app import realtime
+        realtime.publish(
+            str(call.id),
+            "call_updated",
+            {"fields": list(body.keys())},
+        )
+    except Exception:
+        pass
     return {
         "call_id": str(call.id),
         "deal_id": str(deal.id) if deal else None,

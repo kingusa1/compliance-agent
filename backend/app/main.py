@@ -105,6 +105,27 @@ async def lifespan(app: FastAPI):
                 f"ALLOWED_ORIGINS contains dev origins in production: {bad}"
             )
 
+    # 2026-05-24 wiring audit C9 — production must use the Supabase
+    # transaction-mode pooler at port :6543. Session-mode (:5432) pins a
+    # server connection for the lifetime of the client connection; with
+    # pool_size=25 + max_overflow=50 this can park 75 server-side
+    # connections against a project that typically caps at 60–200.
+    # A stale `supabase/.temp/pooler-url` stub ships :5432; this guard
+    # makes the misconfiguration fail-fast instead of silently degrading.
+    if settings.sentry_environment.lower() == "production":
+        url = settings.database_url
+        if "pooler.supabase.com" in url and ":5432/" in url:
+            raise RuntimeError(
+                "DATABASE_URL points at the Supabase session-mode pooler "
+                "(:5432). Production must use the transaction-mode pooler "
+                "(:6543/postgres). Update Railway env var DATABASE_URL."
+            )
+        if "localhost" in url or "127.0.0.1" in url:
+            raise RuntimeError(
+                "DATABASE_URL points at localhost in production env. "
+                "Set it to the Supabase pooler URL on Railway."
+            )
+
     # Clean up stuck calls from previous runs. Skip silently if DB unreachable
     # so the process can still start in degraded mode (readyz will report 503).
     try:

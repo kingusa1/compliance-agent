@@ -51,52 +51,51 @@ branch_labels = None
 depends_on = None
 
 
-# CONCURRENTLY indexes cannot run inside a txn — opt out at the
-# migration level so Alembic doesn't wrap us in BEGIN/COMMIT.
-def _autocommit_block():
-    op.execute("COMMIT")
+# CONCURRENTLY indexes cannot run inside a txn. 2026-05-24 wiring audit C8
+# replaced the prior raw `op.execute("COMMIT")` helper with Alembic's
+# `op.get_context().autocommit_block()` context manager — matches the
+# pattern in 2026_05_16_hot_indexes and keeps Alembic's version-stamp
+# rollback semantics intact if a CONCURRENTLY build fails mid-run.
 
 
 def upgrade() -> None:
-    # Switch into autocommit so CREATE INDEX CONCURRENTLY is accepted.
-    _autocommit_block()
+    with op.get_context().autocommit_block():
+        # 1. Queue hotspot: (review_status, compliance_status, created_at DESC)
+        op.execute(
+            """
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS
+                ix_calls_queue_lookup
+            ON calls (review_status, compliance_status, created_at DESC)
+            """
+        )
 
-    # 1. Queue hotspot: (review_status, compliance_status, created_at DESC)
-    op.execute(
-        """
-        CREATE INDEX CONCURRENTLY IF NOT EXISTS
-            ix_calls_queue_lookup
-        ON calls (review_status, compliance_status, created_at DESC)
-        """
-    )
+        # 2. Deal rollup: (deal_id, created_at ASC) — used by the deals detail
+        #    page and the customer timeline view.
+        op.execute(
+            """
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS
+                ix_calls_deal_created_at
+            ON calls (deal_id, created_at)
+            """
+        )
 
-    # 2. Deal rollup: (deal_id, created_at ASC) — used by the deals detail
-    #    page and the customer timeline view.
-    op.execute(
-        """
-        CREATE INDEX CONCURRENTLY IF NOT EXISTS
-            ix_calls_deal_created_at
-        ON calls (deal_id, created_at)
-        """
-    )
-
-    # 3. Pipeline / dashboard scan: completed calls with a transcript.
-    #    Partial index keeps it small (~50% of rows) and avoids index
-    #    bloat on the pending/processing tail.
-    op.execute(
-        """
-        CREATE INDEX CONCURRENTLY IF NOT EXISTS
-            ix_calls_completed_with_transcript
-        ON calls (created_at DESC)
-        WHERE status = 'completed' AND transcript IS NOT NULL
-        """
-    )
+        # 3. Pipeline / dashboard scan: completed calls with a transcript.
+        #    Partial index keeps it small (~50% of rows) and avoids index
+        #    bloat on the pending/processing tail.
+        op.execute(
+            """
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS
+                ix_calls_completed_with_transcript
+            ON calls (created_at DESC)
+            WHERE status = 'completed' AND transcript IS NOT NULL
+            """
+        )
 
 
 def downgrade() -> None:
-    _autocommit_block()
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS ix_calls_queue_lookup")
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS ix_calls_deal_created_at")
-    op.execute(
-        "DROP INDEX CONCURRENTLY IF EXISTS ix_calls_completed_with_transcript"
-    )
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS ix_calls_queue_lookup")
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS ix_calls_deal_created_at")
+        op.execute(
+            "DROP INDEX CONCURRENTLY IF EXISTS ix_calls_completed_with_transcript"
+        )

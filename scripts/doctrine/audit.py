@@ -144,12 +144,14 @@ def run_git(*args: str, allow_failure: bool = False) -> str:
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if proc.returncode != 0 and not allow_failure:
         raise SystemExit(
             f"PREREQ: git {' '.join(args)} failed (rc={proc.returncode}): {proc.stderr.strip()}"
         )
-    return proc.stdout
+    return proc.stdout or ""
 
 
 def git_files_in_range(since: str) -> list[str]:

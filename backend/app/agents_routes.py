@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.logger import log
 from app.models import Call, FixDirective, SalesAgentAlias
+from app.reviewers import current_reviewer, require_lead
 
 
 agents_router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -65,7 +66,10 @@ def _canonicalize_agent(name: str | None, aliases: dict[str, str]) -> str | None
 
 
 @agents_router.get("")
-def list_agents(db: Session = Depends(get_db)) -> dict:
+def list_agents(
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),  # 2026-05-24 C5: agent PII gated
+) -> dict:
     cutoff = utcnow() - timedelta(days=30)
     # W1 (v3-watt-coverage): load alias table once; canonicalise raw names
     # before grouping. Best-effort — see _canonicalize_agent.
@@ -183,7 +187,11 @@ def _safe_float(v: Any) -> float | None:
 
 
 @agents_router.get("/{agent_name}/drilldown")
-def agent_drilldown(agent_name: str, db: Session = Depends(get_db)) -> dict:
+def agent_drilldown(
+    agent_name: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),  # 2026-05-24 C5
+) -> dict:
     now = utcnow()
     cutoff_7 = now - timedelta(days=7)
     cutoff_30 = now - timedelta(days=30)
@@ -369,7 +377,12 @@ class AgentRetrainingPatch(BaseModel):
 
 
 @agents_router.patch("/{agent_name}")
-def patch_agent(agent_name: str, payload: AgentRetrainingPatch, db: Session = Depends(get_db)) -> dict:
+def patch_agent(
+    agent_name: str,
+    payload: AgentRetrainingPatch,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(require_lead),  # 2026-05-24 C5: mutation = lead+
+) -> dict:
     if not _has_column(db, "profiles", "retraining_assigned"):
         # Column not yet shipped — surface 422 so the UI can show a helpful
         # message instead of pretending the patch persisted.
