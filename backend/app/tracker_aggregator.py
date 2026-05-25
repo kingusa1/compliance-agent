@@ -625,12 +625,21 @@ def build_tracker_rows(
     if tab == "awaiting_review":
         # Post-2026-05-12: rejections are reviewer-initiated only, so the
         # awaiting_review tab can no longer be sourced from Rejection rows.
-        # Instead we surface every completed Call that the reviewer has
-        # NOT yet signed off (review_status != 'reviewed'), regardless of
-        # AI verdict — both Non-Compliant flagged and Compliant calls need
-        # a human pass before they leave this queue.
+        # Instead we surface every Call that has finished processing but
+        # which the reviewer has NOT yet signed off (review_status !=
+        # 'reviewed'), regardless of AI verdict — both Non-Compliant
+        # flagged and Compliant calls need a human pass before they
+        # leave this queue.
+        #
+        # 2026-05-25 bug fix: the filter used to require `status ==
+        # "completed"` only. But pipeline.py also emits the terminal
+        # state `"needs_manual_review"` when the AI couldn't grade the
+        # call cleanly (transcript-divergence, analyzer errors > 50%,
+        # zero segments classified). Those are EXACTLY the calls a
+        # reviewer most needs to see — they were silently dropping out
+        # of every tracker tab. Both terminal states are now included.
         q = db.query(Call).filter(
-            Call.status == "completed",
+            Call.status.in_(("completed", "needs_manual_review")),
             or_(Call.review_status.is_(None), Call.review_status != "reviewed"),
         )
         # 2026-05-14 audit: a call that already has a reviewer-initiated

@@ -209,3 +209,123 @@ def test_awaiting_review_deadline_state_filters_calls(test_db):
     on_track_ids = {r["call_id"] for r in on_track_rows}
     assert on_track_call.id in on_track_ids
     assert overdue_call.id not in on_track_ids
+
+
+def test_awaiting_review_includes_needs_manual_review_status(test_db):
+    """2026-05-25 regression: the Awaiting Review tab filter used to
+    match ONLY `Call.status == 'completed'`, but `pipeline.py` also
+    emits the terminal state `needs_manual_review` when the AI couldn't
+    grade the call cleanly (transcript-divergence, analyzer errors >50%,
+    zero segments classified). Those calls are EXACTLY what a reviewer
+    needs to see, but they were silently dropping out of every tracker
+    tab.
+
+    Reproduction (live-prod 2026-05-25): user uploaded 4 calls, 3 came
+    back as `needs_manual_review`, 1 as `completed`. Tracker Awaiting
+    Review tab showed 1 row instead of 4. /api/calls returned all 4.
+
+    The fix in `tracker_aggregator.build_tracker_rows` updates the
+    filter to `Call.status.in_(('completed', 'needs_manual_review'))`.
+    Both states are terminal-but-not-reviewed, which is the population
+    the tab is documented to surface.
+    """
+    cust = Customer(id=uuid.uuid4(), legal_name="Acme Ltd", slug="acme-nmr")
+    deal = CustomerDeal(
+        id=uuid.uuid4(),
+        customer_id=cust.id,
+        customer_name="Acme Ltd",
+        supplier="E.ON Next",
+        status="in_progress",
+    )
+    completed_call = Call(
+        id=str(uuid.uuid4()),
+        filename="c1.mp3",
+        file_path="/tmp/c1.mp3",
+        deal_id=deal.id,
+        agent_name="Reviewer A",
+        status="completed",
+        score="20/24",
+        customer_name="Acme Ltd",
+        completed_at=datetime.now(UTC),
+        review_status="unclaimed",
+    )
+    nmr_call_1 = Call(
+        id=str(uuid.uuid4()),
+        filename="c2.mp3",
+        file_path="/tmp/c2.mp3",
+        deal_id=deal.id,
+        agent_name="Reviewer B",
+        status="needs_manual_review",
+        score="6/22",
+        customer_name="Acme Ltd",
+        completed_at=datetime.now(UTC),
+        review_status="unclaimed",
+    )
+    nmr_call_2 = Call(
+        id=str(uuid.uuid4()),
+        filename="c3.mp3",
+        file_path="/tmp/c3.mp3",
+        deal_id=deal.id,
+        agent_name="Reviewer C",
+        status="needs_manual_review",
+        score="19/25",
+        customer_name="Acme Ltd",
+        completed_at=datetime.now(UTC),
+        review_status="unclaimed",
+    )
+    in_review_nmr_call = Call(
+        id=str(uuid.uuid4()),
+        filename="c4.mp3",
+        file_path="/tmp/c4.mp3",
+        deal_id=deal.id,
+        agent_name="Reviewer D",
+        status="needs_manual_review",
+        score="78/124",
+        customer_name="Acme Ltd",
+        completed_at=datetime.now(UTC),
+        review_status="in_review",  # opened but not yet signed off
+    )
+    # A call that's truly reviewed must NOT appear — the guard is on
+    # `review_status != 'reviewed'` and applies equally to both
+    # `completed` and `needs_manual_review`.
+    reviewed_call = Call(
+        id=str(uuid.uuid4()),
+        filename="c5.mp3",
+        file_path="/tmp/c5.mp3",
+        deal_id=deal.id,
+        agent_name="Reviewer E",
+        status="needs_manual_review",
+        score="10/10",
+        customer_name="Acme Ltd",
+        completed_at=datetime.now(UTC),
+        review_status="reviewed",
+    )
+    # A still-processing call must NOT appear.
+    processing_call = Call(
+        id=str(uuid.uuid4()),
+        filename="c6.mp3",
+        file_path="/tmp/c6.mp3",
+        deal_id=deal.id,
+        agent_name="Reviewer F",
+        status="processing",
+        customer_name="Acme Ltd",
+        review_status="unclaimed",
+    )
+    test_db.add_all([
+        cust, deal, completed_call, nmr_call_1, nmr_call_2,
+        in_review_nmr_call, reviewed_call, processing_call,
+    ])
+    test_db.commit()
+
+    rows = build_tracker_rows(test_db, tab="awaiting_review")
+    surfaced_ids = {r["call_id"] for r in rows}
+
+    # All 4 terminal-but-unreviewed calls show — completed AND nmr.
+    assert completed_call.id in surfaced_ids
+    assert nmr_call_1.id in surfaced_ids
+    assert nmr_call_2.id in surfaced_ids
+    assert in_review_nmr_call.id in surfaced_ids
+    # The fully-reviewed and still-processing calls stay hidden.
+    assert reviewed_call.id not in surfaced_ids
+    assert processing_call.id not in surfaced_ids
+    assert len(rows) == 4
