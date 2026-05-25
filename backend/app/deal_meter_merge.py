@@ -154,12 +154,173 @@ class MergeOutcome:
     folded into the survivor. `survivor_id` is set whenever we picked one
     (even if no merge was needed because the candidate set was just the
     incoming deal). `source_ids` lists the deals consumed by the merge.
+    `skipped_unsafe_ids` lists deals the meter matched but were not
+    folded because `_is_safe_to_auto_merge` rejected them (e.g. supplier
+    mismatch). The reviewer-facing log/audit lists those so a human can
+    decide whether to merge them manually via the tracker side panel or
+    via `/api/admin/undo-deal-merge` after the fact.
     """
 
     merged: bool
     survivor_id: Optional[uuid.UUID]
     source_ids: list[uuid.UUID]
     reason: str
+    skipped_unsafe_ids: tuple[uuid.UUID, ...] = ()
+
+
+@dataclass(frozen=True)
+class SafetyVerdict:
+    """Output of `_is_safe_to_auto_merge`. ``safe=False`` blocks the
+    auto-fold; ``reason`` is the audit-payload string explaining why so
+    a reviewer can later decide manually."""
+
+    safe: bool
+    reason: str
+
+
+# 2026-05-25 — calibrated based on the broker pipeline lifecycle. Watt's
+# typical deal completes lead-gen → verbal → LOA within ~30 days; we add
+# margin for delayed audio uploads + retries. Beyond 90 days the same
+# meter id is overwhelmingly a renewal / supplier switch / different
+# contract cycle, NOT the same in-progress deal.
+AUTO_MERGE_WINDOW_DAYS = 90
+
+# Name fuzz floor below which two non-placeholder customer names are
+# treated as DIFFERENT customers even when their MPAN/MPRN matches.
+# Mirrors `intake.matcher.NAME_NEAR_CERTAIN` (87) so the intake-time
+# matcher and the post-extraction merge use the same calibration.
+_SAFE_NAME_FUZZ_FLOOR = 87
+
+
+def _supplier_norm(raw) -> str:
+    """Lower-case + trim supplier label. ``Unknown``-shaped values are
+    treated as missing so a merge between (set) and (unknown) is allowed
+    — the data-quality fix is to copy the real supplier across, not to
+    refuse the merge."""
+    if not raw:
+        return ""
+    s = str(raw).strip().lower()
+    if s in ("unknown", "n/a", "none", "null", "-"):
+        return ""
+    return s
+
+
+def _name_fuzz_ratio(a: str, b: str) -> int:
+    """0–100 rapidfuzz token-set ratio over lower-cased + suffix-stripped
+    names. Mirrors `intake.matcher._token_set_ratio` so the two surfaces
+    rank candidates identically. Returns 0 when rapidfuzz isn't
+    installed (degrades the safety check to "names didn't fuzzy match"
+    which is the conservative outcome)."""
+    if not a or not b:
+        return 0
+    try:
+        from rapidfuzz import fuzz  # type: ignore[import-not-found]
+        return int(fuzz.token_set_ratio(a, b))
+    except Exception:
+        # Jaccard fallback so the predicate still works in environments
+        # without rapidfuzz (some CI configs).
+        ta, tb = set(a.split()), set(b.split())
+        if not ta or not tb:
+            return 0
+        return int(100 * len(ta & tb) / max(len(ta | tb), 1))
+
+
+def _is_safe_to_auto_merge(
+    survivor: CustomerDeal,
+    victim: CustomerDeal,
+) -> SafetyVerdict:
+    """Decide whether an MPAN/MPRN-key match between two deals is safe
+    to auto-fold WITHOUT a reviewer in the loop.
+
+    UK MPAN cores (13 digits) and MPRNs (6–10 digits) are unique per
+    PHYSICAL METER, not per supplier-contract. The same meter can be on
+    E.ON one quarter and British Gas the next — that's a normal renewal
+    / switch. So an unguarded auto-merge on meter id alone can fold two
+    legitimately-separate commercial deals into one. Production reported
+    exactly this on 2026-05-25 (BG call's deal folded into an E.ON deal),
+    so we refuse to auto-merge whenever ANY of these signals fires:
+
+    1. **Supplier mismatch** — both deals have a non-empty supplier set
+       AND those supplier labels differ (case-insensitive). One side
+       being empty/Unknown is OK; that side inherits.
+    2. **Different customer** — both deals have a non-NULL `customer_id`
+       AND those ids differ AND the customer-name fuzz ratio is below
+       `_SAFE_NAME_FUZZ_FLOOR` (87, same as intake.matcher.NAME_NEAR_CERTAIN).
+       Placeholder names ('Unknown' / '(pending audio upload)' / etc.) are
+       always treated as "didn't fuzzy match" — i.e. unsafe when
+       customer_id also differs.
+    3. **Recency** — `created_at` timestamps more than
+       `AUTO_MERGE_WINDOW_DAYS` apart. Beyond 90 days the same meter id
+       is overwhelmingly a different contract cycle.
+
+    A blocked auto-merge is NOT a permanent decline: the meter match is
+    audit-logged as `deal.merge_skipped_unsafe` with the rejection
+    reason so a reviewer can decide via the tracker side panel or the
+    `/api/admin/undo-deal-merge` inverse.
+    """
+    # Guard 1 — supplier.
+    s1 = _supplier_norm(survivor.supplier)
+    s2 = _supplier_norm(victim.supplier)
+    if s1 and s2 and s1 != s2:
+        return SafetyVerdict(False, f"supplier mismatch: {s1!r} vs {s2!r}")
+
+    # Guard 2 — customer identity.
+    if (
+        survivor.customer_id
+        and victim.customer_id
+        and survivor.customer_id != victim.customer_id
+    ):
+        from app.intake.matcher import _clean_name as _matcher_clean
+        n1 = (survivor.customer_name or "").strip()
+        n2 = (victim.customer_name or "").strip()
+        if _is_placeholder(n1) or _is_placeholder(n2):
+            return SafetyVerdict(
+                False,
+                f"different customer_id ({survivor.customer_id} vs "
+                f"{victim.customer_id}) and one side has a placeholder name",
+            )
+        # Reuse intake.matcher._clean_name so we get the same legal-form
+        # stripping ("Acme Plumbing Ltd" / "Acme Plumbing" / "Acme
+        # Plumbing Limited" all collapse to "acme plumbing"). Without
+        # this, two Customer rows for the same business with a typo'd
+        # slug would always trip the guard.
+        c1 = _matcher_clean(n1)
+        c2 = _matcher_clean(n2)
+        if c1 and c2 and c1 == c2:
+            pass  # exact match after cleaning — safe
+        else:
+            ratio = _name_fuzz_ratio(c1 or n1.lower(), c2 or n2.lower())
+            if ratio < _SAFE_NAME_FUZZ_FLOOR:
+                return SafetyVerdict(
+                    False,
+                    f"different customer_id and name fuzz {ratio} < "
+                    f"{_SAFE_NAME_FUZZ_FLOOR} ({n1!r} vs {n2!r})",
+                )
+
+    # Guard 3 — recency window.
+    sc = _naive_dt_safe(survivor.created_at)
+    vc = _naive_dt_safe(victim.created_at)
+    delta_days = abs((sc - vc).days)
+    if delta_days > AUTO_MERGE_WINDOW_DAYS:
+        return SafetyVerdict(
+            False,
+            f"deals are {delta_days}d apart (> {AUTO_MERGE_WINDOW_DAYS}d window)",
+        )
+
+    return SafetyVerdict(
+        True, f"supplier + customer + recency ({delta_days}d) all clear"
+    )
+
+
+def _naive_dt_safe(dt) -> datetime:
+    """Forwarded shim so the safety predicate can call _naive_dt before
+    that function is defined further down the module — Python doesn't
+    forward-resolve at import time. Kept as a thin wrapper for clarity."""
+    if dt is None:
+        return datetime.min
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +578,7 @@ def merge_deals_on_meter_match(call: Call, db: Session) -> MergeOutcome:
             return MergeOutcome(False, None, [], "survivor disappeared under lock")
 
         absorbed_ids: list[uuid.UUID] = []
+        skipped_unsafe_ids: list[uuid.UUID] = []
         rejection_ids_moved: list[str] = []
         cross_customer_warnings: list[str] = []
         total_calls_moved = 0
@@ -427,10 +589,43 @@ def merge_deals_on_meter_match(call: Call, db: Session) -> MergeOutcome:
                 # A concurrent merge already absorbed this victim — skip
                 # silently. The loser of the race ends up doing less work.
                 continue
-            # HIGH-2 — Cross-customer orphan warning. We still merge (meter
-            # IDs are globally unique by physical meter), but log it so an
-            # operator can decide whether to also merge the customer rows
-            # via /api/admin/sweep-orphans.
+
+            # 2026-05-25 — supplier / customer / recency safety guard.
+            # The hard-key MPAN/MPRN match alone is NOT enough — meters
+            # switch suppliers between contracts. When the guard fires we
+            # log an audit row with the rejection reason so a reviewer
+            # can still decide manually via /api/admin/undo-deal-merge or
+            # the tracker side-panel, but we DO NOT touch the data.
+            verdict = _is_safe_to_auto_merge(survivor, v)
+            if not verdict.safe:
+                skipped_unsafe_ids.append(vid)
+                log.warning(
+                    "deal_meter_merge SKIPPED unsafe pair survivor=%s victim=%s reason=%s",
+                    str(survivor.id), str(vid), verdict.reason,
+                )
+                try:
+                    record_audit(
+                        db,
+                        action="deal.merge_skipped_unsafe",
+                        entity_type="customer_deal",
+                        entity_id=str(survivor.id),
+                        payload={
+                            "candidate_deal_id": str(vid),
+                            "meter_mpan": mpan or None,
+                            "meter_mprn": mprn or None,
+                            "reason": verdict.reason,
+                            "trigger": "post_extraction_meter_match",
+                            "trigger_call_id": str(call.id),
+                        },
+                        organization_id=str(call.organization_id) if call.organization_id else None,
+                    )
+                except Exception as e:  # noqa: BLE001 — audit must never break the path
+                    log.warning("audit append failed on merge_skipped_unsafe: %s", e)
+                continue
+
+            # HIGH-2 — Cross-customer orphan warning. With the safety
+            # guard above, this only fires when same customer_id was
+            # missing on one side, so it's a notification not a block.
             if v.customer_id and survivor.customer_id and v.customer_id != survivor.customer_id:
                 cross_customer_warnings.append(
                     f"victim {vid} customer_id {v.customer_id} != survivor customer_id {survivor.customer_id}"
@@ -443,6 +638,14 @@ def merge_deals_on_meter_match(call: Call, db: Session) -> MergeOutcome:
             absorbed_ids.append(vid)
 
         if not absorbed_ids:
+            if skipped_unsafe_ids:
+                return MergeOutcome(
+                    merged=False,
+                    survivor_id=survivor.id,
+                    source_ids=[],
+                    reason=f"all {len(skipped_unsafe_ids)} meter-matched candidates were unsafe to auto-merge",
+                    skipped_unsafe_ids=tuple(skipped_unsafe_ids),
+                )
             return MergeOutcome(False, survivor.id, [], "all victims gone (concurrent merge)")
 
         meter_label = f"mpan={mpan}" if mpan else ""
@@ -488,6 +691,7 @@ def merge_deals_on_meter_match(call: Call, db: Session) -> MergeOutcome:
             survivor_id=survivor.id,
             source_ids=absorbed_ids,
             reason=f"matched on {meter_label}",
+            skipped_unsafe_ids=tuple(skipped_unsafe_ids),
         )
     except Exception as e:  # noqa: BLE001 — finalize must NEVER fail because of merge
         log.warning("merge_deals_on_meter_match failed (ignored): %s", e)
@@ -724,7 +928,37 @@ def consolidate_all_duplicate_deals(
         if not dry_run:
             transferred_rejections: list[str] = []
             cross_customer_warnings: list[str] = []
+            skipped_unsafe: list[dict] = []
             for v in victims:
+                # 2026-05-25 safety guard — refuse cross-supplier /
+                # cross-customer / out-of-window merges. The batch path
+                # uses the same predicate as the per-call path so the
+                # two surfaces never disagree.
+                verdict = _is_safe_to_auto_merge(survivor, v)
+                if not verdict.safe:
+                    skipped_unsafe.append(
+                        {"victim": str(v.id), "reason": verdict.reason}
+                    )
+                    log.warning(
+                        "consolidate SKIPPED unsafe victim=%s reason=%s",
+                        v.id, verdict.reason,
+                    )
+                    try:
+                        record_audit(
+                            db,
+                            action="deal.merge_skipped_unsafe",
+                            entity_type="customer_deal",
+                            entity_id=str(survivor.id),
+                            payload={
+                                "candidate_deal_id": str(v.id),
+                                "meter": label,
+                                "reason": verdict.reason,
+                                "trigger": "consolidate_all_duplicate_deals",
+                            },
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("audit append failed on skipped: %s", e)
+                    continue
                 try:
                     if v.customer_id and survivor.customer_id and v.customer_id != survivor.customer_id:
                         cross_customer_warnings.append(
@@ -742,6 +976,8 @@ def consolidate_all_duplicate_deals(
                     merge_entry.setdefault("errors", []).append(
                         {"victim": str(v.id), "err": str(e)}
                     )
+            if skipped_unsafe:
+                merge_entry["skipped_unsafe"] = skipped_unsafe
             try:
                 record_audit(
                     db,

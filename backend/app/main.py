@@ -194,9 +194,19 @@ async def lifespan(app: FastAPI):
     #
     # Wrapped in its own try/except + Session so a heal failure NEVER
     # blocks the app from accepting traffic — readyz still returns 200.
-    # Gated by AUTO_HEAL_ON_STARTUP env var (default ON) so prod can opt
-    # out without a redeploy if heal ever starts misbehaving.
-    if os.environ.get("AUTO_HEAL_ON_STARTUP", "true").strip().lower() not in ("false", "0", "no"):
+    #
+    # 2026-05-25 — `AUTO_HEAL_ON_STARTUP` default flipped from ON to OFF
+    # after a cross-supplier merge happened in prod (BG call's deal
+    # absorbed into an E.ON deal sharing an MPRN). The merge function
+    # itself now refuses cross-supplier matches (`_is_safe_to_auto_merge`
+    # in `app.deal_meter_merge`), but batch heal at boot still feels
+    # too aggressive for production — every restart re-evaluates every
+    # deal. Per-call merge at finalize is enough for ongoing health.
+    # Admin endpoints (/api/admin/consolidate-duplicate-deals and
+    # /api/admin/backfill-placeholder-customer-names) remain available
+    # for explicit reviewer-driven heal. Set the env var to `true` on
+    # Railway only if a backfill window is needed.
+    if os.environ.get("AUTO_HEAL_ON_STARTUP", "false").strip().lower() in ("true", "1", "yes"):
         try:
             from app.deal_meter_merge import (
                 backfill_placeholder_customer_names,

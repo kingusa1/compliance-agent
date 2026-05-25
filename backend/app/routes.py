@@ -7,7 +7,7 @@ import time
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -2496,6 +2496,137 @@ def admin_consolidate_duplicate_deals(
         dry_run, summary.get("deals_scanned", 0), summary.get("clusters_found", 0),
     )
     return summary
+
+
+@router.post("/api/admin/undo-deal-merge", status_code=200)
+def admin_undo_deal_merge(
+    survivor_deal_id: str,
+    move_calls: list[str] = Body(default_factory=list, embed=True),
+    new_supplier: str | None = Body(default=None, embed=True),
+    new_customer_name: str | None = Body(default=None, embed=True),
+    new_mpan_electricity: str | None = Body(default=None, embed=True),
+    new_mprn_gas: str | None = Body(default=None, embed=True),
+    dry_run: bool = False,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_lead),
+) -> dict:
+    """Surgical reverse of an auto-merge that went wrong.
+
+    2026-05-25 — added after the user reported a cross-supplier merge
+    (BG call's deal folded into an E.ON Next deal sharing an MPRN). The
+    `consolidate_all_duplicate_deals` / `merge_deals_on_meter_match`
+    paths only collapse; this is the inverse. It creates a fresh deal,
+    moves the specified Call ids onto it, and audit-logs the un-merge so
+    the chain stays intact.
+
+    Body shape (JSON):
+        {
+          "survivor_deal_id": "<the wrongly-absorbing deal's UUID>",
+          "move_calls": ["<call_id_1>", "<call_id_2>", ...],
+          "new_supplier": "British Gas",              # required if move_calls is non-empty
+          "new_customer_name": "Real Customer Ltd",   # required
+          "new_mpan_electricity": "...",              # optional
+          "new_mprn_gas": "..."                       # optional
+        }
+
+    `dry_run=true` returns the planned move WITHOUT mutating.
+    """
+    import uuid as _uuid
+    from app.models import Call, CustomerDeal
+
+    try:
+        survivor_uuid = _uuid.UUID(survivor_deal_id)
+    except (ValueError, TypeError):
+        raise HTTPException(400, "survivor_deal_id must be a UUID")
+
+    survivor = db.query(CustomerDeal).filter_by(id=survivor_uuid).first()
+    if survivor is None:
+        raise HTTPException(404, f"survivor deal {survivor_deal_id} not found")
+
+    if not move_calls:
+        raise HTTPException(400, "move_calls is required (list of call ids to extract)")
+    if not new_customer_name:
+        raise HTTPException(400, "new_customer_name is required")
+
+    # Verify every requested call exists AND is currently on the survivor.
+    calls = db.query(Call).filter(Call.id.in_(move_calls)).all()
+    found_ids = {c.id for c in calls}
+    missing = [cid for cid in move_calls if cid not in found_ids]
+    if missing:
+        raise HTTPException(404, f"calls not found: {missing}")
+    not_on_survivor = [c.id for c in calls if c.deal_id != survivor_uuid]
+    if not_on_survivor:
+        raise HTTPException(
+            400,
+            f"calls not currently on survivor: {not_on_survivor}",
+        )
+
+    new_deal_id = _uuid.uuid4()
+    plan = {
+        "dry_run": dry_run,
+        "survivor_deal_id": str(survivor_uuid),
+        "survivor_keeps_calls": [
+            str(c.id) for c in db.query(Call).filter(Call.deal_id == survivor_uuid).all()
+            if c.id not in move_calls
+        ],
+        "new_deal_id": str(new_deal_id),
+        "new_deal_customer_name": new_customer_name,
+        "new_deal_supplier": new_supplier,
+        "moving_calls": list(move_calls),
+        "moving_count": len(move_calls),
+    }
+    if dry_run:
+        return plan
+
+    # Create the new deal with fields the reviewer specified. Status starts
+    # 'in_progress' to match the upsert path's default.
+    new_deal = CustomerDeal(
+        id=new_deal_id,
+        customer_name=new_customer_name,
+        supplier=new_supplier,
+        mpan_electricity=new_mpan_electricity,
+        mprn_gas=new_mprn_gas,
+        status="in_progress",
+    )
+    db.add(new_deal)
+    db.flush()
+
+    # Re-point the specified calls onto the new deal.
+    moved = (
+        db.query(Call)
+        .filter(Call.id.in_(move_calls))
+        .filter(Call.deal_id == survivor_uuid)
+        .update({"deal_id": new_deal_id}, synchronize_session=False)
+    )
+
+    try:
+        record_audit(
+            db,
+            action="admin.undo_deal_merge",
+            entity_type="customer_deal",
+            entity_id=str(new_deal_id),
+            payload={
+                "survivor_deal_id": str(survivor_uuid),
+                "moved_calls": list(move_calls),
+                "moved_count": moved,
+                "new_customer_name": new_customer_name,
+                "new_supplier": new_supplier,
+                "triggered_by": user.get("id") if isinstance(user, dict) else None,
+            },
+            actor_id=user.get("id") if isinstance(user, dict) else None,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"undo_deal_merge audit append failed, rolling back: {e}")
+        db.rollback()
+        raise HTTPException(500, f"audit failed, no changes committed: {e}")
+
+    db.commit()
+    log.info(
+        "UNDO_DEAL_MERGE survivor=%s new_deal=%s moved=%d",
+        survivor_uuid, new_deal_id, moved,
+    )
+    plan["moved_count"] = moved
+    return plan
 
 
 @router.post("/api/admin/backfill-placeholder-customer-names", status_code=200)

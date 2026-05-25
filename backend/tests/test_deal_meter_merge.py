@@ -32,10 +32,12 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
 from app.deal_meter_merge import (
+    AUTO_MERGE_WINDOW_DAYS,
     _canon_mpan,
     _canon_mprn,
     _find_meter_siblings,
     _is_placeholder,
+    _is_safe_to_auto_merge,
     _meter_keys_for_deal,
     backfill_placeholder_customer_names,
     consolidate_all_duplicate_deals,
@@ -175,6 +177,272 @@ class TestCanonicalisers:
         mpan, mprn = _meter_keys_for_deal(deal)
         assert mpan == ""
         assert mprn == "5085812604"
+
+
+# ─── Safety predicate ────────────────────────────────────────────────────────
+
+
+class TestIsSafeToAutoMerge:
+    """The 2026-05-25 safety guard. An MPAN/MPRN match is necessary but not
+    sufficient for auto-merge — meters can switch suppliers between contracts
+    (the live-prod bug: a BG call's deal was folded into an E.ON deal sharing
+    the MPRN). The predicate refuses cross-supplier, cross-customer, and
+    out-of-window matches.
+    """
+
+    def _deal(
+        self,
+        *,
+        name: str = "X Ltd",
+        supplier: str | None = None,
+        customer_id: uuid.UUID | None = None,
+        created_at: datetime | None = None,
+    ) -> CustomerDeal:
+        return CustomerDeal(
+            id=uuid.uuid4(),
+            customer_name=name,
+            supplier=supplier,
+            customer_id=customer_id,
+            created_at=created_at
+            or datetime.now(timezone.utc).replace(tzinfo=None),
+            status="in_progress",
+        )
+
+    # ── Supplier guard ──────────────────────────────────────────────────────
+
+    def test_cross_supplier_match_is_unsafe(self) -> None:
+        """The live-prod bug case: a British Gas call's deal must NOT
+        auto-merge into an E.ON Next deal even when MPRN matches."""
+        a = self._deal(name="Acme Ltd", supplier="British Gas")
+        b = self._deal(name="Acme Ltd", supplier="E.ON Next")
+        verdict = _is_safe_to_auto_merge(a, b)
+        assert verdict.safe is False
+        assert "supplier mismatch" in verdict.reason.lower()
+
+    def test_same_supplier_match_is_safe(self) -> None:
+        a = self._deal(name="Acme Ltd", supplier="E.ON Next")
+        b = self._deal(name="Acme Ltd", supplier="E.ON Next")
+        assert _is_safe_to_auto_merge(a, b).safe is True
+
+    def test_supplier_normalisation_handles_case_and_whitespace(self) -> None:
+        a = self._deal(supplier=" british gas ")
+        b = self._deal(supplier="British Gas")
+        assert _is_safe_to_auto_merge(a, b).safe is True
+
+    def test_one_side_supplier_missing_is_safe(self) -> None:
+        """Data-quality case — survivor was created via the stub upload
+        route without a supplier yet; the new call has the real supplier.
+        Merge is safe; the field-copy in `_absorb` inherits the real one."""
+        a = self._deal(supplier=None)
+        b = self._deal(supplier="E.ON Next")
+        assert _is_safe_to_auto_merge(a, b).safe is True
+
+    def test_unknown_supplier_treated_as_missing(self) -> None:
+        a = self._deal(supplier="Unknown")
+        b = self._deal(supplier="E.ON Next")
+        assert _is_safe_to_auto_merge(a, b).safe is True
+
+    # ── Customer-identity guard ─────────────────────────────────────────────
+
+    def test_different_customer_id_with_diverging_names_is_unsafe(self) -> None:
+        cid_a, cid_b = uuid.uuid4(), uuid.uuid4()
+        a = self._deal(name="Acme Plumbing Ltd", customer_id=cid_a)
+        b = self._deal(name="Zenith Heating PLC", customer_id=cid_b)
+        verdict = _is_safe_to_auto_merge(a, b)
+        assert verdict.safe is False
+        assert "customer_id" in verdict.reason.lower() or "fuzz" in verdict.reason.lower()
+
+    def test_different_customer_id_with_matching_names_is_safe(self) -> None:
+        """Legacy data — two Customer rows for the same business (typo,
+        slug drift). Names fuzzy-match so it's safe to fold."""
+        cid_a, cid_b = uuid.uuid4(), uuid.uuid4()
+        a = self._deal(name="Acme Plumbing Ltd", customer_id=cid_a)
+        b = self._deal(name="Acme Plumbing", customer_id=cid_b)
+        assert _is_safe_to_auto_merge(a, b).safe is True
+
+    def test_different_customer_id_with_placeholder_name_is_unsafe(self) -> None:
+        cid_a, cid_b = uuid.uuid4(), uuid.uuid4()
+        a = self._deal(name="(pending audio upload)", customer_id=cid_a)
+        b = self._deal(name="Real Customer Ltd", customer_id=cid_b)
+        verdict = _is_safe_to_auto_merge(a, b)
+        assert verdict.safe is False
+
+    def test_same_customer_id_always_safe(self) -> None:
+        cid = uuid.uuid4()
+        a = self._deal(name="A", customer_id=cid)
+        b = self._deal(name="B", customer_id=cid)
+        assert _is_safe_to_auto_merge(a, b).safe is True
+
+    def test_one_side_customer_id_null_is_safe(self) -> None:
+        a = self._deal(customer_id=uuid.uuid4())
+        b = self._deal(customer_id=None)
+        assert _is_safe_to_auto_merge(a, b).safe is True
+
+    # ── Recency guard ───────────────────────────────────────────────────────
+
+    def test_deals_within_window_are_safe(self) -> None:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        a = self._deal(created_at=now)
+        b = self._deal(created_at=now - timedelta(days=AUTO_MERGE_WINDOW_DAYS - 1))
+        assert _is_safe_to_auto_merge(a, b).safe is True
+
+    def test_deals_outside_window_are_unsafe(self) -> None:
+        """Two deals on the same meter > 90 days apart are almost
+        certainly a supplier renewal or switch — different contract
+        cycles, do NOT auto-merge."""
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        a = self._deal(created_at=now)
+        b = self._deal(created_at=now - timedelta(days=AUTO_MERGE_WINDOW_DAYS + 1))
+        verdict = _is_safe_to_auto_merge(a, b)
+        assert verdict.safe is False
+        assert "d apart" in verdict.reason or "window" in verdict.reason
+
+    def test_recency_at_exact_boundary_is_safe(self) -> None:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        a = self._deal(created_at=now)
+        b = self._deal(created_at=now - timedelta(days=AUTO_MERGE_WINDOW_DAYS))
+        assert _is_safe_to_auto_merge(a, b).safe is True
+
+
+# ─── End-to-end merge with safety guard ────────────────────────────────────
+
+
+class TestMergeRespectsSafetyGuard:
+    """Per-call merge end-to-end with the safety predicate in play."""
+
+    def test_cross_supplier_pair_does_not_merge(self, test_db) -> None:
+        """The user-reported live-prod scenario: a BG voice call's deal
+        and an E.ON deal share an MPRN. Merge MUST NOT fire — the BG
+        call stays on its own deal."""
+        t0 = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=2)
+        eon_deal = _make_deal(
+            test_db,
+            name="Acme Ltd",
+            mprn="5085812604",
+            created_at=t0,
+        )
+        eon_deal.supplier = "E.ON Next"
+
+        bg_deal = _make_deal(test_db, name="Acme Ltd", mprn="5085812604")
+        bg_deal.supplier = "British Gas"
+        test_db.flush()
+        bg_call = _make_call(test_db, bg_deal)
+
+        outcome = merge_deals_on_meter_match(bg_call, test_db)
+        assert outcome.merged is False
+        assert bg_deal.id in outcome.skipped_unsafe_ids
+        # BG call still attached to BG deal.
+        test_db.refresh(bg_call)
+        assert bg_call.deal_id == bg_deal.id
+        # E.ON deal still exists.
+        assert (
+            test_db.query(CustomerDeal).filter_by(id=eon_deal.id).first()
+            is not None
+        )
+        # BG deal still exists.
+        assert (
+            test_db.query(CustomerDeal).filter_by(id=bg_deal.id).first()
+            is not None
+        )
+
+    def test_cross_customer_diverging_names_does_not_merge(self, test_db) -> None:
+        t0 = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=2)
+        cust_a = Customer(
+            id=uuid.uuid4(), legal_name="Acme Plumbing Ltd", slug="acme-plumbing"
+        )
+        cust_b = Customer(
+            id=uuid.uuid4(), legal_name="Zenith Heating PLC", slug="zenith-heating"
+        )
+        test_db.add_all([cust_a, cust_b])
+        test_db.flush()
+
+        older = _make_deal(test_db, name="Acme Plumbing Ltd", mprn="5085812604", created_at=t0)
+        older.supplier = "E.ON Next"
+        older.customer_id = cust_a.id
+
+        newer = _make_deal(test_db, name="Zenith Heating PLC", mprn="5085812604")
+        newer.supplier = "E.ON Next"
+        newer.customer_id = cust_b.id
+        test_db.flush()
+        newer_call = _make_call(test_db, newer)
+
+        outcome = merge_deals_on_meter_match(newer_call, test_db)
+        assert outcome.merged is False
+        assert newer.id in outcome.skipped_unsafe_ids
+        # Both deals untouched.
+        assert (
+            test_db.query(CustomerDeal).filter_by(id=older.id).first() is not None
+        )
+        assert (
+            test_db.query(CustomerDeal).filter_by(id=newer.id).first() is not None
+        )
+
+    def test_out_of_window_pair_does_not_merge(self, test_db) -> None:
+        """Same meter id, > 90d apart → almost certainly a renewal /
+        switch, not the same contract cycle."""
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        old_deal = _make_deal(
+            test_db,
+            name="Acme Ltd",
+            mprn="5085812604",
+            created_at=now - timedelta(days=AUTO_MERGE_WINDOW_DAYS + 30),
+        )
+        new_deal = _make_deal(test_db, name="Acme Ltd", mprn="5085812604", created_at=now)
+        new_call = _make_call(test_db, new_deal)
+
+        outcome = merge_deals_on_meter_match(new_call, test_db)
+        assert outcome.merged is False
+        assert new_deal.id in outcome.skipped_unsafe_ids
+        # Both deals stay put — the >90d gap means they're treated as
+        # separate contract cycles.
+        assert test_db.query(CustomerDeal).filter_by(id=old_deal.id).first() is not None
+
+    def test_same_supplier_same_customer_within_window_still_merges(
+        self, test_db
+    ) -> None:
+        """The good-case for the auto-merge — the user's original
+        'three Jayashree calls one supplier same day' scenario must
+        still fold cleanly into one deal under the new guard."""
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        a = _make_deal(
+            test_db,
+            name="Jayashree Swaminathan",
+            mprn="5085812604",
+            created_at=now - timedelta(hours=3),
+        )
+        a.supplier = "E.ON Next"
+
+        b = _make_deal(test_db, name="Jayashree Swaminathan", mprn="5085812604")
+        b.supplier = "E.ON Next"
+        test_db.flush()
+        b_call = _make_call(test_db, b)
+
+        outcome = merge_deals_on_meter_match(b_call, test_db)
+        assert outcome.merged is True
+        assert outcome.survivor_id == a.id
+
+    def test_consolidator_skips_cross_supplier_cluster(self, test_db) -> None:
+        """Batch path uses the same predicate."""
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        d1 = _make_deal(test_db, mprn="5085812604", created_at=now - timedelta(hours=2))
+        d1.supplier = "British Gas"
+        d2 = _make_deal(test_db, mprn="5085812604", created_at=now)
+        d2.supplier = "E.ON Next"
+        test_db.flush()
+        c1 = _make_call(test_db, d1, suffix="-a")
+        c2 = _make_call(test_db, d2, suffix="-b")
+
+        summary = consolidate_all_duplicate_deals(test_db, dry_run=False)
+        assert summary["clusters_found"] == 1
+        # No calls moved — both deals stayed put.
+        test_db.refresh(c1)
+        test_db.refresh(c2)
+        assert c1.deal_id == d1.id
+        assert c2.deal_id == d2.id
+        # The merge entry records the skip.
+        merge = summary["merges"][0]
+        assert merge["calls_moved"] == 0
+        assert merge.get("skipped_unsafe"), "expected skipped_unsafe in summary"
 
 
 # ─── Sibling search ────────────────────────────────────────────────────────
