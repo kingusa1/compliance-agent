@@ -18,6 +18,21 @@ _DISCONNECT_SIGNATURES = (
     "terminating connection due to administrator command",
     "could not receive data from server",
     "could not send data to server",
+    # 2026-05-25 — Supavisor (Supabase's pooler) bug seen during deploy
+    # cycles: psycopg2 opens the TCP connection, sends `SET CLIENT_ENCODING
+    # TO 'UTF8'`, and the pooler returns a ParameterStatus reply that
+    # doesn't include `client_encoding`. psycopg2 raises this exact string.
+    # The connection is unrecoverable — it must be invalidated and
+    # re-opened — so it belongs in the disconnect class, not the generic
+    # `db_error` class that goes to Sentry as a real bug.
+    "didn't return client encoding",
+    # Defensive coverage of more Supavisor / pgbouncer transient errors
+    # that surface during deploy cycles or pooler restarts and are
+    # unrecoverable on the same connection.
+    "consuming input failed",
+    "unexpected response from server",
+    "no connection to the server",
+    "connection has been closed",
 )
 
 engine = create_engine(
@@ -41,6 +56,14 @@ engine = create_engine(
         "keepalives_idle": 30,
         "keepalives_interval": 10,
         "keepalives_count": 3,
+        # 2026-05-25 — Set client_encoding via psycopg2's own arg so the
+        # driver never has to round-trip a `SET CLIENT_ENCODING` query
+        # against Supavisor at session start. Supavisor under load
+        # occasionally returns a ParameterStatus without `client_encoding`,
+        # tripping `psycopg2.OperationalError: server didn't return client
+        # encoding` for every new connection in the affected window.
+        # Passing it at connect time short-circuits the negotiation.
+        "client_encoding": "utf8",
         "options": "-c statement_timeout=15000",
     },
 )

@@ -51,6 +51,13 @@ class TestIsDisconnect:
             "could not send data to server: Broken pipe",
             # Real Supabase / psycopg2 phrasing seen in prod
             "psycopg2.OperationalError: SSL connection has been closed unexpectedly\n",
+            # 2026-05-25 — Supavisor pool storm during deploy cycles
+            "(psycopg2.OperationalError) server didn't return client encoding",
+            "server didn't return client encoding",
+            "consuming input failed: server closed the connection unexpectedly",
+            "no connection to the server\n",
+            "connection has been closed",
+            "unexpected response from server",
         ],
     )
     def test_classifies_disconnect_messages(self, msg: str) -> None:
