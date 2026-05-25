@@ -81,6 +81,19 @@ class Settings(BaseSettings):
     # background task as the sole path. See `app/workflows/process_call.py`.
     use_inngest_pipeline: bool = False
 
+    # ─── Bulk-upload concurrency cap ──────────────────────────────────
+    # Max concurrent pipelines that may be running at any moment. Uploads
+    # past this number are accepted immediately (call row created, status
+    # = pending) and their pipeline waits on the semaphore. Without this
+    # cap, 50 simultaneous uploads spawned 50 asyncio tasks that fanned
+    # out 750+ LLM calls and exhausted the DB pool, causing every UI
+    # request to lag behind queued reads.
+    # Default 8 sits comfortably under: 30-conn DB pool, OpenRouter's
+    # 60-req/min default rate limit (each pipeline averages ~1.5 LLM
+    # req/min), and Railway 24GB plan memory. Tune via env var if you
+    # vertically scale Railway.
+    pipeline_concurrency: int = Field(default=8, ge=1, le=64)
+
     # ─── W3.A — Pricing mismatch flag ─────────────────────────────────
     # When True, the L2 extraction writer runs the pricing-rate regex
     # extractor and emits PRICING_MISMATCH flags whenever an agent-stated

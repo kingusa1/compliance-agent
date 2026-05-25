@@ -58,7 +58,15 @@ def current_user(
     uid = payload.get("sub")
     if not uid:
         raise HTTPException(status_code=401, detail="Token missing sub claim")
-    profile = db.query(Profile).filter_by(id=uid).first()
+    # One-shot retry on a Supavisor idle-killed SSL connection: rollback to
+    # release the broken DBAPI handle, then re-issue. pool_pre_ping handles
+    # cold checkouts but not a connection that died mid-request.
+    from sqlalchemy.exc import OperationalError
+    try:
+        profile = db.query(Profile).filter_by(id=uid).first()
+    except OperationalError:
+        db.rollback()
+        profile = db.query(Profile).filter_by(id=uid).first()
     if not profile or not profile.active:
         raise HTTPException(status_code=401, detail="Profile not found or inactive")
     # Dev convenience: when DEV_ALL_ADMIN=true, every authenticated user is

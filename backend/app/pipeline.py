@@ -98,10 +98,22 @@ async def _trace_step(call_id: str, step_name: str, fn, *args, **kwargs):
     keys instead of polling.
     """
     import inspect, time as _time
-    from app.workflows.process_call import _persist_step_running, _persist_step_done
+    from app.workflows.process_call import (
+        _persist_step_running,
+        _persist_step_done,
+        _mark_step_started,
+    )
     from app import realtime
 
     started = _time.time()
+    # 2026-05-25 — wire `last_step_started_at` + `last_step_name` on the Call
+    # row from the legacy asyncio path too. The redispatch_watchdog query
+    # filters on `last_step_started_at < NOW() - 7 minutes`, which never
+    # matched in prod (USE_INNGEST_PIPELINE=false) because only the Inngest
+    # `_logged_step` wrapper used to call `_mark_step_started`. Result:
+    # genuinely stuck calls were invisible to the watchdog. Now both paths
+    # update the Call row at every step boundary.
+    _mark_step_started(call_id, step_name)
     row_id = _persist_step_running(call_id, step_name, args, kwargs)
     realtime.publish(call_id, "step_started", {"step": step_name})
     try:
@@ -2640,6 +2652,15 @@ def _write_extraction_outputs(call: Call, db: Session) -> None:
     # workflow) context. asyncio.run() can't be used inside a running loop
     # and asyncio.new_event_loop().run_until_complete() also fails when an
     # outer loop is active — only the threaded approach is safe in both modes.
+    #
+    # 2026-05-25 deadlock fix — do NOT use `with ThreadPoolExecutor() as pool:`.
+    # The context-manager `__exit__` calls `shutdown(wait=True)`, which waits
+    # for in-flight futures even when `result(timeout=...)` already raised.
+    # `extract_entities` makes LLM calls whose internal httpx timeout is
+    # 30s each — same as the wrapper budget — so a single slow LLM round
+    # would deadlock finalize forever on the still-running thread.
+    # We explicitly `shutdown(wait=False)` on timeout so the orphaned thread
+    # is left to die on its own and the pipeline progresses.
     import concurrent.futures
 
     def _run_extract():
@@ -2647,8 +2668,16 @@ def _write_extraction_outputs(call: Call, db: Session) -> None:
             extract_entities(call.id, call.transcript or "")
         )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        entities = pool.submit(_run_extract).result(timeout=30)
+    _extract_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    entities: list = []
+    try:
+        entities = _extract_pool.submit(_run_extract).result(timeout=90)
+    except concurrent.futures.TimeoutError:
+        log.error(f"L2_EXTRACTION_TIMEOUT call_id={call.id} step=extract_entities — orphaning thread, continuing")
+    except Exception as exc:
+        log.warning("entity extraction failed call_id=%s: %s", call.id, exc)
+    finally:
+        _extract_pool.shutdown(wait=False)
     for ent in entities:
         db.add(ent)
 
@@ -2663,12 +2692,17 @@ def _write_extraction_outputs(call: Call, db: Session) -> None:
             detect_vulnerability(call.id, call.transcript or "")
         )
 
+    # Same shutdown(wait=False)-on-timeout pattern as extract_entities above.
+    _vuln_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    vuln_flag = None
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            vuln_flag = pool.submit(_run_vuln).result(timeout=25)
+        vuln_flag = _vuln_pool.submit(_run_vuln).result(timeout=60)
+    except concurrent.futures.TimeoutError:
+        log.error(f"L2_EXTRACTION_TIMEOUT call_id={call.id} step=detect_vulnerability — orphaning thread, continuing")
     except Exception as exc:
         log.warning("vulnerability detection failed: %s", exc)
-        vuln_flag = None
+    finally:
+        _vuln_pool.shutdown(wait=False)
     if vuln_flag is not None:
         flags.append(vuln_flag)
 

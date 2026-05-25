@@ -1,4 +1,18 @@
-"""Integration: POST /calls/{id}/reanalyze emits CALL_REANALYZE and writes audit row."""
+"""Integration: POST /calls/{id}/reanalyze fires the background pipeline
+task (no Inngest dependency) and writes an audit row.
+
+2026-05-25 — `app.replay.reanalyze` was rewritten to run the analyze →
+score → finalize sub-pipeline directly via `asyncio.create_task` instead
+of emitting a CALL_REANALYZE Inngest event that production never
+consumed (USE_INNGEST_PIPELINE=false). New behaviours covered:
+
+  * 202 + run_id when transcript + word_data + script_id present
+  * 202 + run_id when transcript + word_data present but script_id null
+    (Reanalyze now recovers from missing supplier/script via detect_metadata)
+  * 422 only when transcript or word_data is missing
+  * 404 for unknown call id
+  * Audit row written before the background task spawns
+"""
 from unittest.mock import patch
 
 import pytest
@@ -47,26 +61,63 @@ def _override_auth():
     yield
 
 
+def _stub_background_task():
+    """Replace the heavy `_run_reanalysis` coroutine with a no-op so the
+    test doesn't actually invoke the LLM pipeline. We assert it was
+    SCHEDULED (asyncio.create_task called) which is what the endpoint's
+    contract guarantees."""
+    async def _noop(call_id: str, run_id: str) -> None:
+        return None
+    return patch("app.replay._run_reanalysis", side_effect=_noop)
+
+
 def test_reanalyze_returns_202_when_call_has_transcript(db_session_with_call_with_transcript):
     """db_session_with_call_with_transcript is a fixture seeding a Call row
     with non-null `transcript`, `word_data`, and `script_id`. See conftest.py."""
     call_id = db_session_with_call_with_transcript
 
-    with patch("app.replay.emit_event_async") as mock_emit:
-        async def fake_emit(*args, **kwargs):
-            return None
-        mock_emit.side_effect = fake_emit
+    with _stub_background_task() as mock_task:
         r = client.post(f"/api/calls/{call_id}/reanalyze")
 
     assert r.status_code == 202
     body = r.json()
     assert body["call_id"] == call_id
     assert "run_id" in body
-    mock_emit.assert_called_once()
-    # emit_event_async called positionally: (name, data)
-    name, payload = mock_emit.call_args.args
-    assert name == "call/reanalyze"
-    assert payload["call_id"] == call_id
+    # The endpoint scheduled the background pipeline run with both
+    # positional args (call_id, run_id) — the asyncio.create_task wrapper
+    # eagerly invokes the coroutine factory so our mock records the call.
+    mock_task.assert_called_once()
+    args, _ = mock_task.call_args
+    assert args[0] == call_id
+
+
+def test_reanalyze_returns_202_when_script_id_missing(db_session_with_call_with_transcript):
+    """Regression — UI screenshot 2026-05-25 — Reanalyze button must work
+    even when supplier/script detection failed on first pass. The endpoint
+    used to 422 with the misleading message "Call lacks transcript /
+    word_data / script_id"; now it runs detect_metadata as part of the
+    replay pipeline so the user can recover.
+    """
+    from app.database import SessionLocal
+    from app.models import Call
+
+    call_id = db_session_with_call_with_transcript
+
+    # Strip script_id off the fixture's Call row.
+    db = SessionLocal()
+    try:
+        call = db.query(Call).filter_by(id=call_id).first()
+        assert call is not None
+        call.script_id = None
+        db.commit()
+    finally:
+        db.close()
+
+    with _stub_background_task() as mock_task:
+        r = client.post(f"/api/calls/{call_id}/reanalyze")
+
+    assert r.status_code == 202
+    mock_task.assert_called_once()
 
 
 def test_reanalyze_returns_422_when_transcript_missing(db_session_with_call_no_transcript):

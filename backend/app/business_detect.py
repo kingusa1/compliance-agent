@@ -52,7 +52,13 @@ def _refresh_customer_cache(db: Session) -> None:
     ]
     _CUSTOMER_CACHE.customers = customers
     _CUSTOMER_CACHE.loaded_at = datetime.now(timezone.utc)
-    log.info(f"customer_cache refreshed: {len(customers)} customers loaded")
+    # Demoted to debug — fired every refresh on every step and added to the
+   # log-rate-limit spend without a clear consumer. Only the non-empty load
+    # is worth shouting about (helps spot a regression that empties the cache).
+    if customers:
+        log.info(f"customer_cache refreshed: {len(customers)} customers loaded")
+    else:
+        log.debug("customer_cache refreshed: 0 customers loaded")
 
 
 async def _arefresh_customer_cache(db: Session) -> None:

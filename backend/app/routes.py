@@ -500,6 +500,13 @@ async def upload_call(
     # writer for this call — skip the legacy asyncio task to avoid double
     # writes (D02 idempotency contract). When the flag is off, fall through
     # to the legacy task as before.
+    #
+    # 2026-05-25 — `_process_in_background` now acquires a global semaphore
+    # (`pipeline_concurrency`, default 8) so 50 simultaneous uploads no
+    # longer spawn 50 LLM-fanned-out pipelines all at once. Each call's
+    # row is created + the task is fired immediately (so the UI sees the
+    # upload land); the pipeline starts when a slot frees. UI stays snappy
+    # because the DB pool and LLM rate limits aren't slammed.
     if not stream and not settings.use_inngest_pipeline:
         asyncio.create_task(_process_in_background(call_id, remote_key, script_id))
 
@@ -534,26 +541,56 @@ async def upload_call(
     return call
 
 
+# Global pipeline-concurrency throttle. Initialised lazily on first
+# acquire so the configured cap from Settings is honoured (the Settings
+# singleton isn't ready at module-import time during pytest's collection
+# phase). Idempotent: subsequent calls reuse the same Semaphore instance.
+_PIPELINE_SEMAPHORE: asyncio.Semaphore | None = None
+
+
+def _get_pipeline_semaphore() -> asyncio.Semaphore:
+    global _PIPELINE_SEMAPHORE
+    if _PIPELINE_SEMAPHORE is None:
+        _PIPELINE_SEMAPHORE = asyncio.Semaphore(settings.pipeline_concurrency)
+    return _PIPELINE_SEMAPHORE
+
+
 async def _process_in_background(call_id: str, file_path: str, script_id: str | None = None):
-    from app.database import SessionLocal
-    db = SessionLocal()
-    try:
-        await process_call(call_id, file_path, db, script_id)
-        # B-2: emit call/finalized so L6 RAG ingest fires on the non-Inngest
-        # path too. The Inngest workflow has its own emit at the end of
-        # process_call_fn; this catches the legacy direct-pipeline path
-        # (settings.use_inngest_pipeline=False).
-        try:
-            import inngest as _inngest
-            from app.inngest_client import inngest_client
-            await inngest_client.send(
-                _inngest.Event(name="call/finalized", data={"call_id": call_id})
+    # process_call now opens a fresh DB session for each step internally
+    # (Supavisor kills server-side connections held idle across a multi-minute
+    # pipeline). No outer session needed; rescue-on-error is handled in
+    # process_call itself with its own fresh session.
+    #
+    # 2026-05-25 — bounded concurrency. Acquire a slot on the global
+    # pipeline semaphore before doing any work. If `pipeline_concurrency`
+    # slots are already taken (e.g. user just uploaded 50 calls), this
+    # task waits in FIFO order. The Call row is already in the DB with
+    # `status=queued` from the upload handler, so the UI shows it
+    # immediately — only the heavy LLM work is throttled. This keeps
+    # the DB pool, LLM rate limits, and memory under control.
+    sem = _get_pipeline_semaphore()
+    queued_at = time.monotonic()
+    async with sem:
+        wait_s = time.monotonic() - queued_at
+        if wait_s > 1.0:
+            log.info(
+                f"PIPELINE_QUEUED call_id={call_id} waited={wait_s:.1f}s "
+                f"cap={settings.pipeline_concurrency}"
             )
-            log.info(f"INNGEST_EVENT_SENT name=call/finalized call_id={call_id} (non-Inngest path)")
-        except Exception as e:
-            log.warning(f"INNGEST_EVENT_FAILED name=call/finalized call_id={call_id} err={e!r}")
-    finally:
-        db.close()
+        await process_call(call_id, file_path, None, script_id)
+    # B-2: emit call/finalized so L6 RAG ingest fires on the non-Inngest
+    # path too. The Inngest workflow has its own emit at the end of
+    # process_call_fn; this catches the legacy direct-pipeline path
+    # (settings.use_inngest_pipeline=False).
+    try:
+        import inngest as _inngest
+        from app.inngest_client import inngest_client
+        await inngest_client.send(
+            _inngest.Event(name="call/finalized", data={"call_id": call_id})
+        )
+        log.info(f"INNGEST_EVENT_SENT name=call/finalized call_id={call_id} (non-Inngest path)")
+    except Exception as e:
+        log.warning(f"INNGEST_EVENT_FAILED name=call/finalized call_id={call_id} err={e!r}")
 
 
 # Same-deal upload mode helper. UI calls this once before firing N parallel

@@ -253,19 +253,25 @@ def _truncate_for_log(value):
 def _persist_step_running(call_id: str, step_name: str, payload_in_args, payload_in_kwargs):
     """Insert a pipeline_step_log row when the step starts. Returns the row id
     (or None on best-effort failure) so _persist_step_done can update it.
-    """
-    try:
-        import uuid as _uuid
-        from datetime import datetime as _dt
-        from app.database import SessionLocal
-        from app.models import PipelineStepLog
 
-        row_id = str(_uuid.uuid4())
-        # Strip the call_id / audio_path positional spam — caller-friendly view.
-        capture_in = {
-            "args": [_truncate_for_log(a) for a in payload_in_args],
-            "kwargs": {k: _truncate_for_log(v) for k, v in payload_in_kwargs.items()},
-        }
+    Retries once on a Postgres disconnect (OperationalError) — Supavisor kills
+    pooled connections after ~60s idle, and SQLAlchemy's pool_pre_ping does
+    not always catch a half-open SSL socket on first checkout.
+    """
+    import uuid as _uuid
+    from datetime import datetime as _dt
+    from sqlalchemy.exc import OperationalError
+    from app.database import SessionLocal
+    from app.models import PipelineStepLog
+
+    row_id = str(_uuid.uuid4())
+    # Strip the call_id / audio_path positional spam — caller-friendly view.
+    capture_in = {
+        "args": [_truncate_for_log(a) for a in payload_in_args],
+        "kwargs": {k: _truncate_for_log(v) for k, v in payload_in_kwargs.items()},
+    }
+
+    def _write() -> str | None:
         db = SessionLocal()
         try:
             db.add(PipelineStepLog(
@@ -280,33 +286,59 @@ def _persist_step_running(call_id: str, step_name: str, payload_in_args, payload
             return row_id
         finally:
             db.close()
+
+    try:
+        return _write()
+    except OperationalError as e:
+        app_log.warning(f"WORKFLOW_STEP step={step_name} call_id={call_id} step_log_start_retry={e!r}")
+        try:
+            return _write()
+        except Exception as ee:
+            app_log.warning(f"WORKFLOW_STEP step={step_name} call_id={call_id} step_log_start_failed={ee!r}")
+            return None
     except Exception as e:
         app_log.warning(f"WORKFLOW_STEP step={step_name} call_id={call_id} step_log_start_failed={e!r}")
         return None
 
 
 def _persist_step_done(row_id, step_name: str, status: str, payload_out, error_message, duration_ms: int):
-    """Update the running pipeline_step_log row to ok | err with output JSON."""
+    """Update the running pipeline_step_log row to ok | err with output JSON.
+
+    Retries once on a Postgres disconnect (OperationalError) — same Supavisor
+    idle-kill rationale as ``_persist_step_running``.
+    """
     if not row_id:
         return
-    try:
-        from datetime import datetime as _dt
-        from app.database import SessionLocal
-        from app.models import PipelineStepLog
+    from datetime import datetime as _dt
+    from sqlalchemy.exc import OperationalError
+    from app.database import SessionLocal
+    from app.models import PipelineStepLog
 
+    payload_out_safe = _truncate_for_log(payload_out) if payload_out is not None else None
+
+    def _write() -> None:
         db = SessionLocal()
         try:
             row = db.query(PipelineStepLog).filter_by(id=row_id).first()
             if row is None:
                 return
             row.status = status
-            row.payload_out = _truncate_for_log(payload_out) if payload_out is not None else None
+            row.payload_out = payload_out_safe
             row.error_message = error_message
             row.ended_at = _dt.utcnow()
             row.duration_ms = duration_ms
             db.commit()
         finally:
             db.close()
+
+    try:
+        _write()
+    except OperationalError as e:
+        app_log.warning(f"WORKFLOW_STEP step={step_name} step_log_done_retry={e!r}")
+        try:
+            _write()
+        except Exception as ee:
+            app_log.warning(f"WORKFLOW_STEP step={step_name} step_log_done_failed={ee!r}")
     except Exception as e:
         app_log.warning(f"WORKFLOW_STEP step={step_name} step_log_done_failed={e!r}")
 
@@ -327,7 +359,12 @@ def _logged_step(call_id: str, step_name: str, fn):
         started = time.time()
         _mark_step_started(call_id, step_name)
         log_row_id = _persist_step_running(call_id, step_name, args, kwargs)
-        app_log.info(f"WORKFLOW_STEP step={step_name} call_id={call_id} status=start duration_ms=0")
+        # 2026-05-24: demoted to debug — status=ok/err lines below already
+        # bound the step. Emitting both at info doubled hot-path log volume
+        # and tripped Railway's 500 lines/sec replica rate limit
+        # (Messages dropped: 2763 in one 11s window). Keep the row in the
+        # pipeline_step_log table (persisted above) for observability.
+        app_log.debug(f"WORKFLOW_STEP step={step_name} call_id={call_id} status=start duration_ms=0")
         try:
             raw = fn(*args, **kwargs)
             if inspect.isawaitable(raw):
