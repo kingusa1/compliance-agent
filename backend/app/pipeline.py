@@ -402,6 +402,96 @@ async def process_call(call_id: str, file_path: str, db: Session | None = None, 
         finally:
             _quality_db.close()
 
+        # 2026-05-26 — POST-PIPELINE SUPPLIER CONSISTENCY GUARD
+        # ──────────────────────────────────────────────────────────────
+        # Owner-reported production incident (screenshot 2026-05-26): 4
+        # uploaded calls (3 EON Next + 1 British Gas) all ended up on
+        # ONE deal with supplier=E.ON Next, even though the in-step
+        # `_step_detect_metadata` peel (lines ~1310-1389) is supposed to
+        # split a call off its parent deal when their suppliers diverge.
+        # The peel can miss when:
+        #   - the BG call's detect_supplier ran while another call held
+        #     FOR UPDATE on the deal row (race window)
+        #   - the SAVEPOINT mid-step swallowed the peel exception
+        #   - a subsequent customer-name merge re-attached the peeled call
+        #     to a same-customer EON deal
+        # This final safety-net runs AFTER all merge logic has settled.
+        # It's idempotent: if supplier already matches, no-op. If they
+        # diverge, peel the call onto a fresh deal so the data shape
+        # honours the invariant "one deal = one supplier contract".
+        try:
+            from app.models import CustomerDeal as _Deal
+            from app.deal_meter_merge import _supplier_norm
+            _supplier_db = SessionLocal()
+            try:
+                final_call = _supplier_db.query(Call).filter_by(id=call_id).first()
+                if (
+                    final_call
+                    and final_call.deal_id
+                    and final_call.detected_supplier
+                    and final_call.detected_supplier.lower() not in ("unknown", "n/a", "none", "null", "-")
+                ):
+                    final_deal = (
+                        _supplier_db.query(_Deal)
+                        .filter_by(id=final_call.deal_id)
+                        .with_for_update()
+                        .first()
+                        if _supplier_db.bind and _supplier_db.bind.dialect.name == "postgresql"
+                        else _supplier_db.query(_Deal).filter_by(id=final_call.deal_id).first()
+                    )
+                    if final_deal is not None:
+                        deal_norm = _supplier_norm(final_deal.supplier)
+                        call_norm = _supplier_norm(final_call.detected_supplier)
+                        if deal_norm and call_norm and deal_norm != call_norm:
+                            # Mismatch survived through the pipeline — peel
+                            # NOW. Create a fresh deal carrying the call's
+                            # detected supplier; the original deal keeps
+                            # whichever supplier it had.
+                            old_deal_id = final_deal.id
+                            new_deal = _Deal(
+                                customer_name=final_deal.customer_name,
+                                supplier=final_call.detected_supplier,
+                                status="in_progress",
+                            )
+                            _supplier_db.add(new_deal)
+                            _supplier_db.flush()
+                            final_call.deal_id = new_deal.id
+                            log.warning(
+                                f"⚠️ POST_PIPELINE_SUPPLIER_PEEL "
+                                f"call_id={call_id} "
+                                f"old_deal={old_deal_id} ({final_deal.supplier!r}) "
+                                f"new_deal={new_deal.id} (\"{final_call.detected_supplier}\") "
+                                f"— safety-net caught what in-step peel missed"
+                            )
+                            try:
+                                from app.audit import record_audit
+                                record_audit(
+                                    _supplier_db,
+                                    action="deal.post_pipeline_supplier_peel",
+                                    entity_type="customer_deal",
+                                    entity_id=str(new_deal.id),
+                                    payload={
+                                        "call_id": str(call_id),
+                                        "original_deal_id": str(old_deal_id),
+                                        "original_deal_supplier": final_deal.supplier,
+                                        "call_detected_supplier": final_call.detected_supplier,
+                                        "trigger": "process_call_finalizer",
+                                    },
+                                    organization_id=(
+                                        str(final_call.organization_id)
+                                        if final_call.organization_id else None
+                                    ),
+                                )
+                            except Exception as _audit_e:  # noqa: BLE001
+                                log.warning(
+                                    f"post_pipeline_supplier_peel audit append failed: {_audit_e}"
+                                )
+                            _supplier_db.commit()
+            finally:
+                _supplier_db.close()
+        except Exception as _peel_e:  # noqa: BLE001 — safety net must never break the pipeline
+            log.warning(f"post-pipeline supplier peel skipped call_id={call_id}: {_peel_e}")
+
         log.info(f"\U0001f4ca COMPLETE call_id={call_id} → {time.time()-pipeline_start:.1f}s total")
     except Exception as e:
         log.error(f"\U0001f4a5 ERROR call_id={call_id} → {str(e)}")
