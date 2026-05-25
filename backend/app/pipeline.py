@@ -1131,6 +1131,17 @@ async def _step_detect_metadata(
         # so two concurrent finalises racing on the same parent deal
         # serialise — the loser sees the winner's write and either no-ops
         # (same supplier) or peels (different supplier).
+        #
+        # 2026-05-25 — CRITICAL: the whole block runs inside a
+        # `db.begin_nested()` SAVEPOINT so that a flush / audit-write
+        # failure self-rolls-back to a known-clean state WITHOUT
+        # poisoning the outer pipeline transaction. The previous
+        # implementation did `except Exception: log` without rollback,
+        # which left the SQLAlchemy session in InFailedSqlTransaction
+        # state — every subsequent query in `_step_detect_metadata` then
+        # blew up with "current transaction is aborted, commands ignored
+        # until end of transaction block", and the call was left stuck
+        # at status="processing" with no metadata.
         try:
             from app.models import CustomerDeal as _Deal
             from app.deal_meter_merge import _supplier_norm
@@ -1139,68 +1150,78 @@ async def _step_detect_metadata(
                 and detected != "Unknown"
                 and call.deal_id
             ):
-                # Row-level lock — same pattern as deal_meter_merge._lock_survivor.
-                is_pg = db.bind.dialect.name == "postgresql" if db.bind else False
-                q = db.query(_Deal).filter_by(id=call.deal_id)
-                if is_pg:
-                    q = q.with_for_update()
-                deal = q.first()
-                if deal is not None:
-                    deal_supplier_norm = _supplier_norm(deal.supplier)
-                    detected_norm = _supplier_norm(detected)
-                    if not deal_supplier_norm:
-                        # Empty / placeholder — backfill. First-finalise wins.
-                        if can_overwrite(deal, "supplier", "ai"):
-                            deal.supplier = detected
-                            set_source(deal, "supplier", "ai")
-                            log.info(
-                                f"\U0001f504 BACKFILL deal supplier "
-                                f"call_id={call_id} → \"{detected}\""
+                sp = db.begin_nested()
+                try:
+                    # Row-level lock — same pattern as deal_meter_merge._lock_survivor.
+                    is_pg = db.bind.dialect.name == "postgresql" if db.bind else False
+                    q = db.query(_Deal).filter_by(id=call.deal_id)
+                    if is_pg:
+                        q = q.with_for_update()
+                    deal = q.first()
+                    if deal is not None:
+                        deal_supplier_norm = _supplier_norm(deal.supplier)
+                        detected_norm = _supplier_norm(detected)
+                        if not deal_supplier_norm:
+                            # Empty / placeholder — backfill. First-finalise wins.
+                            if can_overwrite(deal, "supplier", "ai"):
+                                deal.supplier = detected
+                                set_source(deal, "supplier", "ai")
+                                log.info(
+                                    f"\U0001f504 BACKFILL deal supplier "
+                                    f"call_id={call_id} → \"{detected}\""
+                                )
+                        elif deal_supplier_norm != detected_norm:
+                            # Supplier mismatch: peel this call onto a fresh
+                            # deal stub. The parent deal keeps whichever
+                            # supplier won the race; the mismatched call gets
+                            # its own deal with its own correct supplier.
+                            old_deal_id = call.deal_id
+                            # NOTE: CustomerDeal ORM model doesn't currently
+                            # expose `organization_id` even though the
+                            # Postgres column exists (multi-tenancy is Phase 2).
+                            # When the model gains the attr, copy it here too.
+                            new_deal = _Deal(
+                                customer_name=deal.customer_name,
+                                supplier=detected,
+                                status="in_progress",
                             )
-                    elif deal_supplier_norm != detected_norm:
-                        # Supplier mismatch: peel this call onto a fresh
-                        # deal stub. The parent deal keeps whichever
-                        # supplier won the race; the mismatched call gets
-                        # its own deal with its own correct supplier.
-                        old_deal_id = call.deal_id
-                        # NOTE: CustomerDeal ORM model doesn't currently
-                        # expose `organization_id` even though the
-                        # Postgres column exists (multi-tenancy is Phase 2).
-                        # When the model gains the attr, copy it here too.
-                        new_deal = _Deal(
-                            customer_name=deal.customer_name,
-                            supplier=detected,
-                            status="in_progress",
-                        )
-                        db.add(new_deal)
-                        db.flush()
-                        call.deal_id = new_deal.id
-                        log.warning(
-                            f"⚠️ SUPPLIER_MISMATCH_SPLIT "
-                            f"call_id={call_id} "
-                            f"old_deal={old_deal_id} ({deal.supplier!r}) "
-                            f"new_deal={new_deal.id} (\"{detected}\")"
-                        )
-                        try:
-                            from app.audit import record_audit
-                            record_audit(
-                                db,
-                                action="deal.supplier_mismatch_split",
-                                entity_type="customer_deal",
-                                entity_id=str(new_deal.id),
-                                payload={
-                                    "call_id": str(call.id),
-                                    "original_deal_id": str(old_deal_id),
-                                    "original_deal_supplier": deal.supplier,
-                                    "call_detected_supplier": detected,
-                                    "trigger": "_step_detect_metadata",
-                                },
-                                organization_id=str(call.organization_id) if call.organization_id else None,
-                            )
-                        except Exception as audit_e:  # noqa: BLE001
+                            db.add(new_deal)
+                            db.flush()
+                            call.deal_id = new_deal.id
                             log.warning(
-                                f"supplier_mismatch_split audit append failed: {audit_e}"
+                                f"⚠️ SUPPLIER_MISMATCH_SPLIT "
+                                f"call_id={call_id} "
+                                f"old_deal={old_deal_id} ({deal.supplier!r}) "
+                                f"new_deal={new_deal.id} (\"{detected}\")"
                             )
+                            try:
+                                from app.audit import record_audit
+                                record_audit(
+                                    db,
+                                    action="deal.supplier_mismatch_split",
+                                    entity_type="customer_deal",
+                                    entity_id=str(new_deal.id),
+                                    payload={
+                                        "call_id": str(call.id),
+                                        "original_deal_id": str(old_deal_id),
+                                        "original_deal_supplier": deal.supplier,
+                                        "call_detected_supplier": detected,
+                                        "trigger": "_step_detect_metadata",
+                                    },
+                                    organization_id=str(call.organization_id) if call.organization_id else None,
+                                )
+                            except Exception as audit_e:  # noqa: BLE001
+                                log.warning(
+                                    f"supplier_mismatch_split audit append failed: {audit_e}"
+                                )
+                    sp.commit()
+                except Exception as sp_e:  # noqa: BLE001
+                    # SAVEPOINT rollback — the outer transaction stays
+                    # clean and the pipeline continues past this block.
+                    sp.rollback()
+                    log.warning(
+                        f"supplier backfill / mismatch-split rolled back: {sp_e}"
+                    )
         except Exception as e:
             log.warning(f"supplier backfill / mismatch-split skipped: {e}")
 
