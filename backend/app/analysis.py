@@ -1,7 +1,8 @@
 import json
 import re
 
-import httpx
+# 2026-05-26 — `httpx` import removed; every HTTP call now goes through
+# the shared `AsyncClient` factory at `app.http_clients`.
 
 from app.watt_compliance.phrase_regex import PhraseHit, hit_summary, scan as phrase_scan
 from app.watt_compliance.prompts import system_prompt_for_call_type
@@ -348,9 +349,22 @@ def _strip_code_fences(content: str) -> str:
 
 
 async def _call_openai_compat(url: str, api_key: str, model: str, prompt: str, timeout: float, label: str) -> str:
-    """Shared caller for OpenAI-compatible APIs (OpenRouter, OpenAI, Anthropic messages)."""
+    """Shared caller for OpenAI-compatible APIs (OpenRouter, OpenAI, Anthropic messages).
+
+    2026-05-26 \u2014 uses the shared `httpx.AsyncClient` from `app.http_clients`
+    (per-event-loop singleton with `Limits(max_connections=200,
+    max_keepalive_connections=100, keepalive_expiry=30s)` and a 5s `pool`
+    timeout). Per-call clients were creating fresh pools, paying TLS
+    handshake every call, and exposing httpcore's `_state_lock` race
+    when cancellations fired mid-stream (encode/httpcore #783).
+    Wraps in the per-provider semaphore so 75-way fanout queues at the
+    boundary instead of slamming the pool + upstream rate limit.
+    """
+    from app.http_clients import get_async_client, openrouter_semaphore
+
     log.info(f"\U0001f916 LLM [{label}] calling {model} (timeout={timeout}s)")
-    async with httpx.AsyncClient() as client:
+    client = get_async_client()
+    async with openrouter_semaphore():
         response = await client.post(
             url,
             headers={
@@ -448,7 +462,11 @@ async def _call_openrouter_cached(
         "temperature": 0,
         "max_tokens": 4096,
     }
-    async with httpx.AsyncClient() as client:
+    # 2026-05-26 — shared AsyncClient + provider semaphore (same posture
+    # as `_call_openai_compat` above); see app/http_clients.py.
+    from app.http_clients import get_async_client, openrouter_semaphore
+    client = get_async_client()
+    async with openrouter_semaphore():
         response = await client.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
@@ -523,7 +541,10 @@ async def _call_anthropic(
 
     label = "Anthropic+cache" if cache_eligible else "Anthropic"
     log.info(f"\U0001f916 LLM [{label}] calling {settings.anthropic_model} (timeout={timeout}s)")
-    async with httpx.AsyncClient() as client:
+    # 2026-05-26 — shared AsyncClient + Anthropic-tier semaphore.
+    from app.http_clients import get_async_client, anthropic_semaphore
+    client = get_async_client()
+    async with anthropic_semaphore():
         response = await client.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -553,7 +574,12 @@ async def _call_gemini(prompt: str, timeout: float) -> str:
     model = settings.gemini_model
     log.info(f"\U0001f916 LLM [Gemini] calling {model} (timeout={timeout}s)")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    async with httpx.AsyncClient() as client:
+    # 2026-05-26 — shared AsyncClient. Gemini has its own per-key rate
+    # limit (and is rarely on the hot path here), so we reuse the OpenRouter
+    # semaphore as a coarse fairness gate rather than adding a third one.
+    from app.http_clients import get_async_client, openrouter_semaphore
+    client = get_async_client()
+    async with openrouter_semaphore():
         response = await client.post(
             url,
             headers={

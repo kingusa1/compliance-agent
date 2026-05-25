@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     cohere_api_key: str = ""
     database_url: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/compliance_dev"
     migration_database_url: str = ""  # Session-mode pooler (port 5432) for Alembic; transaction pooler lacks advisory locks.
+    # 2026-05-26 — Optional direct DB connection (port :5432 to db.<ref>.supabase.co,
+    # NOT the pooler) for long-running background tasks like the
+    # _idle_release_loop. Supavisor's transaction-mode pooler is optimised
+    # for many short transactions and intermittently kills idle sockets;
+    # a single long-lived background task does much better on a direct
+    # connection with TCP keepalives. Falls back to `database_url` when
+    # unset so local dev keeps working unchanged.
+    direct_database_url: str = ""
     create_tables_on_startup: bool = False  # Alembic owns schema; tests can override via env (e.g. in conftest.py).
     upload_dir: str = "./uploads"
     max_file_size: int = 25 * 1024 * 1024  # 25MB — within Vercel/Railway proxy limits

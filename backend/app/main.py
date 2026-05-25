@@ -67,13 +67,21 @@ async def _idle_release_loop(interval_seconds: int = 120):
     automatic retry with a fresh session. The Prometheus counter
     `db_retry_total{outcome=...}` records whether the retry recovered.
     """
-    from app.database import SessionLocal
+    # 2026-05-26 — switched from `SessionLocal` (Supavisor pooled engine)
+    # to `DirectSessionLocal` (direct :5432 engine). The Supavisor pooler
+    # kills idle pool members; a periodic background loop that holds
+    # `Session.query()` across a 2-min sleep is exactly the workload that
+    # produces `SSL connection has been closed unexpectedly` every other
+    # iteration. The direct engine has its own tiny pool (2+0) with TCP
+    # keepalives. Falls back to the main pool when DIRECT_DATABASE_URL is
+    # unset (dev/tests).
+    from app.database import DirectSessionLocal
     from app.db_retry import db_retry_on_disconnect
     from app.hitl_routes import _release_idle_claims_core
 
     @db_retry_on_disconnect()
     def _iteration() -> int:
-        db = SessionLocal()
+        db = DirectSessionLocal()
         try:
             return _release_idle_claims_core(db)
         finally:
@@ -92,6 +100,56 @@ async def _idle_release_loop(interval_seconds: int = 120):
             # here). Log and continue — the sweeper must never die.
             log.warning(f"idle_release loop iteration failed: {e}")
         await asyncio.sleep(interval_seconds)
+
+
+async def _loop_lag_canary(
+    *,
+    target_sleep_s: float = 0.1,
+    warn_threshold_s: float = 0.5,
+    sample_interval_s: float = 5.0,
+):
+    """Background task that measures event-loop scheduling lag.
+
+    Runs forever: sleep `target_sleep_s` (100 ms), measure the actual
+    elapsed, log + increment a Prometheus counter when the elapsed
+    exceeds `warn_threshold_s` (500 ms = "loop was starved").
+
+    When a sync CPU block runs on the asyncio loop (the GIL-contention
+    pattern that caused 2026-05-25's UI hang), the canary sleep takes
+    several seconds and surfaces the starvation as a metric instead of
+    a silent customer-visible hang.
+
+    Reference: standard ops pattern documented at
+    https://death.andgravity.com/limit-concurrency and adopted by
+    aiohttp / Twisted production deployments.
+    """
+    import time as _time
+
+    try:
+        from app.observability_metrics import LOOP_LAG_WARN_TOTAL  # type: ignore
+    except Exception:  # noqa: BLE001 — metric optional
+        LOOP_LAG_WARN_TOTAL = None  # type: ignore
+
+    while True:
+        start = _time.monotonic()
+        try:
+            await asyncio.sleep(target_sleep_s)
+        except asyncio.CancelledError:
+            raise
+        actual = _time.monotonic() - start
+        lag = actual - target_sleep_s
+        if lag > warn_threshold_s:
+            log.warning(
+                "loop_lag_canary target=%.0fms actual=%.0fms lag=%.0fms "
+                "(asyncio loop is starved — likely sync CPU on the loop)",
+                target_sleep_s * 1000, actual * 1000, lag * 1000,
+            )
+            if LOOP_LAG_WARN_TOTAL is not None:
+                try:
+                    LOOP_LAG_WARN_TOTAL.inc()
+                except Exception:  # noqa: BLE001
+                    pass
+        await asyncio.sleep(sample_interval_s)
 
 
 @asynccontextmanager
@@ -244,19 +302,51 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001 — heal must never break boot
             app_log.warning(f"AUTO_HEAL_ON_STARTUP skipped/failed: {type(e).__name__}: {e}")
 
+    # 2026-05-26 — Raise AnyIO threadpool limiter from default 40 → 200.
+    # Per AnyIO docs, `to_thread.run_sync()` and every sync FastAPI `def`
+    # route share a global CapacityLimiter; with 5 concurrent uploads
+    # firing parallel pipelines and the UI making concurrent reads, the
+    # 40-token default queues threadpool requests behind pipeline work.
+    # 200 tokens is well within Railway's per-replica thread budget and
+    # matches FastAPI Discussion #12269's production guidance.
+    try:
+        import anyio.to_thread
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 200
+        app_log.info("anyio threadpool limiter total_tokens=200")
+    except Exception as e:  # noqa: BLE001
+        app_log.warning(f"failed to raise anyio threadpool limiter: {e!r}")
+
     # Start the idle-claim sweeper. Runs every 120s on its own Session, so it
     # doesn't compete with request-scoped sessions for connection-pool slots.
     idle_task = asyncio.create_task(_idle_release_loop())
+
+    # 2026-05-26 — asyncio loop-lag canary. Background task that sleeps
+    # 0.1s and logs the ACTUAL elapsed. If a sync block holds the GIL,
+    # the elapsed will exceed 100ms — surfacing event-loop starvation as
+    # a metric instead of a silent UI hang. Standard ops pattern from
+    # death.andgravity / Twisted / aiohttp production playbooks.
+    loop_lag_task = asyncio.create_task(_loop_lag_canary())
 
     try:
         yield
     finally:
         idle_task.cancel()
+        loop_lag_task.cancel()
         # Bound the await so a wedged sweeper can't outlast Railway's 15s SIGTERM grace.
         try:
             await asyncio.wait_for(idle_task, timeout=5)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
+        try:
+            await asyncio.wait_for(loop_lag_task, timeout=2)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        # 2026-05-26 — close the shared httpx.AsyncClient pool on shutdown.
+        try:
+            from app.http_clients import aclose_all_clients
+            await aclose_all_clients()
+        except Exception as e:  # noqa: BLE001 — best-effort shutdown
+            app_log.warning(f"http_clients aclose failed: {e!r}")
 
 
 def init_sentry() -> None:

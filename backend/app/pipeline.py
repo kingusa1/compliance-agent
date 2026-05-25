@@ -117,6 +117,29 @@ async def _trace_step(call_id: str, step_name: str, fn, *args, **kwargs):
     row_id = _persist_step_running(call_id, step_name, args, kwargs)
     realtime.publish(call_id, "step_started", {"step": step_name})
     try:
+        # 2026-05-26 — `_trace_step` runs `fn` INLINE on the asyncio loop.
+        #
+        # Why not `asyncio.to_thread`?
+        # The orchestrator pattern opens a SessionLocal on the asyncio
+        # thread, hands it to the step, and closes it on the asyncio
+        # thread after the step returns. psycopg2's libpq C-level
+        # connection state is not safe to be touched from a worker
+        # thread while the asyncio thread also has access — even
+        # sequentially (the GIL is released around blocking I/O inside
+        # libpq, so another thread could grab the pool while the
+        # worker is mid-query). See 2026-05-26 perf-wave-2 python
+        # reviewer HIGH-2 finding.
+        #
+        # The right long-term fix (separate ticket) is to move
+        # SessionLocal lifecycle INSIDE `_trace_step` so the step's
+        # session is opened, used, and closed entirely in one
+        # thread. Until then, sync steps run on the loop and we
+        # rely on (a) provider semaphores, (b) TCP keepalives,
+        # (c) asyncio.timeout, (d) per-step SessionLocal release
+        # to keep the loop responsive. The remaining sync CPU
+        # (json.loads of 50KB) is ≈150ms per finalize — measurable
+        # but no longer the dominant lag source after the upstream
+        # backpressure fix.
         raw = fn(*args, **kwargs)
         result = await raw if inspect.isawaitable(raw) else raw
         elapsed_ms = int((_time.time() - started) * 1000)

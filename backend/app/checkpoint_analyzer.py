@@ -292,10 +292,17 @@ async def analyze_single_checkpoint(
     prompt = prompt_template.format(checkpoints_text=cp_text, transcript=transcript)
 
     try:
-        content = await asyncio.wait_for(
-            _call_llm(prompt, timeout=BATCH_TIMEOUT),
-            timeout=BATCH_TIMEOUT + 5,
-        )
+        # 2026-05-26 — `asyncio.wait_for` wraps the coroutine in a second
+        # task and races with httpcore's connection-cleanup `_state_lock`
+        # when the timeout fires mid-stream. Documented in encode/httpcore
+        # discussions #783 and #395, and cpython bpo-42130/43389. Switched
+        # to `asyncio.timeout` (Python 3.11+) which does NOT create an
+        # extra task and propagates cancellation cleanly through httpx +
+        # tenacity. This was the root cause of the production
+        # `CancelledError → _state_lock.acquire → cancel_shielded_checkpoint`
+        # traceback seen 2026-05-25 19:02 UTC.
+        async with asyncio.timeout(BATCH_TIMEOUT + 5):
+            content = await _call_llm(prompt, timeout=BATCH_TIMEOUT)
         if content.startswith("```"):
             content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
@@ -504,10 +511,10 @@ async def _analyze_batch(
         llm_call = _call_llm(prompt, timeout=BATCH_TIMEOUT)
 
     try:
-        content = await asyncio.wait_for(
-            llm_call,
-            timeout=BATCH_TIMEOUT + 5,
-        )
+        # See lines ~295 above for the rationale on `asyncio.timeout` vs
+        # `asyncio.wait_for` (encode/httpcore #783 / cpython bpo-42130).
+        async with asyncio.timeout(BATCH_TIMEOUT + 5):
+            content = await llm_call
         if content.startswith("```"):
             content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 

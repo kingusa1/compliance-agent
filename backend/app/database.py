@@ -72,7 +72,18 @@ engine = create_engine(
     #                         in.
     pool_size=10,
     max_overflow=20,
-    pool_recycle=240,
+    # 2026-05-26 — Bumped pool_recycle 240→1800 (30 min). Per
+    # Close.com's robust-connections recipe + CYBERTEC's TCP-keepalive
+    # guidance, `pool_recycle` should be LONGER than typical transaction
+    # life and shorter than the upstream idle-kill. The real fix for
+    # `SSL connection has been closed unexpectedly` is the kernel
+    # TCP-keepalive params below, which detect a dead socket at the
+    # network layer before psycopg2 tries to use it. 240s was a
+    # symptom-mask that still left a window.
+    # Refs:
+    #   https://making.close.com/posts/data-stores-robust-connections/
+    #   https://www.cybertec-postgresql.com/en/tcp-keepalive-for-a-better-postgresql-experience/
+    pool_recycle=1800,
     pool_timeout=10,
     pool_use_lifo=True,
     # Default compiled-statement cache is 500; lift to 1200 so the hot
@@ -81,13 +92,22 @@ engine = create_engine(
     query_cache_size=1200,
     connect_args={
         "connect_timeout": 10,
+        # 2026-05-26 — tcp_user_timeout = 10s kills a half-open TCP
+        # connection at the kernel layer (psycopg2 #1722 + 2024
+        # production guidance from Close Engineering). Distinct from
+        # statement_timeout: this aborts any TCP `send/recv` that
+        # blocks > 10s on un-ACK'd data.
+        "tcp_user_timeout": 10_000,
         # Aggressive TCP keepalives so the kernel TELLS the app the
         # connection is dead BEFORE psycopg2 tries to use it for a
-        # query. Sub-30-second detection on a stale socket.
+        # query. Tuned per CYBERTEC + Close.com production recipes:
+        # first probe after 30s idle, retry every 10s, 5 attempts =
+        # ~80s end-to-end. Was 3 attempts; bumped to 5 for Supavisor
+        # which intermittently NAKs but recovers.
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,
-        "keepalives_count": 3,
+        "keepalives_count": 5,
         # 2026-05-25 — Set client_encoding via psycopg2's own arg so the
         # driver never has to round-trip a `SET CLIENT_ENCODING` query
         # against Supavisor at session start. Supavisor under load
@@ -150,6 +170,55 @@ def _handle_disconnect(ctx) -> None:
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
+
+
+# ── Direct-connection engine for long-lived background tasks ────────────
+# 2026-05-26 — Supavisor's transaction-mode pooler at `:6543` is tuned for
+# many short transactions; long-running background loops (e.g. the
+# `_idle_release_loop` that scans expired ClaimLocks every 2 minutes) saw
+# repeated `SSL connection has been closed unexpectedly` because the
+# pooler intermittently kills idle pool members. Per Supabase docs,
+# background jobs / scheduled tasks should use a direct connection
+# (port :5432 on `db.<ref>.supabase.co`) instead. Falls back to the main
+# pool when `direct_database_url` is unset so local dev / tests keep
+# working without env-var changes.
+#
+# Pool sized tiny (2 + 0) because only the idle-release loop uses it.
+# If we add more background loops later we share THIS engine and bump
+# the size.
+if settings.direct_database_url:
+    direct_engine = create_engine(
+        settings.direct_database_url,
+        pool_pre_ping=True,
+        pool_size=2,
+        max_overflow=0,
+        pool_recycle=1800,
+        pool_timeout=10,
+        pool_use_lifo=True,
+        query_cache_size=400,
+        connect_args={
+            "connect_timeout": 10,
+            "tcp_user_timeout": 10_000,
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 5,
+            "client_encoding": "utf8",
+            "options": "-c statement_timeout=15000",
+        },
+    )
+    DirectSessionLocal = sessionmaker(bind=direct_engine, autoflush=False, autocommit=False)
+    log.info("database: direct_engine initialized (pool=2/0, recycle=1800s)")
+else:
+    # No DIRECT_DATABASE_URL configured — background tasks reuse the
+    # main pooled engine. Safe fallback for dev / tests.
+    direct_engine = engine
+    DirectSessionLocal = SessionLocal
+    log.info(
+        "database: DIRECT_DATABASE_URL unset — background tasks reuse the "
+        "pooled engine (acceptable in dev; in prod, set DIRECT_DATABASE_URL "
+        "to the Supabase direct connection string for better resilience)"
+    )
 
 
 def get_db():

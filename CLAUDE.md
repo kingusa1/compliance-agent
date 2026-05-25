@@ -3,6 +3,11 @@
 > **🛑 BINDING DOCTRINE — read before any tool call:**
 > - [BRAIN/00_LAW_OF_ENTERPRISE_GRADE.md](BRAIN/00_LAW_OF_ENTERPRISE_GRADE.md) — every fix must meet the 12-line enterprise-grade checklist. A patch that misses any line is not done.
 > - [BRAIN/00_LAW_OF_SKILLS.md](BRAIN/00_LAW_OF_SKILLS.md) **v2.1 — executable enforcement**. A skill is "fired" ONLY when the `Skill` or `Agent` tool was invoked by name AND a row exists in `BRAIN/06_Operations/Skill_Ledger.md`. The pre-push git hook calls `scripts/doctrine/audit.py pre-push`; a push that fails the audit is rejected by git itself. Override: `python scripts/doctrine/audit.py pre-push --waive "<verbatim user quote>"`.
+> - **THE TWO BIBLES (Mohamed 2026-05-25, verbatim mandate):**
+>   1. **PAST → the BRAIN.** Before any state-mutating tool call, read `BRAIN/00_INDEX.md`, the active LAWs, `BRAIN/05_State/Live_State.md`, the latest `04_Sessions/` file, and `BRAIN/05_State/Known_Issues.md`. Cite paths. Never re-discover.
+>   2. **FUTURE → deep web research (≥50 sources, 100% accuracy).** Before any non-trivial fix (especially anything called "enterprise-grade", "long-term", or "bulletproof"), dispatch parallel research agents that gather 50–60 sources across official docs, GitHub issues, Reddit, Stack Overflow, vendor blogs, conference talks. Synthesise into a citation-backed plan. **99% accuracy is rejected. 100% only.**
+> - **ZERO-ERRORS MANDATE (number one rule).** Nothing broken. No button broken. No endpoint broken. Long-term fixes only — no `// TODO`, no workarounds, no "ship now, harden later". 99% is rejected. Validate the canonical pattern via web research BEFORE coding.
+> - **Rule-maintenance:** when the owner gives a new durable principle, immediately append to `~/.claude/projects/c--/memory/` AND update this `CLAUDE.md`. Confirm to the owner that the rule is locked in.
 
 ## Session-start bootstrap (run once per session)
 
