@@ -97,6 +97,11 @@ engine = create_engine(
         # production guidance from Close Engineering). Distinct from
         # statement_timeout: this aborts any TCP `send/recv` that
         # blocks > 10s on un-ACK'd data.
+        # NOTE — Linux-only kernel option (TCP_USER_TIMEOUT, RFC 5482).
+        # On macOS / Windows libpq silently ignores it; behaviour
+        # degrades to TCP keepalives only (still effective, just
+        # slower to detect a half-open socket). Railway runs Linux
+        # containers so prod gets the full benefit.
         "tcp_user_timeout": 10_000,
         # Aggressive TCP keepalives so the kernel TELLS the app the
         # connection is dead BEFORE psycopg2 tries to use it for a
@@ -192,9 +197,18 @@ if settings.direct_database_url:
         pool_pre_ping=True,
         pool_size=2,
         max_overflow=0,
+        # `pool_recycle=1800` is socket-hygiene only here — a direct
+        # connection has NO Supavisor 5-min idle kill (database-reviewer
+        # MEDIUM, 2026-05-26). With TCP keepalives + ~2 min sweep cycle
+        # the socket should stay alive indefinitely, but recycling every
+        # 30 min lets us pick up any kernel-level transient state the
+        # idle_release_loop didn't notice.
         pool_recycle=1800,
         pool_timeout=10,
         pool_use_lifo=True,
+        # Smaller than the main engine's 1200 because this engine serves
+        # ONE repeating query shape (`SELECT … FROM claim_locks WHERE
+        # expires_at <= …`) on a 2-min cadence. 400 is generous.
         query_cache_size=400,
         connect_args={
             "connect_timeout": 10,

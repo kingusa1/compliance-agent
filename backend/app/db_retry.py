@@ -48,12 +48,28 @@ Design notes:
 
 Usage:
 
+    # Pooled connection (the default for short, request-scoped writes).
     from app.database import SessionLocal
     from app.db_retry import db_retry_on_disconnect
 
     @db_retry_on_disconnect()
-    def _release_idle_claims_iteration() -> int:
+    def _per_request_write() -> int:
         db = SessionLocal()
+        try:
+            return _do_work(db)
+        finally:
+            db.close()
+
+    # Long-lived background loops (sweepers, schedulers) should use the
+    # direct-connection engine — Supavisor's transaction-mode pooler is
+    # tuned for many short transactions and intermittently kills idle
+    # pool members, making it a poor fit for periodic background writes.
+    # See `app/database.py:direct_engine` + `app/main.py:_idle_release_loop`.
+    from app.database import DirectSessionLocal
+
+    @db_retry_on_disconnect()
+    def _idle_release_iteration() -> int:
+        db = DirectSessionLocal()
         try:
             return _release_idle_claims_core(db)
         finally:

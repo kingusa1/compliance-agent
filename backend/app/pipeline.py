@@ -20,6 +20,7 @@ step's output from the DB rather than recomputing).
 """
 
 import asyncio
+import inspect  # used by `_trace_step` to detect awaitables — hoisted from inline
 import json
 import os
 import re
@@ -97,7 +98,7 @@ async def _trace_step(call_id: str, step_name: str, fn, *args, **kwargs):
     at every step boundary. Frontend uses these to invalidate React Query
     keys instead of polling.
     """
-    import inspect, time as _time
+    import time as _time
     from app.workflows.process_call import (
         _persist_step_running,
         _persist_step_done,
@@ -236,11 +237,26 @@ async def process_call(call_id: str, file_path: str, db: Session | None = None, 
         finally:
             _db.close()
 
-        _db = SessionLocal()
-        try:
-            await _trace_step(call_id, "score", _step_score, call_id, analysis, _db)
-        finally:
-            _db.close()
+        # 2026-05-26 — Score is a sync `def` that does 100-300ms of CPU
+        # (bucket aggregation + json.dumps). Run it in a worker thread
+        # so the GIL is held there, not on the asyncio loop. SessionLocal
+        # is opened + closed INSIDE the worker thread (single-thread
+        # session usage → safe with psycopg2). Per python-reviewer
+        # HIGH-2 finding 2026-05-26: we cannot share a Session opened on
+        # the loop thread with a worker thread; opening per-thread is
+        # the canonical pattern.
+        def _run_step_score_in_thread() -> dict:
+            from app.database import SessionLocal as _SL
+            _db = _SL()
+            try:
+                return _step_score(call_id, analysis, _db)
+            finally:
+                _db.close()
+
+        async def _score_step_dispatcher() -> dict:
+            return await asyncio.to_thread(_run_step_score_in_thread)
+
+        await _trace_step(call_id, "score", _score_step_dispatcher)
 
         # 2026-05-12: AI-auto rejection creation is DISABLED. Per the
         # client-feedback PDF, the /rejections module should only contain
@@ -249,11 +265,27 @@ async def process_call(call_id: str, file_path: str, db: Session | None = None, 
         # row (compliance_status / bucket); reviewers create Rejection
         # rows manually via the reviewer flow. Old _maybe_create_rejection
         # call was here and is intentionally removed.
-        _db = SessionLocal()
-        try:
-            await _trace_step(call_id, "finalize", _step_finalize, call_id, _db)
-        finally:
-            _db.close()
+        #
+        # 2026-05-26 — Finalize is sync `def` and is the HOTTEST GIL
+        # offender (50KB json.loads of checkpoint_results in
+        # `derive_compliance`, plus the L2 extraction writer's
+        # threadpool spawns + meter merge). Dispatching to a worker
+        # thread with a per-thread SessionLocal removes the production
+        # "UI hangs at Loading…" symptom: while 5 pipelines hit finalize
+        # near-simultaneously the asyncio loop stays free to serve UI
+        # requests and SSE writers.
+        def _run_step_finalize_in_thread() -> dict:
+            from app.database import SessionLocal as _SL
+            _db = _SL()
+            try:
+                return _step_finalize(call_id, _db)
+            finally:
+                _db.close()
+
+        async def _finalize_step_dispatcher() -> dict:
+            return await asyncio.to_thread(_run_step_finalize_in_thread)
+
+        await _trace_step(call_id, "finalize", _finalize_step_dispatcher)
 
         # Tracker-autofill specialist agents (2026-05-10):
         # 1. DateExtractorAgent  — fills CustomerDeal.expected_live_date
