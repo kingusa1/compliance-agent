@@ -1,8 +1,13 @@
 import json
 import re
 
-# 2026-05-26 — `httpx` import removed; every HTTP call now goes through
-# the shared `AsyncClient` factory at `app.http_clients`.
+# 2026-05-26 — `httpx` is no longer used directly by this module; every
+# HTTP call routes through `app.http_clients.get_async_client()`. The
+# import is retained at module level so existing tests that use
+# `unittest.mock.patch("app.analysis.httpx.AsyncClient", ...)` continue
+# to find the symbol. Patching `app.http_clients.get_async_client` is
+# the preferred surface for new tests.
+import httpx  # noqa: F401 — kept for test-patch back-compat
 
 from app.watt_compliance.phrase_regex import PhraseHit, hit_summary, scan as phrase_scan
 from app.watt_compliance.prompts import system_prompt_for_call_type

@@ -890,14 +890,23 @@ async def _maybe_merge_into_existing_deal(
         phonetic_strong = (
             phonetic_first2_hit or phonetic_jaccard >= 0.5 or trailing_match
         )
-        # Trailing-2 exact match is the strongest signal — lower floor to 0.40.
-        # Other phonetic signals → 0.60. No signal → 0.80.
+        # 2026-05-26 — RAISED ALL FLOORS for 100%-precision matching per
+        # owner mandate "merge that is related one hundred percent, but
+        # not auto merge the wrong calls".
+        # The previous defaults (0.40 / 0.60 / 0.80) were tuned for
+        # recall (catch every variant) and produced false-positive
+        # cross-customer merges in production. New defaults trade
+        # recall for precision: only merge when the signal is
+        # near-unambiguous.
+        # Trailing-2 exact match → 0.75 (was 0.40)
+        # Phonetic strong       → 0.85 (was 0.60)
+        # No signal             → 0.95 (was 0.80)
         if trailing_match:
-            floor = 0.40
+            floor = 0.75
         elif phonetic_strong:
-            floor = 0.60
+            floor = 0.85
         else:
-            floor = 0.80
+            floor = 0.95
 
         if score >= floor and score > best_score:
             best = cand
@@ -970,12 +979,24 @@ async def _maybe_merge_into_existing_deal(
             log.warning(f"AI deal-merge tiebreaker skipped: {_ai_e}")
 
     if best is None:
+        # 2026-05-26 — observability: log the reject decision when no
+        # candidate hit the floor so the owner can audit WHY two
+        # legitimately-related calls weren't merged. Helps tune
+        # `merge_min_confidence` precisely.
+        log.info(
+            f"\U0001f6d1 MERGE_REJECT call_id={call.id} "
+            f"target={detected_customer!r} "
+            f"supplier={detected_supplier!r} "
+            f"candidates_examined={len(candidates)} "
+            f"reason='no_candidate_above_precision_floor'"
+        )
         return
 
     log.info(
         f"\U0001f517 DEAL MERGE call_id={call.id} stub={stub.id} "
         f"→ existing={best.id} score={best_score:.2f} "
-        f"target={detected_customer!r} match={best.customer_name!r}"
+        f"target={detected_customer!r} match={best.customer_name!r} "
+        f"supplier={detected_supplier!r}"
     )
     call.deal_id = best.id
 
@@ -1481,10 +1502,25 @@ async def _step_detect_metadata(
     # (detected supplier + customer name) match. Wrapped so a merge
     # failure never breaks the pipeline; worst-case the stub Deal stays
     # and a human can merge later from /deals.
-    try:
-        await _maybe_merge_into_existing_deal(call, db)
-    except Exception as e:
-        log.warning(f"deal merge skipped: {e}")
+    #
+    # 2026-05-26 KILL-SWITCH (Mohamed mandate): gated behind
+    # `enable_auto_merge_per_call` (default False). The supplier-mismatch
+    # peel earlier in this function is still active (protective, not
+    # autofill) so each call stays on a deal whose supplier matches its
+    # detected supplier. Reviewers manually merge from /deals when they
+    # want to; the system does NOT silently collapse calls across deals
+    # by fuzzy customer-name match.
+    from app.config import settings as _settings
+    if _settings.enable_auto_merge_per_call:
+        try:
+            await _maybe_merge_into_existing_deal(call, db)
+        except Exception as e:
+            log.warning(f"deal merge skipped: {e}")
+    else:
+        log.debug(
+            f"AUTO_MERGE skipped call_id={call_id} "
+            f"(enable_auto_merge_per_call=False — kill-switch is ON)"
+        )
 
     # ── Phase A: business-name detection + stub-merge / stub-rename ───
     # detect_supplier already wrote call.detected_supplier above. The merge

@@ -89,6 +89,31 @@ class Settings(BaseSettings):
     # background task as the sole path. See `app/workflows/process_call.py`.
     use_inngest_pipeline: bool = False
 
+    # ─── Auto-merge precision controls (owner mandate 2026-05-26) ────
+    # Mohamed 2026-05-26: *"I want the system to auto merge the calls
+    # that is related one hundred percent, but not auto merge the
+    # wrong calls."*
+    #
+    # `enable_auto_merge_per_call=True` keeps the AUTO-MERGE feature
+    # active (calls with the SAME supplier + SAME customer + matching
+    # meter identifiers collapse onto one deal). The actual decision
+    # logic is in `app.deal_matcher` and `app.deal_meter_merge`; this
+    # flag is the master kill-switch for when something looks off in
+    # production.
+    #
+    # `merge_min_confidence` is the precision floor in [0, 1] used by
+    # the matcher. Default 0.95 = 95% certain → only merge when:
+    #   - same supplier (with proper alias normalisation), AND
+    #   - one of:
+    #       (a) MPAN or MPRN match exactly (hard key, confidence=1.0)
+    #       (b) customer-name token-set Jaccard >= 0.85 AND
+    #           normalised string ratio >= 0.95
+    #       (c) same Watt portal site_id (hard key)
+    # Anything below the floor stays as separate deals; reviewers
+    # manually merge via /deals if they disagree.
+    enable_auto_merge_per_call: bool = True
+    merge_min_confidence: float = Field(default=0.95, ge=0.0, le=1.0)
+
     # ─── Bulk-upload concurrency cap ──────────────────────────────────
     # Max concurrent pipelines that may be running at any moment. Uploads
     # past this number are accepted immediately (call row created, status
