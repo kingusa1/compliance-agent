@@ -2664,9 +2664,18 @@ def _write_extraction_outputs(call: Call, db: Session) -> None:
     import concurrent.futures
 
     def _run_extract():
-        return asyncio.new_event_loop().run_until_complete(
-            extract_entities(call.id, call.transcript or "")
-        )
+        # Close the per-thread event loop so its httpx connection pool
+        # gets released cleanly even if the orchestrator already moved
+        # on after a timeout. Without `loop.close()` the leaked loop
+        # holds open the OpenRouter connection until process exit and
+        # makes the atexit hook stall on graceful shutdown.
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(
+                extract_entities(call.id, call.transcript or "")
+            )
+        finally:
+            loop.close()
 
     _extract_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     entities: list = []
@@ -2675,9 +2684,14 @@ def _write_extraction_outputs(call: Call, db: Session) -> None:
     except concurrent.futures.TimeoutError:
         log.error(f"L2_EXTRACTION_TIMEOUT call_id={call.id} step=extract_entities — orphaning thread, continuing")
     except Exception as exc:
-        log.warning("entity extraction failed call_id=%s: %s", call.id, exc)
+        log.warning("entity extraction failed call_id=%s: %r", call.id, exc)
     finally:
-        _extract_pool.shutdown(wait=False)
+        # `cancel_futures=True` (3.9+) cancels not-yet-started futures
+        # AND signals running ones to skip the implicit `wait=True` that
+        # atexit applies. Combined with the explicit `loop.close()` in
+        # the worker, this prevents process-exit hangs and connection
+        # leaks when a timeout orphans the thread.
+        _extract_pool.shutdown(wait=False, cancel_futures=True)
     for ent in entities:
         db.add(ent)
 
@@ -2688,11 +2702,18 @@ def _write_extraction_outputs(call: Call, db: Session) -> None:
     # finalize. Appended to the per-checkpoint flag list so it surfaces on
     # the verdict tab alongside the other risk_tags.
     def _run_vuln():
-        return asyncio.new_event_loop().run_until_complete(
-            detect_vulnerability(call.id, call.transcript or "")
-        )
+        # Mirror extract_entities — explicit loop.close() so the per-thread
+        # httpx pool is released even when the orchestrator orphans us.
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(
+                detect_vulnerability(call.id, call.transcript or "")
+            )
+        finally:
+            loop.close()
 
-    # Same shutdown(wait=False)-on-timeout pattern as extract_entities above.
+    # Same shutdown(wait=False, cancel_futures=True) + loop.close() pattern
+    # as extract_entities above — prevents atexit hang and connection leak.
     _vuln_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     vuln_flag = None
     try:
@@ -2700,9 +2721,9 @@ def _write_extraction_outputs(call: Call, db: Session) -> None:
     except concurrent.futures.TimeoutError:
         log.error(f"L2_EXTRACTION_TIMEOUT call_id={call.id} step=detect_vulnerability — orphaning thread, continuing")
     except Exception as exc:
-        log.warning("vulnerability detection failed: %s", exc)
+        log.warning("vulnerability detection failed: %r", exc)
     finally:
-        _vuln_pool.shutdown(wait=False)
+        _vuln_pool.shutdown(wait=False, cancel_futures=True)
     if vuln_flag is not None:
         flags.append(vuln_flag)
 

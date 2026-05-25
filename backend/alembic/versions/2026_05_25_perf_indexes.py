@@ -16,14 +16,17 @@ tracker_aggregator filter shapes flagged as missing:
    the multi-select agent filter on the same surfaces. Same Seq-Scan
    pattern as above.
 
-3. ``ix_calls_watchdog_scan`` — partial composite covering the
-   redispatch_watchdog stuck-call query
-   ``(last_step_started_at, completed_at, status)``. With the
-   2026-05-25 `_trace_step` wiring of `last_step_started_at`, this
-   index makes the watchdog cron's once-per-minute scan an Index Scan
-   of <50 rows instead of a Seq Scan on the whole calls table. The
-   partial predicate matches the watchdog WHERE clause exactly so
-   only candidate rows are indexed.
+3. ``ix_calls_watchdog_scan`` — partial composite covering BOTH
+   redispatch_watchdog queries (``_STUCK_QUERY`` and
+   ``_EXHAUSTED_QUERY`` — same WHERE shape, different
+   ``watchdog_redispatch_count`` predicate that runs as a residual
+   filter on the index scan output). With the 2026-05-25 `_trace_step`
+   wiring of `last_step_started_at`, this index makes the watchdog
+   cron's once-per-minute scan an Index Scan of <50 rows instead of
+   a Seq Scan on the whole calls table. The partial predicate
+   captures the two high-selectivity conditions (last_step_started_at
+   IS NOT NULL, completed_at IS NULL); the ``status NOT IN`` check
+   from both queries runs as a cheap residual on the indexed rows.
 
 All three use ``CREATE INDEX CONCURRENTLY IF NOT EXISTS`` so the
 migration is idempotent and never holds a table-level lock on the hot

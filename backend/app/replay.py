@@ -181,15 +181,21 @@ async def _run_reanalysis(call_id: str, run_id: str) -> None:
         log.info(f"REANALYZE done call_id={call_id} run_id={run_id}")
     except Exception as e:  # noqa: BLE001 — terminal log + status flip
         log.error(f"REANALYZE failed call_id={call_id} run_id={run_id} err={e!r}")
-        db = SessionLocal()
+        # Use a NEW local name so we never alias an unbound `db` from the
+        # try-block — if the exception fired before the first SessionLocal()
+        # call (e.g. ImportError on the from-app.pipeline line), referencing
+        # `db` here would raise UnboundLocalError and mask the original
+        # exception entirely. The error session is independent and always
+        # opened fresh.
+        _err_db = SessionLocal()
         try:
-            call = db.query(Call).filter_by(id=call_id).first()
+            call = _err_db.query(Call).filter_by(id=call_id).first()
             if call is not None:
                 # Don't mask a prior 'completed' state — only flip if
                 # we'd otherwise leave the row in a half-processed state.
                 if call.status not in ("completed", "needs_manual_review"):
                     call.status = "failed"
-                    call.reason = (call.reason or "") + f" | reanalyze error: {str(e)[:200]}"
-                    db.commit()
+                    call.reason = (call.reason or "") + f" | reanalyze error: {e!r}"[:240]
+                    _err_db.commit()
         finally:
-            db.close()
+            _err_db.close()
