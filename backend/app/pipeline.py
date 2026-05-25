@@ -1107,24 +1107,102 @@ async def _step_detect_metadata(
         )
         call.detected_supplier = detected
 
-        # Auto-detect backfill: if the linked CustomerDeal has no supplier
-        # (auto-detect upload path), promote the detected value so the
-        # rejection workflow + portal-batches grouping work end-to-end.
+        # Auto-detect backfill + supplier-mismatch split (2026-05-25).
+        #
+        # Two writes happen in this block under a row-level lock on the
+        # linked deal:
+        #
+        #   1. If the linked deal has no supplier yet (audio-upload path
+        #      where the user didn't pre-fill on the form), promote the
+        #      detected value so the rejection workflow + portal-batches
+        #      grouping work end-to-end.
+        #
+        #   2. If the linked deal ALREADY has a supplier AND it differs
+        #      from this call's detected supplier, this call does NOT
+        #      belong on that deal — meters can switch suppliers between
+        #      contracts (E.ON → British Gas = renewal = DIFFERENT deal)
+        #      and one Watt "deal" = one supplier contract. Peel the call
+        #      onto a fresh deal stub with the correct supplier. The
+        #      existing customer-name merger (`_maybe_merge_into_existing_deal`)
+        #      later in this same step will re-aggregate the peeled call
+        #      with any other same-supplier-same-customer deal.
+        #
+        # Both writes are guarded by `SELECT ... FOR UPDATE` on Postgres
+        # so two concurrent finalises racing on the same parent deal
+        # serialise — the loser sees the winner's write and either no-ops
+        # (same supplier) or peels (different supplier).
         try:
             from app.models import CustomerDeal as _Deal
+            from app.deal_meter_merge import _supplier_norm
             if (
                 detected
                 and detected != "Unknown"
                 and call.deal_id
             ):
-                deal = db.query(_Deal).filter_by(id=call.deal_id).first()
-                if deal and (not deal.supplier or deal.supplier.strip() == ""):
-                    if can_overwrite(deal, "supplier", "ai"):
-                        deal.supplier = detected
-                        set_source(deal, "supplier", "ai")
-                        log.info(f"\U0001f504 BACKFILL deal supplier call_id={call_id} → \"{detected}\"")
+                # Row-level lock — same pattern as deal_meter_merge._lock_survivor.
+                is_pg = db.bind.dialect.name == "postgresql" if db.bind else False
+                q = db.query(_Deal).filter_by(id=call.deal_id)
+                if is_pg:
+                    q = q.with_for_update()
+                deal = q.first()
+                if deal is not None:
+                    deal_supplier_norm = _supplier_norm(deal.supplier)
+                    detected_norm = _supplier_norm(detected)
+                    if not deal_supplier_norm:
+                        # Empty / placeholder — backfill. First-finalise wins.
+                        if can_overwrite(deal, "supplier", "ai"):
+                            deal.supplier = detected
+                            set_source(deal, "supplier", "ai")
+                            log.info(
+                                f"\U0001f504 BACKFILL deal supplier "
+                                f"call_id={call_id} → \"{detected}\""
+                            )
+                    elif deal_supplier_norm != detected_norm:
+                        # Supplier mismatch: peel this call onto a fresh
+                        # deal stub. The parent deal keeps whichever
+                        # supplier won the race; the mismatched call gets
+                        # its own deal with its own correct supplier.
+                        old_deal_id = call.deal_id
+                        # NOTE: CustomerDeal ORM model doesn't currently
+                        # expose `organization_id` even though the
+                        # Postgres column exists (multi-tenancy is Phase 2).
+                        # When the model gains the attr, copy it here too.
+                        new_deal = _Deal(
+                            customer_name=deal.customer_name,
+                            supplier=detected,
+                            status="in_progress",
+                        )
+                        db.add(new_deal)
+                        db.flush()
+                        call.deal_id = new_deal.id
+                        log.warning(
+                            f"⚠️ SUPPLIER_MISMATCH_SPLIT "
+                            f"call_id={call_id} "
+                            f"old_deal={old_deal_id} ({deal.supplier!r}) "
+                            f"new_deal={new_deal.id} (\"{detected}\")"
+                        )
+                        try:
+                            from app.audit import record_audit
+                            record_audit(
+                                db,
+                                action="deal.supplier_mismatch_split",
+                                entity_type="customer_deal",
+                                entity_id=str(new_deal.id),
+                                payload={
+                                    "call_id": str(call.id),
+                                    "original_deal_id": str(old_deal_id),
+                                    "original_deal_supplier": deal.supplier,
+                                    "call_detected_supplier": detected,
+                                    "trigger": "_step_detect_metadata",
+                                },
+                                organization_id=str(call.organization_id) if call.organization_id else None,
+                            )
+                        except Exception as audit_e:  # noqa: BLE001
+                            log.warning(
+                                f"supplier_mismatch_split audit append failed: {audit_e}"
+                            )
         except Exception as e:
-            log.warning(f"supplier backfill skipped: {e}")
+            log.warning(f"supplier backfill / mismatch-split skipped: {e}")
 
         # L3: when the call has a known call_type, prefer Script rows
         # whose lifecycle_phase matches that phase (e.g. a 'closer'
