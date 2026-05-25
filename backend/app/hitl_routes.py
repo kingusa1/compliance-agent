@@ -1523,7 +1523,15 @@ def get_queue(
     # core workload. (Pre-2026-05-10 the queue only included
     # compliance_status == 'pending', so a non-compliant call dropped out
     # before a human could see it. Bug B3 in audit-late.)
-    q = db.query(Call)
+    #
+    # 2026-05-25 perf — `defer_heavy_call_columns` drops 13 large
+    # text/JSON columns (5 transcripts + 6 metadata blobs + word_data +
+    # draft_snapshot) from the SELECT projection. Supabase slow-query
+    # dashboard flagged this query as 2.7% of total DB time (mean 43ms);
+    # most of that was network shipping ~5MB of text per 100-row page
+    # the inbox never renders.
+    from app._call_query_helpers import defer_heavy_call_columns
+    q = defer_heavy_call_columns(db.query(Call))
     if filter == "unclaimed":
         q = q.filter(
             Call.review_status == "unclaimed",

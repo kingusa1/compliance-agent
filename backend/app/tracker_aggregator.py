@@ -638,7 +638,13 @@ def build_tracker_rows(
         # zero segments classified). Those are EXACTLY the calls a
         # reviewer most needs to see — they were silently dropping out
         # of every tracker tab. Both terminal states are now included.
-        q = db.query(Call).filter(
+        #
+        # 2026-05-25 perf: defer the 13 heavy text/JSON columns on
+        # Call (5 transcripts + 6 metadata blobs + word_data +
+        # draft_snapshot) — list rendering reads NONE of them. Cut the
+        # row payload from ~50-100KB to ~2KB.
+        from app._call_query_helpers import defer_heavy_call_columns
+        q = defer_heavy_call_columns(db.query(Call)).filter(
             Call.status.in_(("completed", "needs_manual_review")),
             or_(Call.review_status.is_(None), Call.review_status != "reviewed"),
         )

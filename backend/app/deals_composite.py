@@ -114,7 +114,13 @@ def compute_composite_verdict(deal_id: Any, db: Session) -> dict[str, Any]:
             "worst_action": "PENDING",
             "per_call": [],
         }
-    calls = db.query(Call).filter_by(deal_id=deal_id).all()
+    # 2026-05-25 perf — composite_from_calls reads only score / call_type
+    # / status / agent_name / id, so we can drop the 13 heavy text/JSON
+    # columns from the projection. Supabase slow-query showed this query
+    # at mean 65.7ms; the bulk of the time is shipping the dead-weight
+    # transcript bytes across the wire, not the actual scan.
+    from app._call_query_helpers import defer_heavy_call_columns
+    calls = defer_heavy_call_columns(db.query(Call)).filter_by(deal_id=deal_id).all()
     return composite_from_calls(deal_id, calls)
 
 
