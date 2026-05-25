@@ -192,17 +192,53 @@ AUTO_MERGE_WINDOW_DAYS = 90
 _SAFE_NAME_FUZZ_FLOOR = 87
 
 
+# Supplier-label aliases — collapse equivalent brand strings to one
+# canonical form BEFORE comparison so the safety predicate doesn't
+# false-negative on a real same-supplier pair like ("E.ON Next", "EON")
+# or ("EDF", "EDF Energy"). False-positive is the dangerous direction
+# (different suppliers normalising to the same string); these aliases
+# are only collapsed when the source string already names a known UK
+# supplier brand, never inferred from substring overlap.
+_SUPPLIER_ALIASES: dict[str, str] = {
+    # E.ON family — the prod incident on 2026-05-25 was a BG/E.ON pair,
+    # so this family is the most important to get right.
+    "eon": "e.on next",
+    "e.on": "e.on next",
+    "e.on next": "e.on next",
+    "e.on energy": "e.on next",
+    "e.on energy solutions": "e.on next",
+    # British Gas family.
+    "bg": "british gas",
+    "british gas": "british gas",
+    "british gas business": "british gas",
+    "british gas lite": "british gas",
+    # EDF family.
+    "edf": "edf energy",
+    "edf energy": "edf energy",
+    "edf energy solutions": "edf energy",
+    # SSE family (now OVO commercial but legacy contracts persist).
+    "sse": "sse energy",
+    "sse energy": "sse energy",
+    "sse business energy": "sse energy",
+    "sse business": "sse energy",
+}
+
+
 def _supplier_norm(raw) -> str:
-    """Lower-case + trim supplier label. ``Unknown``-shaped values are
-    treated as missing so a merge between (set) and (unknown) is allowed
-    — the data-quality fix is to copy the real supplier across, not to
-    refuse the merge."""
+    """Canonicalise a supplier label for safe equality comparison.
+
+    Steps: strip + lower-case, drop common 'Unknown'-shaped sentinels,
+    then collapse via `_SUPPLIER_ALIASES`. The alias map only canonicalises
+    known UK brands — anything else passes through unchanged so a typo
+    like `"E,ON"` still trips the safety guard (mismatch) rather than
+    accidentally aliasing into the same bucket as a real brand.
+    """
     if not raw:
         return ""
     s = str(raw).strip().lower()
     if s in ("unknown", "n/a", "none", "null", "-"):
         return ""
-    return s
+    return _SUPPLIER_ALIASES.get(s, s)
 
 
 def _name_fuzz_ratio(a: str, b: str) -> int:

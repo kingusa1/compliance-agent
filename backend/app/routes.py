@@ -2500,7 +2500,7 @@ def admin_consolidate_duplicate_deals(
 
 @router.post("/api/admin/undo-deal-merge", status_code=200)
 def admin_undo_deal_merge(
-    survivor_deal_id: str,
+    survivor_deal_id: str = Body(..., embed=True),
     move_calls: list[str] = Body(default_factory=list, embed=True),
     new_supplier: str | None = Body(default=None, embed=True),
     new_customer_name: str | None = Body(default=None, embed=True),
@@ -2532,6 +2532,7 @@ def admin_undo_deal_merge(
     `dry_run=true` returns the planned move WITHOUT mutating.
     """
     import uuid as _uuid
+    from app.deal_meter_merge import _lock_survivor
     from app.models import Call, CustomerDeal
 
     try:
@@ -2539,7 +2540,20 @@ def admin_undo_deal_merge(
     except (ValueError, TypeError):
         raise HTTPException(400, "survivor_deal_id must be a UUID")
 
-    survivor = db.query(CustomerDeal).filter_by(id=survivor_uuid).first()
+    # Validate move_calls UUIDs up front so a malformed id surfaces as a
+    # clean 400 rather than a Postgres type error deep in the bulk UPDATE.
+    bad_call_ids = [
+        cid for cid in move_calls
+        if not isinstance(cid, str) or not cid.strip()
+    ]
+    if bad_call_ids:
+        raise HTTPException(400, f"move_calls contains invalid ids: {bad_call_ids}")
+
+    # SELECT FOR UPDATE on the survivor BEFORE the call-ownership check
+    # so a concurrent finalize can't re-point the same calls between
+    # our validation and the bulk UPDATE — db-reviewer HIGH on this
+    # path. Postgres only; SQLite (tests) silently no-ops the lock.
+    survivor = _lock_survivor(db, survivor_uuid)
     if survivor is None:
         raise HTTPException(404, f"survivor deal {survivor_deal_id} not found")
 
@@ -2549,6 +2563,8 @@ def admin_undo_deal_merge(
         raise HTTPException(400, "new_customer_name is required")
 
     # Verify every requested call exists AND is currently on the survivor.
+    # Under the survivor row-lock this snapshot is consistent with the
+    # bulk UPDATE below — no race window.
     calls = db.query(Call).filter(Call.id.in_(move_calls)).all()
     found_ids = {c.id for c in calls}
     missing = [cid for cid in move_calls if cid not in found_ids]
@@ -2578,8 +2594,11 @@ def admin_undo_deal_merge(
     if dry_run:
         return plan
 
-    # Create the new deal with fields the reviewer specified. Status starts
-    # 'in_progress' to match the upsert path's default.
+    # Create the new deal. We inherit `organization_id` from the survivor
+    # so the new row is reachable under the same org's RLS scope — without
+    # this, the unmerged deal would be orphaned outside the requesting
+    # lead's org (python-reviewer LOW). Status starts 'in_progress' to
+    # match the upsert path's default.
     new_deal = CustomerDeal(
         id=new_deal_id,
         customer_name=new_customer_name,
@@ -2587,6 +2606,7 @@ def admin_undo_deal_merge(
         mpan_electricity=new_mpan_electricity,
         mprn_gas=new_mprn_gas,
         status="in_progress",
+        organization_id=survivor.organization_id,
     )
     db.add(new_deal)
     db.flush()
