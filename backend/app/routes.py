@@ -556,24 +556,22 @@ def _get_pipeline_semaphore() -> asyncio.Semaphore:
 
 
 async def _process_in_background(call_id: str, file_path: str, script_id: str | None = None):
-    # 2026-05-25 (PM hotfix) — restored the outer SessionLocal() lifecycle
-    # that the earlier-session refactor removed. The legacy pipeline path
-    # (pipeline.py:_trace_step → _step_download_audio + the outer
-    # error-handler at pipeline.py:297) STILL dereferences the passed-in
-    # `db`, so passing None crashed every upload with
-    # `'NoneType' object has no attribute 'query'`. The Inngest workflow
-    # path (workflows/process_call.py `_do_*` shims) opens its own
-    # SessionLocal per step — the legacy `_step_*` callsites in pipeline.py
-    # were never migrated, so they need a real session here.
+    # 2026-05-25 (perf wave) — NO outer SessionLocal. `process_call` now
+    # opens + closes a fresh SessionLocal per step inside `pipeline.py`,
+    # mirroring the Inngest workflow's `_do_*` shims at
+    # `workflows/process_call.py:406-535`. The previous hotfix wrapped
+    # the whole pipeline in one Session held for ~10 minutes, which
+    # starved the 30-slot DB pool (10 pool_size + 20 overflow) under
+    # bursts of 4-10 concurrent uploads → /api/deals + /api/calls hung
+    # at "Loading…" while pipelines ran. Per-step sessions release the
+    # connection between steps (sub-second per step except analyze
+    # which yields on LLM await anyway). 8 pipelines now hold
+    # connections only during DB-active windows, leaving ~30 free for
+    # the UI.
     #
-    # The connection-held-during-multi-minute-pipeline concern is mitigated
-    # by: pool_pre_ping=True, pool_recycle=240s (under Supavisor's 300s
-    # idle timer), and the engine-level handle_error listener that catches
-    # mid-query disconnects and forces pool invalidation.
-    #
-    # 2026-05-25 — bounded concurrency. Acquire a slot on the global
-    # pipeline semaphore BEFORE opening the DB session so a queued task
-    # doesn't hold a connection while waiting for a free pipeline slot.
+    # Bounded concurrency stays: acquire a slot on the global pipeline
+    # semaphore so 50 simultaneous uploads queue FIFO rather than all
+    # stampeding the pool + LLM rate limit at once.
     sem = _get_pipeline_semaphore()
     queued_at = time.monotonic()
     async with sem:
@@ -583,12 +581,7 @@ async def _process_in_background(call_id: str, file_path: str, script_id: str | 
                 f"PIPELINE_QUEUED call_id={call_id} waited={wait_s:.1f}s "
                 f"cap={settings.pipeline_concurrency}"
             )
-        from app.database import SessionLocal
-        db = SessionLocal()
-        try:
-            await process_call(call_id, file_path, db, script_id)
-        finally:
-            db.close()
+        await process_call(call_id, file_path, None, script_id)
     # B-2: emit call/finalized so L6 RAG ingest fires on the non-Inngest
     # path too. The Inngest workflow has its own emit at the end of
     # process_call_fn; this catches the legacy direct-pipeline path

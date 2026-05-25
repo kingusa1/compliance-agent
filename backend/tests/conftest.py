@@ -47,17 +47,45 @@ def _make_jwt(sub: str, exp_offset: int = 3600, aud: str = "authenticated") -> s
 # ─── Fixtures ───────────────────────────────────────────────────────────────
 
 @pytest.fixture
-def test_db():
-    """Create a temporary SQLite database for testing."""
+def test_db(monkeypatch):
+    """Create a temporary SQLite database for testing.
+
+    2026-05-25 — also monkey-patches `app.database.SessionLocal` to bind
+    to the temp SQLite engine for the duration of the test. Necessary
+    because `pipeline.process_call` was refactored to open its own
+    `SessionLocal()` per step (per-step session lifecycle, perf wave) —
+    if the import wasn't redirected, those step sessions would hit the
+    real configured DATABASE_URL instead of the test's SQLite tempfile,
+    silently 404 on every fixture lookup. Yielding the bound session
+    AND redirecting the factory keeps existing `await process_call(...,
+    test_db, ...)` callsites working without modification.
+    """
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     engine = create_engine(f"sqlite:///{path}")
     Base.metadata.create_all(engine)
     TestSession = sessionmaker(bind=engine)
     session = TestSession()
+
+    # Redirect `from app.database import SessionLocal` inside any code
+    # path that runs during this test to use the SAME engine as `test_db`.
+    # Without this the per-step session opens in `pipeline.process_call`
+    # would query the configured DATABASE_URL (Postgres in CI, possibly
+    # a different SQLite in local) — the test fixtures wouldn't exist
+    # there and every step would silently fail with "call not found".
+    import app.database as _db_mod
+    monkeypatch.setattr(_db_mod, "SessionLocal", TestSession)
+
     yield session
     session.close()
-    os.unlink(path)
+    try:
+        os.unlink(path)
+    except (OSError, PermissionError):
+        # Windows occasionally holds the SQLite file handle past
+        # session.close() (e.g. when a background thread spawned in the
+        # test is still owning a cursor). Best-effort cleanup — the OS
+        # temp directory gets purged on reboot.
+        pass
 
 
 @pytest.fixture

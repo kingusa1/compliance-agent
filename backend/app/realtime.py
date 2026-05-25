@@ -42,7 +42,16 @@ log = logging.getLogger(__name__)
 
 # Map "<call_id>" or "*" → list of asyncio.Queue instances (one per subscriber).
 _SUBSCRIBERS: dict[str, list[asyncio.Queue]] = defaultdict(list)
-_MAX_QUEUED = 1000
+# 2026-05-25 — queue is now bounded. Previously `_MAX_QUEUED = 1000` was a
+# soft check inside `publish` that dropped a subscriber when their queue
+# exceeded the threshold. That fired only AFTER 1000 events had already
+# accumulated in memory, and burst bulk-upload workloads (8 pipelines × ~30
+# step events each) plus multiple browser tabs could push memory + GC
+# pressure high enough to slow the event loop. The new `Queue(maxsize=256)`
+# makes `put_nowait` raise `QueueFull` synchronously — caught below as the
+# drop signal — capping per-subscriber memory at ~256 events × ~250 bytes
+# (~64 KB), independent of how many subscribers a slow tab leaves open.
+_MAX_QUEUED = 256
 _GLOBAL = "*"
 
 
@@ -63,23 +72,26 @@ def publish(call_id: str, event_type: str, payload: dict[str, Any] | None = None
         "ts": _now_iso(),
         "payload": payload or {},
     }
+    # NOTE: `_SUBSCRIBERS` is read/mutated from a single asyncio event loop
+    # only (uvicorn `--workers 1`). The snapshot `list(...)` keeps iteration
+    # safe even when we remove a dead subscriber inside the loop below. If
+    # this ever moves to a thread pool the dict access needs an
+    # asyncio.Lock — flagged in 2026-05-25 perf-wave review (MEDIUM-2).
     for scope in (call_id, _GLOBAL):
         queues = list(_SUBSCRIBERS.get(scope, []))
         for q in queues:
-            if q.qsize() > _MAX_QUEUED:
-                # Subscriber wedged — drop them rather than back-pressure the
-                # publisher. They'll re-attach on the next EventSource reconnect.
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                # 2026-05-25 — queue is bounded at maxsize=_MAX_QUEUED.
+                # If it's full, the subscriber is slow / wedged (browser
+                # tab that opened EventSource then froze). Drop them
+                # rather than back-pressure the publisher; they'll
+                # re-attach on the next EventSource reconnect.
                 try:
                     _SUBSCRIBERS[scope].remove(q)
                 except ValueError:
                     pass
-                continue
-            try:
-                q.put_nowait(event)
-            except asyncio.QueueFull:
-                # Bounded queues only — we use unbounded, so this branch is
-                # defensive. Drop silently if we ever switch to bounded.
-                pass
 
 
 async def subscribe(call_id: str) -> AsyncIterator[dict[str, Any]]:
@@ -88,7 +100,7 @@ async def subscribe(call_id: str) -> AsyncIterator[dict[str, Any]]:
     single call. Caller is responsible for cancelling — the generator will
     self-clean on cancellation so subscriber list doesn't leak.
     """
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=_MAX_QUEUED)
     _SUBSCRIBERS[call_id].append(queue)
     log.info(
         f"REALTIME subscribed scope={call_id} (total_subs={len(_SUBSCRIBERS[call_id])})"

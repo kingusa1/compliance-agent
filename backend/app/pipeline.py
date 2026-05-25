@@ -141,40 +141,84 @@ async def _trace_step(call_id: str, step_name: str, fn, *args, **kwargs):
         raise
 
 
-async def process_call(call_id: str, file_path: str, db: Session, script_id: str | None = None) -> None:
+async def process_call(call_id: str, file_path: str, db: Session | None = None, script_id: str | None = None) -> None:
     """Sync orchestration entrypoint.
 
     Calls the 6 step functions in order. Wraps the whole thing in a single
     try/except that marks the Call as failed on error (the durable workflow
     has its own per-step retry/error path).
+
+    2026-05-25 PERF — per-step SessionLocal. Previously this function held
+    ONE SessionLocal for the full 5-10 minute pipeline (so 8 concurrent
+    pipelines = 8 of 30 pool connections held continuously, starving every
+    UI query). Now each step opens + closes its own session, mirroring the
+    Inngest workflow's `_do_*` shims at `workflows/process_call.py:406-535`.
+    Net effect: a connection is held only during the actual DB-active
+    window of each step (sub-second for everything except analyze, which
+    pauses for LLM I/O — but the LLM await releases the loop anyway).
+
+    The `db` parameter is kept on the signature for backward-compat with
+    callsites that still pass one, but the orchestrator no longer uses it.
     """
     pipeline_start = time.time()
     log.info(f"\U0001f504 PIPELINE start call_id={call_id}")
 
+    from app.database import SessionLocal
+
     local_audio: str | None = None
     try:
-        audio_path, local_audio = await _trace_step(
-            call_id, "download_audio", _step_download_audio, call_id, file_path, db
-        )
-        transcript_data = await _trace_step(
-            call_id, "transcribe", _step_transcribe, call_id, audio_path, db
-        )
-        await _trace_step(
-            call_id, "detect_metadata", _step_detect_metadata, call_id, transcript_data, db, script_id
-        )
+        _db = SessionLocal()
+        try:
+            audio_path, local_audio = await _trace_step(
+                call_id, "download_audio", _step_download_audio, call_id, file_path, _db
+            )
+        finally:
+            _db.close()
+
+        _db = SessionLocal()
+        try:
+            transcript_data = await _trace_step(
+                call_id, "transcribe", _step_transcribe, call_id, audio_path, _db
+            )
+        finally:
+            _db.close()
+
+        _db = SessionLocal()
+        try:
+            await _trace_step(
+                call_id, "detect_metadata", _step_detect_metadata, call_id, transcript_data, _db, script_id
+            )
+        finally:
+            _db.close()
+
         # 2026-05-12 taxonomy rebuild: classify_content runs BEFORE
         # analyze so per-segment routing knows which segments exist.
-        classify_result = await _trace_step(
-            call_id, "classify_content", _step_classify_content, call_id, transcript_data, db
-        )
+        _db = SessionLocal()
+        try:
+            classify_result = await _trace_step(
+                call_id, "classify_content", _step_classify_content, call_id, transcript_data, _db
+            )
+        finally:
+            _db.close()
         if classify_result.get("halted"):
             # Zero-segment recording — halt and let reviewer triage.
             log.warning(f"\U0001f6d1 PIPELINE halted call_id={call_id} status=needs_classification")
             return
-        analysis = await _trace_step(
-            call_id, "analyze_checkpoints", _step_analyze_checkpoints, call_id, transcript_data, db
-        )
-        await _trace_step(call_id, "score", _step_score, call_id, analysis, db)
+
+        _db = SessionLocal()
+        try:
+            analysis = await _trace_step(
+                call_id, "analyze_checkpoints", _step_analyze_checkpoints, call_id, transcript_data, _db
+            )
+        finally:
+            _db.close()
+
+        _db = SessionLocal()
+        try:
+            await _trace_step(call_id, "score", _step_score, call_id, analysis, _db)
+        finally:
+            _db.close()
+
         # 2026-05-12: AI-auto rejection creation is DISABLED. Per the
         # client-feedback PDF, the /rejections module should only contain
         # rejections the human reviewer themselves opened in the queue —
@@ -182,7 +226,11 @@ async def process_call(call_id: str, file_path: str, db: Session, script_id: str
         # row (compliance_status / bucket); reviewers create Rejection
         # rows manually via the reviewer flow. Old _maybe_create_rejection
         # call was here and is intentionally removed.
-        await _trace_step(call_id, "finalize", _step_finalize, call_id, db)
+        _db = SessionLocal()
+        try:
+            await _trace_step(call_id, "finalize", _step_finalize, call_id, _db)
+        finally:
+            _db.close()
 
         # Tracker-autofill specialist agents (2026-05-10):
         # 1. DateExtractorAgent  — fills CustomerDeal.expected_live_date
@@ -198,69 +246,73 @@ async def process_call(call_id: str, file_path: str, db: Session, script_id: str
         # unexpectedly` lines per disconnect window — that work now
         # completes on the retry.
         from app.db_retry import db_retry_on_disconnect_async
+        _agent_db = SessionLocal()
         try:
-            from app.agents.date_extractor import DateExtractorAgent
-            await db_retry_on_disconnect_async(
-                lambda: DateExtractorAgent(call_id, db),
-                # CRITICAL — DateExtractorAgent does its own db.commit().
-                # If that commit's flush partially succeeds then the
-                # connection drops, the Session lands in DEACTIVE
-                # state and any subsequent query throws
-                # `InvalidRequestError: Can't reconnect until invalid
-                # transaction is rolled back`. Rolling back between
-                # attempts puts the Session back in a usable state.
-                # Safe here because `_step_finalize` already committed
-                # its own work before this block — no uncommitted
-                # state would be discarded by the rollback.
-                pre_retry=db.rollback,
-            )
-        except Exception as agent_err:
-            log.warning(f"date_extractor skipped call_id={call_id}: {agent_err}")
+            try:
+                from app.agents.date_extractor import DateExtractorAgent
+                await db_retry_on_disconnect_async(
+                    lambda: DateExtractorAgent(call_id, _agent_db),
+                    # CRITICAL — DateExtractorAgent does its own db.commit().
+                    # If that commit's flush partially succeeds then the
+                    # connection drops, the Session lands in DEACTIVE
+                    # state and any subsequent query throws
+                    # `InvalidRequestError: Can't reconnect until invalid
+                    # transaction is rolled back`. Rolling back between
+                    # attempts puts the Session back in a usable state.
+                    # Safe here because `_step_finalize` already committed
+                    # its own work before this block — no uncommitted
+                    # state would be discarded by the rollback.
+                    pre_retry=_agent_db.rollback,
+                )
+            except Exception as agent_err:
+                log.warning(f"date_extractor skipped call_id={call_id}: {agent_err}")
 
-        try:
-            from app.agents.rejection_advisor import (
-                RejectionAdvisorAgent,
-                advise_rejection,
-            )
-            from app.agents.deadline_computer import DeadlineComputerAgent
-            from app.models import Rejection as _Rej, CustomerDeal as _Deal
+            try:
+                from app.agents.rejection_advisor import (
+                    RejectionAdvisorAgent,
+                    advise_rejection,
+                )
+                from app.agents.deadline_computer import DeadlineComputerAgent
+                from app.models import Rejection as _Rej, CustomerDeal as _Deal
 
-            # Cache the call's verdict once (instead of re-running per Rejection)
-            call_for_advice = db.query(Call).filter_by(id=call_id).first()
-            advisor_verdict: dict = {}
-            if call_for_advice and call_for_advice.compliant is False:
-                advisor_verdict = await advise_rejection(call_for_advice) or {}
+                # Cache the call's verdict once (instead of re-running per Rejection)
+                call_for_advice = _agent_db.query(Call).filter_by(id=call_id).first()
+                advisor_verdict: dict = {}
+                if call_for_advice and call_for_advice.compliant is False:
+                    advisor_verdict = await advise_rejection(call_for_advice) or {}
 
-            rejs = db.query(_Rej).filter_by(call_id=call_id).all()
-            for rej in rejs:
-                # Apply RejectionAdvisor's verdict to fields that are NULL.
-                if advisor_verdict and not (rej.category and rej.fix_required):
-                    rej.category = advisor_verdict.get("category", rej.category)
-                    rej.fix_required = advisor_verdict.get(
-                        "fix_required", rej.fix_required
-                    )
-                # Compute deadline from severity + expected_live_date.
-                if not rej.deadline and rej.rejected_at:
-                    sev = advisor_verdict.get("severity") or "MEDIUM"
-                    parent_deal = (
-                        db.query(_Deal)
-                        .filter_by(id=call_for_advice.deal_id)
-                        .first()
-                        if call_for_advice and call_for_advice.deal_id
-                        else None
-                    )
-                    expected_live = (
-                        parent_deal.expected_live_date if parent_deal else None
-                    )
-                    rej.deadline = DeadlineComputerAgent(
-                        rejected_at=rej.rejected_at,
-                        severity=sev,
-                        expected_live_date=expected_live,
-                    )
-            db.commit()
-        except Exception as agent_err:
-            log.warning(f"rejection_advisor/deadline skipped call_id={call_id}: {agent_err}")
-            db.rollback()
+                rejs = _agent_db.query(_Rej).filter_by(call_id=call_id).all()
+                for rej in rejs:
+                    # Apply RejectionAdvisor's verdict to fields that are NULL.
+                    if advisor_verdict and not (rej.category and rej.fix_required):
+                        rej.category = advisor_verdict.get("category", rej.category)
+                        rej.fix_required = advisor_verdict.get(
+                            "fix_required", rej.fix_required
+                        )
+                    # Compute deadline from severity + expected_live_date.
+                    if not rej.deadline and rej.rejected_at:
+                        sev = advisor_verdict.get("severity") or "MEDIUM"
+                        parent_deal = (
+                            _agent_db.query(_Deal)
+                            .filter_by(id=call_for_advice.deal_id)
+                            .first()
+                            if call_for_advice and call_for_advice.deal_id
+                            else None
+                        )
+                        expected_live = (
+                            parent_deal.expected_live_date if parent_deal else None
+                        )
+                        rej.deadline = DeadlineComputerAgent(
+                            rejected_at=rej.rejected_at,
+                            severity=sev,
+                            expected_live_date=expected_live,
+                        )
+                _agent_db.commit()
+            except Exception as agent_err:
+                log.warning(f"rejection_advisor/deadline skipped call_id={call_id}: {agent_err}")
+                _agent_db.rollback()
+        finally:
+            _agent_db.close()
 
         # Quality AI Agent — auto-runs after every upload to merge any
         # sibling calls of the same customer that landed on different
@@ -274,31 +326,46 @@ async def process_call(call_id: str, file_path: str, db: Session, script_id: str
         # internal flush gets cut by a mid-query disconnect — without it
         # the retry attempt would hit `InvalidRequestError` instead of
         # actually rerunning.
+        _quality_db = SessionLocal()
         try:
-            from app.quality_agent import auto_resolve_for_call
-            change = await db_retry_on_disconnect_async(
-                lambda: auto_resolve_for_call(call_id, db),
-                pre_retry=db.rollback,
-            )
-            if change:
-                db.commit()
-                log.info(
-                    f"\U0001f916 QUALITY_AGENT auto-merged {change.get('bucket_size')} calls "
-                    f"→ deal={change.get('survivor_deal','')[:8]} "
-                    f"customer=\"{change.get('canonical_name')}\" "
-                    f"confidence={change.get('confidence')}"
+            try:
+                from app.quality_agent import auto_resolve_for_call
+                change = await db_retry_on_disconnect_async(
+                    lambda: auto_resolve_for_call(call_id, _quality_db),
+                    pre_retry=_quality_db.rollback,
                 )
-        except Exception as qe:
-            log.warning(f"quality agent skipped call_id={call_id}: {qe}")
+                if change:
+                    _quality_db.commit()
+                    log.info(
+                        f"\U0001f916 QUALITY_AGENT auto-merged {change.get('bucket_size')} calls "
+                        f"→ deal={change.get('survivor_deal','')[:8]} "
+                        f"customer=\"{change.get('canonical_name')}\" "
+                        f"confidence={change.get('confidence')}"
+                    )
+            except Exception as qe:
+                log.warning(f"quality agent skipped call_id={call_id}: {qe}")
+        finally:
+            _quality_db.close()
 
         log.info(f"\U0001f4ca COMPLETE call_id={call_id} → {time.time()-pipeline_start:.1f}s total")
     except Exception as e:
         log.error(f"\U0001f4a5 ERROR call_id={call_id} → {str(e)}")
-        call = db.query(Call).filter_by(id=call_id).first()
-        if call:
-            call.status = "failed"
-            call.reason = f"Processing error: {str(e)}"
-            db.commit()
+        # Self-contained error handler — opens its own session so the
+        # status flip works regardless of which step's session was alive
+        # when the exception fired. Previously this re-used the outer
+        # `db` parameter; with per-step sessions, `db` is unused (and may
+        # be None from callers that no longer pre-allocate).
+        _err_db = SessionLocal()
+        try:
+            call = _err_db.query(Call).filter_by(id=call_id).first()
+            if call:
+                call.status = "failed"
+                call.reason = f"Processing error: {str(e)}"
+                _err_db.commit()
+        except Exception as ee:
+            log.warning(f"failed to mark call failed call_id={call_id}: {ee!r}")
+        finally:
+            _err_db.close()
     finally:
         if local_audio and os.path.exists(local_audio):
             try:

@@ -82,3 +82,59 @@ async def test_pipeline_semaphore_caps_concurrent_runs():
         f"semaphore is not throttling"
     )
     assert sorted(finished) == list(range(total)), "every task must complete"
+
+
+@pytest.mark.asyncio
+async def test_process_in_background_does_not_pre_allocate_session():
+    """Regression — `_process_in_background` must NOT open a SessionLocal
+    of its own before invoking `process_call`. The per-step refactor in
+    `pipeline.process_call` opens + closes a session inside each step
+    shim; an outer pre-allocation would re-introduce the connection-pool
+    starvation that this work shipped to fix.
+
+    Verifies the behavioural contract by counting `SessionLocal()` calls
+    from the routes module while a fake `process_call` runs. The count
+    must be 0 — every session opened during the pipeline comes from
+    `pipeline.py`, not `routes.py`.
+    """
+    import app.routes as routes
+
+    routes._PIPELINE_SEMAPHORE = None  # rebuild for this test's cap
+
+    session_factory_calls: list[None] = []
+    fake_process_call_was_called: list[bool] = [False]
+    received_db_arg: list = []
+
+    async def fake_process_call(call_id, file_path, db, script_id=None):
+        fake_process_call_was_called[0] = True
+        received_db_arg.append(db)
+
+    def _spy_session_local():
+        # If `_process_in_background` calls SessionLocal(), it would land
+        # here and we'd count it. The test asserts this never fires.
+        session_factory_calls.append(None)
+        raise AssertionError(
+            "_process_in_background must NOT open its own SessionLocal — "
+            "per-step SessionLocal lives in pipeline.process_call (2026-05-25 perf)."
+        )
+
+    class _FakeInngest:
+        async def send(self, event):
+            return None
+
+    with patch.object(routes.settings, "pipeline_concurrency", 4), \
+         patch("app.routes.process_call", side_effect=fake_process_call), \
+         patch("app.database.SessionLocal", side_effect=_spy_session_local), \
+         patch("app.inngest_client.inngest_client", _FakeInngest()):
+        routes._PIPELINE_SEMAPHORE = asyncio.Semaphore(4)
+        await routes._process_in_background("test-call-id", "/tmp/x.mp3", None)
+
+    assert fake_process_call_was_called[0], "process_call must have been awaited"
+    assert session_factory_calls == [], (
+        "SessionLocal was opened by _process_in_background — should be opened "
+        "per-step inside pipeline.process_call instead"
+    )
+    # process_call should receive db=None now (sessions are per-step)
+    assert received_db_arg == [None], (
+        f"process_call should receive db=None on the legacy path; got {received_db_arg!r}"
+    )
