@@ -176,6 +176,24 @@ async def lifespan(app: FastAPI):
                 f"ALLOWED_ORIGINS contains dev origins in production: {bad}"
             )
 
+    # 2026-05-26 Phase 2 boot guard — when USE_INNGEST_PIPELINE=true is
+    # set on Railway but INNGEST_SIGNING_KEY/INNGEST_EVENT_KEY are missing,
+    # Inngest events go nowhere (the upload handler emits CALL_UPLOADED
+    # but no function ever receives it → pipeline silently never runs).
+    # Refuse to boot in production with this misconfig.
+    if settings.sentry_environment.lower() == "production" and settings.use_inngest_pipeline:
+        if not os.environ.get("INNGEST_SIGNING_KEY", "").strip():
+            raise RuntimeError(
+                "USE_INNGEST_PIPELINE=true requires INNGEST_SIGNING_KEY. "
+                "Set both Railway env vars from your Inngest Cloud Pro app. "
+                "See BRAIN/04_Sessions/2026_05_26_*.md for the owner runbook."
+            )
+        if not os.environ.get("INNGEST_EVENT_KEY", "").strip():
+            raise RuntimeError(
+                "USE_INNGEST_PIPELINE=true requires INNGEST_EVENT_KEY. "
+                "See BRAIN/04_Sessions/2026_05_26_*.md for the owner runbook."
+            )
+
     # 2026-05-24 wiring audit C9 — production must use the Supabase
     # transaction-mode pooler at port :6543. Session-mode (:5432) pins a
     # server connection for the lifetime of the client connection; with
