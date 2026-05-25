@@ -59,25 +59,12 @@ const DEAL_STATUSES = [
   { value: "closed_lost", label: "Closed — lost" },
 ] as const;
 
-// 2026-05-12 taxonomy rebuild — locked to the 4 canonical segment
-// types. AI auto-classifies which are present in the recording; this
-// dropdown is now a manual-override path only (hidden when
-// dev_auto_detect is on, which is the default).
-const CALL_TYPES = [
-  { value: "lead_gen", label: "Lead Gen" },
-  { value: "pre_sales", label: "Pre-Sales" },
-  { value: "verbal", label: "Verbal" },
-  { value: "loa", label: "LOA" },
-] as const;
-
-const LANGUAGES = [
-  { value: "en", label: "English" },
-  { value: "fr", label: "Français" },
-  { value: "de", label: "Deutsch" },
-  { value: "es", label: "Español" },
-  { value: "it", label: "Italiano" },
-  { value: "nl", label: "Nederlands" },
-] as const;
+// 2026-05-25 — `CALL_TYPES` + `LANGUAGES` constants removed alongside
+// the dropdowns that consumed them. Call type is auto-detected by
+// `pipeline._step_classify_content`; language is hard-set to en-GB at
+// the engine level. The 4 canonical segment types (lead_gen / pre_sales
+// / verbal / loa) are now an internal taxonomy only — see
+// `app.compliance` for the enum.
 
 export interface L7FormPrefill {
   customer?: Partial<L7IntakeInput["customer"]> & { slug?: string };
@@ -139,11 +126,17 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
         external_watt_site_id: prefill?.deal?.external_watt_site_id,
       },
       call: {
+        // 2026-05-25 — call_type and language fields removed from the UI.
+        // call_type is auto-detected by the content classifier on every
+        // upload (pipeline._step_classify_content); the previous manual
+        // dropdown duplicated AI work. Language is always en-GB for Watt
+        // Utilities (all UK calls). Both fields stay optional in the
+        // schema for back-compat with any external API caller.
         call_type: undefined,
         audio_file: undefined as unknown as File,
         recording_date: "",
         duration_seconds: undefined,
-        language: "en",
+        language: undefined,
       },
       // Auto-detect ON by default — the AI extracts customer/supplier/agent
       // from the audio. Manual fill is one click away if reviewers prefer.
@@ -283,6 +276,148 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
     qc.invalidateQueries({ queryKey: ["admin", "tracker"] });
   };
 
+  // 2026-05-25 — multi-file batch upload in MANUAL mode. The auto-detect
+  // dropzone supports multi-file natively (each file runs the AI pipeline
+  // independently). The manual form used to be capped at one file per
+  // submit, which forced reviewers to repeat the same 17-field customer
+  // + deal envelope for every audio in a multi-file batch. This path
+  // applies the same envelope to every file: each upload sends the
+  // user-filled customer/deal/call metadata as its own L7 envelope, and
+  // the backend L7 matcher links them to the same customer + deal record
+  // (customer_name fuzzy-match + supplier hard-key). Per-file status row
+  // mirrors the auto-detect dropzone so the reviewer sees live progress.
+  const fireManualBatchUpload = async (files: File[], values: L7IntakeInput) => {
+    const valid = files.filter(
+      (f) => /\.(mp3|wav|m4a)$/i.test(f.name) || f.type.startsWith("audio/"),
+    );
+    if (valid.length === 0) {
+      toast.error("Only MP3, WAV, or M4A audio files are accepted.");
+      return;
+    }
+    // Manual mode requires customer.name to be populated (the schema's
+    // superRefine catches this on a normal submit, but the batch path
+    // bypasses RHF's handleSubmit). Pre-flight check prevents N orphan
+    // customer rows from racing through the matcher with empty names.
+    if (!values.customer?.name?.trim()) {
+      toast.error("Add a customer name before uploading multiple files in manual mode.");
+      return;
+    }
+
+    // Map the supplier label to the backend's strict SupplierEnum value
+    // (same boundary mapping as `onSubmit`). Done once, reused for every
+    // file in the batch so the matcher sees identical metadata.
+    const supplierMap: Record<string, string> = {
+      "Pozitive Energy": "Pozitive",
+      "TotalEnergies": "TotalEnergies (out-of-matrix)",
+    };
+    const rawSupplier = values.deal.supplier as string | undefined;
+    const mappedSupplier = rawSupplier ? supplierMap[rawSupplier] ?? rawSupplier : null;
+
+    // Strip empty strings (same recursive cleaner as onSubmit — backend
+    // enum/date columns reject "" but accept null/undefined).
+    const stripEmpty = <T,>(v: T): T => {
+      if (v === "" || v === undefined || v === null) return undefined as unknown as T;
+      if (Array.isArray(v)) return v.map(stripEmpty) as unknown as T;
+      if (typeof v === "object") {
+        const out: Record<string, unknown> = {};
+        for (const [k, vv] of Object.entries(v as Record<string, unknown>)) {
+          const cleaned = stripEmpty(vv);
+          if (cleaned !== undefined) out[k] = cleaned;
+        }
+        return out as unknown as T;
+      }
+      return v;
+    };
+    const cleanedCustomer = stripEmpty(values.customer) as typeof values.customer;
+    const cleanedDeal = stripEmpty(values.deal) as typeof values.deal;
+    const cleanedCall = stripEmpty(values.call) as typeof values.call;
+
+    setBatchUploads(valid.map((f) => ({ name: f.name, size: f.size, status: "pending" })));
+
+    // Race-safe shared deal. The L7 customer + deal matcher
+    // (`backend/app/intake/matcher.py`) is read-then-write without
+    // row-level locking — N parallel uploads with identical envelopes
+    // would each see "no existing deal" and create N duplicates. The
+    // autoDetect+sameDeal path solves this by creating ONE stub deal
+    // up-front via `/api/deals/stub` and attaching every file to it
+    // via `deal_id`. Manual mode uses the SAME pattern: stub first,
+    // then the L7 envelope on each upload backfills the stub's
+    // customer + deal fields race-safely (pipeline._step_detect_metadata
+    // is only-fill-if-blank). Single-file manual still goes through
+    // the normal onSubmit() path which doesn't need the stub.
+    let sharedDealId: string | null = null;
+    if (valid.length > 1) {
+      try {
+        const res = await apiFetch<{ deal_id: string }>("/api/deals/stub", {
+          method: "POST",
+        });
+        sharedDealId = res.deal_id;
+      } catch {
+        toast.error("Failed to create shared deal — uploads will create separate stubs");
+      }
+    }
+
+    const completed: Array<string | null> = new Array(valid.length).fill(null);
+    await Promise.allSettled(
+      valid.map(async (file, idx) => {
+        // Per-file FormData: same envelope every time, only `audio_file` swaps.
+        // Backend L7 matcher fuzzy-matches customer_name + hard-keys on
+        // supplier/MPAN so all N uploads collapse onto one CustomerDeal.
+        // Plus `deal_id=sharedDealId` (when present) forces all files
+        // onto the stub deal created above — bypasses the race entirely.
+        const fd = buildUploadFormData({
+          customer: { ...cleanedCustomer, name: cleanedCustomer.name ?? "" },
+          deal: { ...cleanedDeal, supplier: (mappedSupplier ?? null) as string },
+          call: {
+            ...cleanedCall,
+            // call_type is auto-detected by the pipeline; no manual value.
+            call_type: null,
+            audio_file: file,
+          },
+          customer_slug: customerSlug ?? prefill?.customer?.slug,
+          dev_auto_detect: false,
+        });
+        if (sharedDealId) fd.append("deal_id", sharedDealId);
+        setBatchUploads((prev) =>
+          prev.map((u, i) => (i === idx ? { ...u, status: "uploading" } : u)),
+        );
+        try {
+          const data = await uploadCall(fd);
+          const cid = data.call_id ?? data.id;
+          completed[idx] = cid ?? null;
+          setBatchUploads((prev) =>
+            prev.map((u, i) => (i === idx ? { ...u, status: "done", callId: cid } : u)),
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setBatchUploads((prev) =>
+            prev.map((u, i) => (i === idx ? { ...u, status: "error", error: msg } : u)),
+          );
+          toast.error(msg || "Upload failed");
+        }
+      }),
+    );
+
+    const firstCid = completed.find((c) => !!c);
+    const successCount = completed.filter((c) => !!c).length;
+    if (firstCid && onSuccess) {
+      if (valid.length === 1) {
+        toast.success("Call uploaded, processing");
+        onSuccess(firstCid);
+      } else {
+        toast.success(
+          `${successCount} of ${valid.length} calls uploaded — opening the live dashboard`,
+        );
+        // Signal "navigate to /calls instead of /calls/{id}" so the
+        // reviewer can monitor every file's pipeline progress live.
+        onSuccess("__BATCH_TO_CALLS_DASHBOARD__");
+      }
+    }
+    qc.invalidateQueries({ queryKey: ["admin", "calls"] });
+    qc.invalidateQueries({ queryKey: ["admin", "customers"] });
+    qc.invalidateQueries({ queryKey: ["admin", "tracker"] });
+  };
+
   // W1.2 (v3-watt-coverage): dynamic meter list — RHF useFieldArray.
   const meters = useFieldArray({
     control: form.control,
@@ -291,9 +426,11 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
 
   const onSubmit = (values: L7IntakeInput, override?: "manual" | "auto") => {
     // 2026-05-12 taxonomy rebuild — backend accepts the 4 canonical
-    // values or null. AI auto-classifies on null. No remap needed; the
-    // legacy "full" / "standalone_loa" mappings are gone.
-    const mappedCallType: string | null = values.call.call_type ?? null;
+    // values or null. AI auto-classifies on null. The UI no longer
+    // collects call_type at all (2026-05-25 — field removed because
+    // the content classifier already produces it on every upload);
+    // we send null and let the pipeline classify.
+    const mappedCallType: string | null = null;
 
     // Frontend supplier list uses display labels; backend SupplierEnum
     // is stricter (e.g. "Pozitive" not "Pozitive Energy"; "TotalEnergies
@@ -679,30 +816,17 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
       </Section>
       </div>
 
-      {/* SECTION C — Call */}
-      <Section letter="C" title="Call" sub={autoDetect ? "audio file only" : "5 fields"}>
+      {/* SECTION C — Call.
+        2026-05-25 — Call type + Language fields removed. Call type is
+        auto-detected by `pipeline._step_classify_content` on every
+        upload (the dropdown was a duplicate; reviewer time was being
+        spent on a value the AI already produces). Language is hard-set
+        to en-GB at the engine level (Deepgram + AssemblyAI) — Watt
+        Utilities only processes UK calls, so the picker had one
+        meaningful value. */}
+      <Section letter="C" title="Call" sub={autoDetect ? "audio files only" : "3 fields"}>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           <div style={{ display: autoDetect ? "none" : "contents" }}>
-          <FieldRow label="Call type" error={form.formState.errors.call?.call_type?.message}>
-            <Controller
-              control={form.control}
-              name="call.call_type"
-              render={({ field }) => (
-                <Select value={field.value ?? undefined} onValueChange={field.onChange}>
-                  <SelectTrigger data-testid="l7-call-type" className="h-9 w-full">
-                    <SelectValue placeholder="Select call type…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {CALL_TYPES.map((c) => (
-                      <SelectItem key={c.value} value={c.value}>
-                        {c.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            />
-          </FieldRow>
           <FieldRow label="Recording date">
             <Input type="datetime-local" {...form.register("call.recording_date")} />
           </FieldRow>
@@ -741,13 +865,18 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
                     const all = Array.from(e.dataTransfer.files ?? []);
                     if (all.length === 0) return;
                     // Auto-detect mode: any drop (1 or many) fires the
-                    // no-metadata upload immediately. Single-file path used
-                    // to set the RHF field and wait for the Upload click,
-                    // which silently 422'd when the user hit Upload first.
-                    // Now both paths behave the same — drop = upload starts,
-                    // navigate to /calls/{id} on success.
+                    // no-metadata upload immediately.
                     if (autoDetect) {
                       fireBatchUpload(all);
+                      return;
+                    }
+                    // Manual mode + multi-file (2026-05-25): apply the
+                    // current customer/deal envelope to every file via
+                    // `fireManualBatchUpload`. The reviewer's metadata is
+                    // shared across the batch; the backend L7 matcher
+                    // links each call to the same customer + deal.
+                    if (all.length > 1) {
+                      fireManualBatchUpload(all, form.getValues());
                       return;
                     }
                     const f = all[0];
@@ -814,10 +943,10 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
                       <span className="text-[13px] text-[var(--text-primary)]">
                         {autoDetect
                           ? "Drop one or more audio files (auto-detect runs per file)"
-                          : "Drop audio file here or click to browse"}
+                          : "Drop one or more audio files — your customer + deal info is applied to every file"}
                       </span>
                       <span className="text-[11px] text-[var(--text-dim)]">
-                        MP3, WAV, M4A · up to 200 MB
+                        MP3, WAV, M4A · up to 200 MB each · call type is auto-detected
                       </span>
                     </>
                   )}
@@ -826,15 +955,20 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
                     data-testid="l7-audio-file"
                     type="file"
                     accept="audio/*,.mp3,.wav,.m4a"
-                    multiple={autoDetect}
+                    multiple
                     className="hidden"
                     onChange={(e) => {
                       const all = Array.from(e.target.files ?? []);
                       if (all.length === 0) return;
-                      // Same logic as onDrop: auto-detect = any count fires
-                      // the no-metadata batch upload immediately.
+                      // Auto-detect — fire batch immediately.
                       if (autoDetect) {
                         fireBatchUpload(all);
+                        return;
+                      }
+                      // Manual mode + multi-file (2026-05-25): fan out the
+                      // user's L7 envelope across every selected file.
+                      if (all.length > 1) {
+                        fireManualBatchUpload(all, form.getValues());
                         return;
                       }
                       onChange(all[0]);
@@ -850,26 +984,6 @@ export function L7Form({ prefill, customerSlug, onSuccess, onCancel }: L7FormPro
               type="number"
               min="0"
               {...form.register("call.duration_seconds", { setValueAs: (v) => (v === "" || v === null || v === undefined ? undefined : Number(v)) })}
-            />
-          </FieldRow>
-          <FieldRow label="Language">
-            <Controller
-              control={form.control}
-              name="call.language"
-              render={({ field }) => (
-                <Select value={field.value ?? undefined} onValueChange={field.onChange}>
-                  <SelectTrigger className="h-9 w-full">
-                    <SelectValue placeholder="Select…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {LANGUAGES.map((l) => (
-                      <SelectItem key={l.value} value={l.value}>
-                        {l.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
             />
           </FieldRow>
           </div>
