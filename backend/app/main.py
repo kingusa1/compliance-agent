@@ -59,25 +59,37 @@ async def _idle_release_loop(interval_seconds: int = 120):
     Runs forever until cancelled by the lifespan shutdown path. Each iteration
     opens its own Session (we can't share the request-scoped one because we're
     outside an HTTP request) and delegates to `_release_idle_claims_core`.
-    Exceptions from a bad iteration are logged and swallowed — one malformed
-    DB row shouldn't kill the sweep forever.
+
+    2026-05-25 — wraps the iteration in `@db_retry_on_disconnect` so a
+    transient Supavisor disconnect (which previously logged
+    `idle_release loop iteration failed: SSL connection has been
+    closed unexpectedly` and skipped the sweep entirely) gets one
+    automatic retry with a fresh session. The Prometheus counter
+    `db_retry_total{outcome=...}` records whether the retry recovered.
     """
     from app.database import SessionLocal
+    from app.db_retry import db_retry_on_disconnect
     from app.hitl_routes import _release_idle_claims_core
+
+    @db_retry_on_disconnect()
+    def _iteration() -> int:
+        db = SessionLocal()
+        try:
+            return _release_idle_claims_core(db)
+        finally:
+            db.close()
 
     while True:
         try:
-            db = SessionLocal()
-            try:
-                count = _release_idle_claims_core(db)
-                if count > 0:
-                    log.info(f"idle_release swept {count} expired claim(s)")
-            finally:
-                db.close()
+            count = _iteration()
+            if count > 0:
+                log.info(f"idle_release swept {count} expired claim(s)")
         except asyncio.CancelledError:
             # Propagate — the lifespan awaits this exception on shutdown.
             raise
         except Exception as e:
+            # Retry already happened (and either recovered or surfaced
+            # here). Log and continue — the sweeper must never die.
             log.warning(f"idle_release loop iteration failed: {e}")
         await asyncio.sleep(interval_seconds)
 

@@ -34,6 +34,22 @@ LLM_CALL_DURATION = Histogram(
     buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0, 60.0),
 )
 
+# 2026-05-25 — DB-disconnect observability. The `handle_error` listener
+# in `app.database` flips `ctx.is_disconnect=True` and bumps
+# `db_disconnect_total`; the retry decorator in `app.db_retry` bumps
+# `db_retry_total{outcome=...}`. Graph the ratio of `exhausted` to
+# `success` to spot real network issues vs single-blip Supavisor noise.
+DB_DISCONNECT_TOTAL = Counter(
+    "db_disconnect_total",
+    "Number of psycopg2 transient disconnects detected by the engine listener",
+)
+
+db_retry_total = Counter(
+    "db_retry_total",
+    "Number of background-task retry attempts triggered by transient DB disconnect",
+    labelnames=("outcome",),  # 'success' | 'exhausted'
+)
+
 
 def record_pipeline_step(step: str, duration_seconds: float) -> None:
     PIPELINE_STEP_DURATION.labels(step=step).observe(duration_seconds)

@@ -38,13 +38,42 @@ _DISCONNECT_SIGNATURES = (
 engine = create_engine(
     settings.database_url,
     pool_pre_ping=True,
-    # Sized for Railway Pro (24GB) + Supabase Supavisor transaction pooler.
-    # Pro plan has headroom for a larger warm-pool; LIFO checkout keeps the
-    # hottest connection at the top so consecutive requests reuse a primed
-    # TCP/TLS session and skip the cross-region handshake.
-    pool_size=25,
-    max_overflow=50,
-    pool_recycle=1800,
+    # 2026-05-25 — Tuned for Supabase Supavisor (transaction-mode pooler
+    # at :6543) AFTER live-prod logs showed repeated mid-query disconnects
+    # (`SSL connection has been closed unexpectedly`). The prior config
+    # (pool_size=25, max_overflow=50, recycle=1800s) ran into Supavisor's
+    # ~5-minute idle-connection-kill behaviour: connections that sat
+    # warm in the pool past Supavisor's threshold got TCP-killed
+    # server-side, and pool_pre_ping caught some but mid-query drops
+    # leaked to users.
+    #
+    # New config (mirrors Supabase's published guidance for Supavisor +
+    # SQLAlchemy):
+    #   pool_size=10        — small warm pool; transaction-mode pooler
+    #                         multiplexes many app connections onto each
+    #                         server connection, so a tiny warm set is
+    #                         enough. 10 × N replicas stays under the
+    #                         per-project connection ceiling.
+    #   max_overflow=20     — burst headroom for upload + reanalyze
+    #                         spikes without blowing the pooler.
+    #   pool_recycle=240    — 60s safety margin under Supavisor's 300s
+    #                         `server_idle_timeout`. Recycling at
+    #                         exactly 300 races the pooler's kill timer:
+    #                         a connection checked out at T=301 still
+    #                         passes SQLAlchemy's age check while
+    #                         Supavisor may have already killed the
+    #                         server side at T=300. 240s closes that
+    #                         window without thrashing connections.
+    #   pool_timeout=10     — fail fast on pool exhaustion. SQLAlchemy's
+    #                         default of 30s blocks the FastAPI thread
+    #                         long enough to look like a service hang
+    #                         under burst load; a 10s timeout returns a
+    #                         503 quickly so the frontend's retry kicks
+    #                         in.
+    pool_size=10,
+    max_overflow=20,
+    pool_recycle=240,
+    pool_timeout=10,
     pool_use_lifo=True,
     # Default compiled-statement cache is 500; lift to 1200 so the hot
     # query shapes (queue, tracker, calls, deals) stop falling out and
@@ -52,6 +81,9 @@ engine = create_engine(
     query_cache_size=1200,
     connect_args={
         "connect_timeout": 10,
+        # Aggressive TCP keepalives so the kernel TELLS the app the
+        # connection is dead BEFORE psycopg2 tries to use it for a
+        # query. Sub-30-second detection on a stale socket.
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,
@@ -101,6 +133,14 @@ def _handle_disconnect(ctx) -> None:
         "db_disconnect_detected",
         extra={"err_type": type(orig).__name__, "err": str(orig).strip()[:240]},
     )
+    # Increment the Prometheus counter so ops can graph disconnect rate
+    # against Supavisor restart timestamps. Best-effort — never block
+    # the listener on a metric registry import failure.
+    try:
+        from app.observability_metrics import DB_DISCONNECT_TOTAL
+        DB_DISCONNECT_TOTAL.inc()
+    except Exception:  # noqa: BLE001
+        pass
     # SQLAlchemy will: (a) invalidate the dead pool connection in the
     # finally block, (b) wrap `orig` in the dialect's normal
     # OperationalError, (c) let it propagate up to FastAPI where our

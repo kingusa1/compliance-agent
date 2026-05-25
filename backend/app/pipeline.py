@@ -178,9 +178,30 @@ async def process_call(call_id: str, file_path: str, db: Session, script_id: str
         # 3. DeadlineComputerAgent — fills Rejection.deadline (uses #2's severity)
         # All wrapped in try/except so a transient agent failure NEVER breaks
         # a successfully-scored call. Stale autofill is cheap to backfill.
+        #
+        # 2026-05-25 — each agent now goes through `db_retry_on_disconnect_async`
+        # so a transient Supavisor disconnect mid-agent triggers one
+        # automatic retry with a fresh attempt. Prior logs showed dozens
+        # of `date_extractor skipped ... SSL connection has been closed
+        # unexpectedly` lines per disconnect window — that work now
+        # completes on the retry.
+        from app.db_retry import db_retry_on_disconnect_async
         try:
             from app.agents.date_extractor import DateExtractorAgent
-            await DateExtractorAgent(call_id, db)
+            await db_retry_on_disconnect_async(
+                lambda: DateExtractorAgent(call_id, db),
+                # CRITICAL — DateExtractorAgent does its own db.commit().
+                # If that commit's flush partially succeeds then the
+                # connection drops, the Session lands in DEACTIVE
+                # state and any subsequent query throws
+                # `InvalidRequestError: Can't reconnect until invalid
+                # transaction is rolled back`. Rolling back between
+                # attempts puts the Session back in a usable state.
+                # Safe here because `_step_finalize` already committed
+                # its own work before this block — no uncommitted
+                # state would be discarded by the rollback.
+                pre_retry=db.rollback,
+            )
         except Exception as agent_err:
             log.warning(f"date_extractor skipped call_id={call_id}: {agent_err}")
 
@@ -234,9 +255,19 @@ async def process_call(call_id: str, file_path: str, db: Session, script_id: str
         # stub deals. Failure here never breaks the call (the per-call
         # verdict is already persisted); a stale customer-rollup is
         # cheap to fix later via /api/admin/quality-resolve.
+        #
+        # 2026-05-25 — wrapped in async retry so a Supavisor blip
+        # doesn't permanently skip the auto-merge. `pre_retry=db.rollback`
+        # clears DEACTIVE session state when `auto_resolve_for_call`'s
+        # internal flush gets cut by a mid-query disconnect — without it
+        # the retry attempt would hit `InvalidRequestError` instead of
+        # actually rerunning.
         try:
             from app.quality_agent import auto_resolve_for_call
-            change = await auto_resolve_for_call(call_id, db)
+            change = await db_retry_on_disconnect_async(
+                lambda: auto_resolve_for_call(call_id, db),
+                pre_retry=db.rollback,
+            )
             if change:
                 db.commit()
                 log.info(
