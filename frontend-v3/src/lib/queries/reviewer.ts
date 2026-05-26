@@ -142,9 +142,14 @@ export type CallBundleSegment = {
   id: string;
   idx: number;
   stage: string;
-  rubric_kind?: string | null;
-  rubric_label?: string | null;
-  rubric_source_id?: string | null;
+  // Backend always emits these keys via plain `getattr(..., None)` (see
+  // routes.py:get_call_bundle:2228-2233), so the keys are always present
+  // but the value can be null. Make them required so consumers handle
+  // the null branch explicitly instead of conflating "absent" with
+  // "null" via the optional `?:` modifier (code-reviewer M3).
+  rubric_kind: string | null;
+  rubric_label: string | null;
+  rubric_source_id: string | null;
   start_word: number | null;
   end_word: number | null;
   score: string | null;
@@ -154,8 +159,12 @@ export type CallBundleSegment = {
   critical_breaches: number | null;
   high_breaches: number | null;
   medium_breaches: number | null;
-  confidence?: number | null;
-  checkpoint_results: unknown[];
+  confidence: number | null;
+  // Backend writes a list of dicts (json.loads of CallSegment
+  // .checkpoint_results). Tightened from `unknown[]` to `Record<string,
+  // unknown>[]` so consumers can read `cp.name` / `cp.status` without
+  // an inline type assertion (code-reviewer M1).
+  checkpoint_results: Array<Record<string, unknown>>;
 };
 
 export type CallBundleResponse = {
@@ -413,7 +422,17 @@ export function useCallBundleQuery(id: string, callStatus?: string) {
     staleTime: Infinity,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
-    refetchInterval: _isInFlightStatus(callStatus) ? 3000 : false,
+    // The poll evaluates against the bundle's nested `call.status` (live,
+    // from cache) so the safety-net auto-halts the moment the pipeline
+    // hits a terminal status — no need for the page to feed the status
+    // in. The optional `callStatus` arg is a back-compat seed for the
+    // very first render when bundle data hasn't landed yet; subsequent
+    // renders read the freshly-cached call.status instead. Same pattern
+    // as `useCallDetailQuery`.
+    refetchInterval: (query) =>
+      _isInFlightStatus(query.state.data?.call?.status ?? callStatus)
+        ? 3000
+        : false,
   });
 }
 

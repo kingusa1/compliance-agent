@@ -26,7 +26,6 @@ from app._clock import utcnow
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 from sqlalchemy import func, inspect, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
@@ -197,6 +196,45 @@ def agent_drilldown(
     cutoff_7 = now - timedelta(days=7)
     cutoff_30 = now - timedelta(days=30)
 
+    # 2026-05-28 P0 — canonical-name resolution.
+    #
+    # The `/agents` listing groups raw agent_names through
+    # `_canonicalize_agent` (alias table + first-token heuristics), so an
+    # agent rendered as "Bradley" on the list can be backed by raw
+    # `agent_name` values like "Bradley Clayton", "Bradley C", "Brad" on
+    # individual call rows. The old drilldown filtered with
+    # `Call.agent_name == agent_name`, which evaluated `agent_name ==
+    # "Bradley"` against rows that store the full string — zero matches,
+    # every KPI rendered as 0, "No calls for this agent yet".
+    #
+    # Fix: build the alias map once at the top of the route, resolve the
+    # requested name to its set of raw aliases (the requested name itself
+    # PLUS every raw name that canonicalises onto it), then change every
+    # downstream filter from `agent_name == :agent` to `agent_name IN
+    # (:aliases)`. This keeps the list-to-drilldown navigation honest and
+    # is correct against historical data created before the alias table
+    # was populated.
+    aliases = _load_agent_aliases(db)
+    canon_target = _canonicalize_agent(agent_name, aliases) or agent_name
+    # Raw names that canonicalise to the same target — includes the
+    # requested name itself (covers the common case of no alias yet
+    # registered for this agent).
+    raw_alias_names: list[str] = [agent_name]
+    try:
+        all_raw = [
+            row[0]
+            for row in db.query(Call.agent_name)
+            .filter(Call.agent_name.isnot(None))
+            .distinct()
+            .all()
+        ]
+        for raw in all_raw:
+            if raw and raw != agent_name:
+                if (_canonicalize_agent(raw, aliases) or raw) == canon_target:
+                    raw_alias_names.append(raw)
+    except Exception as e:  # noqa: BLE001 — degrade to exact match on error
+        log.warning(f"agent alias expansion failed: {e}")
+
     # Critical flag count over the last 7 days. The `flags` table may not
     # exist in older DBs — degrade to 0 if so.
     critical_count_7d = 0
@@ -207,24 +245,26 @@ def agent_drilldown(
                 SELECT COUNT(*) AS n
                 FROM flags f
                 JOIN calls c ON c.id = f.call_id
-                WHERE c.agent_name = :agent
+                WHERE c.agent_name = ANY(:agents)
                   AND f.severity = 'critical'
                   AND f.created_at >= :cutoff
                 """
             ),
-            {"agent": agent_name, "cutoff": cutoff_7},
+            {"agents": raw_alias_names, "cutoff": cutoff_7},
         ).fetchone()
         critical_count_7d = int(row.n) if row else 0
     except (OperationalError, ProgrammingError):
         critical_count_7d = 0
 
-    # Pass rate over last 30d.
+    # Pass rate over last 30d. Alias-aware filter (2026-05-28 P0) so
+    # the rendered "Bradley" name on /agents resolves correctly when the
+    # underlying call rows store "Bradley Clayton" / "Brad" / etc.
     rate_row = (
         db.query(
             func.count(Call.id).label("total"),
             func.count().filter(Call.compliant.is_(True)).label("ok"),
         )
-        .filter(Call.agent_name == agent_name, Call.created_at >= cutoff_30)
+        .filter(Call.agent_name.in_(raw_alias_names), Call.created_at >= cutoff_30)
         .one()
     )
     # 2026-05-28 P0 — explicit float() casts so a Decimal/Numeric column
@@ -243,7 +283,7 @@ def agent_drilldown(
         db.query(func.count(FixDirective.id))
         .join(Call, Call.id == FixDirective.call_id)
         .filter(
-            Call.agent_name == agent_name,
+            Call.agent_name.in_(raw_alias_names),
             FixDirective.status.in_(("pending", "in_progress")),
         )
         .scalar()
@@ -252,7 +292,8 @@ def agent_drilldown(
 
     # Open £ at risk: sum of deal_value_gbp on customer_deals reachable via
     # this agent's calls where there's still an open directive. Tolerate
-    # missing customer_deals or fix_directives joins.
+    # missing customer_deals or fix_directives joins. Alias-aware filter
+    # (2026-05-28 P0).
     open_value = None
     try:
         row = db.execute(
@@ -262,11 +303,11 @@ def agent_drilldown(
                 FROM fix_directives fd
                 JOIN calls c ON c.id = fd.call_id
                 LEFT JOIN customer_deals d ON d.id = c.deal_id
-                WHERE c.agent_name = :agent
+                WHERE c.agent_name = ANY(:agents)
                   AND fd.status IN ('pending', 'in_progress')
                 """
             ),
-            {"agent": agent_name},
+            {"agents": raw_alias_names},
         ).fetchone()
         open_value = _safe_float(row.v) if row else None
     except (OperationalError, ProgrammingError):
@@ -288,12 +329,12 @@ def agent_drilldown(
             FROM fix_directives fd
             JOIN calls c              ON c.id = fd.call_id
             LEFT JOIN customer_deals d ON d.id = c.deal_id
-            WHERE c.agent_name = :agent
+            WHERE c.agent_name = ANY(:agents)
               AND fd.status = 'dead'
             ORDER BY rejected_at DESC NULLS LAST
             LIMIT 100
         """.format(dead_col=("fd.dead_reason" if has_dead_reason_col else "NULL"))
-        rows = db.execute(text(sql), {"agent": agent_name}).fetchall()
+        rows = db.execute(text(sql), {"agents": raw_alias_names}).fetchall()
         for r in rows:
             dr = r.dead_reason
             if not dr and r.body:
@@ -344,7 +385,7 @@ def agent_drilldown(
             _Call.compliance_status, _Call.created_at, _Call.completed_at,
             _Call.reason, _Call.duration_seconds,
         )
-        .filter(_Call.agent_name == agent_name)
+        .filter(_Call.agent_name.in_(raw_alias_names))
         .order_by(_Call.created_at.desc())
         .limit(20)
         .all()
@@ -384,18 +425,18 @@ def agent_drilldown(
 
     total_calls_lifetime = (
         db.query(func.count(Call.id))
-        .filter(Call.agent_name == agent_name)
+        .filter(Call.agent_name.in_(raw_alias_names))
         .scalar()
         or 0
     )
 
     # Avg score over the last 30d. Parse "X/Y" → ratio in Python to keep
-    # the SQL dialect-portable.
+    # the SQL dialect-portable. Alias-aware filter (2026-05-28 P0).
     avg_score_30d: float | None = None
     score_rows = (
         db.query(Call.score)
         .filter(
-            Call.agent_name == agent_name,
+            Call.agent_name.in_(raw_alias_names),
             Call.created_at >= cutoff_30,
             Call.score.isnot(None),
         )
@@ -423,15 +464,19 @@ def agent_drilldown(
                 SELECT f.severity, COUNT(*) AS n
                   FROM flags f
                   JOIN calls c ON c.id = f.call_id
-                 WHERE c.agent_name = :agent
+                 WHERE c.agent_name = ANY(:agents)
                    AND f.created_at >= :cutoff
                  GROUP BY f.severity
                 """
             ),
-            {"agent": agent_name, "cutoff": cutoff_30},
+            {"agents": raw_alias_names, "cutoff": cutoff_30},
         ).fetchall()
         for r in sev_rows:
-            key = (r.severity or "medium").lower()
+            # 2026-05-28 P0 — defensive str() coerce so a JSON-column row
+            # (or any Row.severity that isn't a plain string) can't bubble
+            # an unhashable object into the dict key path that
+            # jsonable_encoder iterates.
+            key = (str(r.severity) if r.severity is not None else "medium").lower()
             if key in severity_breakdown:
                 severity_breakdown[key] = int(r.n)
     except (OperationalError, ProgrammingError):
@@ -446,7 +491,7 @@ def agent_drilldown(
         cp_rows = (
             db.query(Call.checkpoint_results)
             .filter(
-                Call.agent_name == agent_name,
+                Call.agent_name.in_(raw_alias_names),
                 Call.created_at >= cutoff_30,
                 Call.checkpoint_results.isnot(None),
             )
@@ -484,25 +529,28 @@ def agent_drilldown(
                 """
                 SELECT COALESCE(detected_supplier, 'Unknown') AS s, COUNT(*) AS n
                   FROM calls
-                 WHERE agent_name = :agent AND created_at >= :cutoff
+                 WHERE agent_name = ANY(:agents) AND created_at >= :cutoff
                  GROUP BY s
                 """
             ),
-            {"agent": agent_name, "cutoff": cutoff_30},
+            {"agents": raw_alias_names, "cutoff": cutoff_30},
         ).fetchall():
-            supplier_mix[r.s] = int(r.n)
+            # 2026-05-28 P0 — defensive str() coerce so an unhashable
+            # column value (json/array dialects) can't poison the dict
+            # key path that FastAPI's serializer walks.
+            supplier_mix[str(r.s) if r.s is not None else "Unknown"] = int(r.n)
         for r in db.execute(
             text(
                 """
                 SELECT COALESCE(call_type, 'unset') AS t, COUNT(*) AS n
                   FROM calls
-                 WHERE agent_name = :agent AND created_at >= :cutoff
+                 WHERE agent_name = ANY(:agents) AND created_at >= :cutoff
                  GROUP BY t
                 """
             ),
-            {"agent": agent_name, "cutoff": cutoff_30},
+            {"agents": raw_alias_names, "cutoff": cutoff_30},
         ).fetchall():
-            call_type_mix[r.t] = int(r.n)
+            call_type_mix[str(r.t) if r.t is not None else "unset"] = int(r.n)
     except (OperationalError, ProgrammingError):
         pass
 
@@ -516,12 +564,12 @@ def agent_drilldown(
                 """
                 SELECT COUNT(*) AS n
                   FROM calls
-                 WHERE agent_name = :agent
+                 WHERE agent_name = ANY(:agents)
                    AND created_at >= :cutoff
                    AND (quality_check->>'verdict') = 'block'
                 """
             ),
-            {"agent": agent_name, "cutoff": cutoff_30},
+            {"agents": raw_alias_names, "cutoff": cutoff_30},
         ).fetchone()
         qc_block_count_30d = int(row.n) if row else 0
     except (OperationalError, ProgrammingError):
@@ -541,13 +589,13 @@ def agent_drilldown(
                   (NOW() AT TIME ZONE 'utc')::date - ((w.i + 1) * 7) AS week_start,
                   (
                     SELECT COUNT(*)::int FROM calls c
-                     WHERE c.agent_name = :agent
+                     WHERE c.agent_name = ANY(:agents)
                        AND c.created_at >= (NOW() AT TIME ZONE 'utc')::date - ((w.i + 1) * 7)
                        AND c.created_at <  (NOW() AT TIME ZONE 'utc')::date - (w.i * 7)
                   ) AS total,
                   (
                     SELECT COUNT(*)::int FROM calls c
-                     WHERE c.agent_name = :agent
+                     WHERE c.agent_name = ANY(:agents)
                        AND c.compliant IS TRUE
                        AND c.created_at >= (NOW() AT TIME ZONE 'utc')::date - ((w.i + 1) * 7)
                        AND c.created_at <  (NOW() AT TIME ZONE 'utc')::date - (w.i * 7)
@@ -556,7 +604,7 @@ def agent_drilldown(
                 ORDER BY w.i DESC
                 """
             ),
-            {"agent": agent_name},
+            {"agents": raw_alias_names},
         ).fetchall()
         weekly_trend = [
             {
@@ -589,7 +637,7 @@ def agent_drilldown(
             best_call_id = max(scored, key=_ratio).get("id")
             worst_call_id = min(scored, key=_ratio).get("id")
 
-    payload = {
+    return {
         "agent_name": agent_name,
         "critical_count_7d": critical_count_7d,
         "pass_rate_30d": pass_rate_30d,
@@ -611,22 +659,6 @@ def agent_drilldown(
         "best_call_id": best_call_id,
         "worst_call_id": worst_call_id,
     }
-    # 2026-05-28 P0 — defensive Row→dict coercion before FastAPI's
-    # response_model serializer runs. Earlier prod logs showed this route
-    # emitting `PydanticSerializationError: Unable to serialize unknown
-    # type: <class 'sqlalchemy.engine.row.Row'>`. The function builds many
-    # nested lists/dicts via SQLAlchemy `db.execute(...).fetchall()` and
-    # walks each Row with attribute access; if any new field forgets to
-    # extract a scalar value, a Row bubbles into the payload and crashes
-    # the response.
-    #
-    # `jsonable_encoder` walks the payload recursively. With the global
-    # `ENCODERS_BY_TYPE[Row] = dict(r._mapping)` registration in main.py,
-    # any Row encountered here is converted to a plain dict before the
-    # TypeAdapter sees it — Pydantic only ever observes JSON-safe values.
-    # Cost: one pre-order traversal of the response shape, on a route
-    # that already does 8+ DB round-trips.
-    return jsonable_encoder(payload)
 
 
 class AgentRetrainingPatch(BaseModel):

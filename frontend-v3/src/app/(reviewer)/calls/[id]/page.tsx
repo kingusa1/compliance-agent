@@ -29,11 +29,9 @@ import {
 } from "lucide-react";
 
 import {
-  useCallDetailQuery,
-  useCallFlagsQuery,
-  useCallWordsQuery,
-  useCallCheckpointsQuery,
+  useCallBundleQuery,
   useCallAudioUrlQuery,
+  useCallFlagsQuery,
   reviewerKeys,
   type WordToken,
   type ScriptCheckpoint,
@@ -319,16 +317,50 @@ export default function CallDetailPage({
   useCallEvents(id);
 
   const meQ = useMe();
-  const detail = useCallDetailQuery(id);
-  // 2026-05-26 — pass call.status down so dependent queries can safety-
-  // net poll while the pipeline is in-flight. Without this, useCallWords
-  // returns 404 once mid-pipeline (file not written yet), retries 0
-  // times per its retry policy, and the cache stays empty forever —
-  // leaving the ProcessingStepper visible after the call finalized.
-  const wordsQuery = useCallWordsQuery(id, detail.data?.status);
-  const flagsQuery = useCallFlagsQuery(id);
-  const checkpointsQuery = useCallCheckpointsQuery(id, detail.data?.status);
+  // 2026-05-28 PHASE 1 — replaced 5 separate fetches (detail + words +
+  // checkpoints + audio-url + segments) with ONE composite bundle call.
+  // Saves ~1.5-2.0 s of perceived load on every call-detail page open
+  // by collapsing 5 sequential ~500 ms Railway↔Supabase round-trips
+  // into one. Status-conditional safety-net poll (3 s while in-flight)
+  // mirrors the prior per-hook policy so the page still self-refreshes
+  // through processing even when SSE drops events (D6 fan-out gap).
+  const bundleQuery = useCallBundleQuery(id);
+  // Backwards-compatible shims so the rest of the page (and its many
+  // .refetch() / .data?.* references) keeps reading from the same
+  // variable names. The fields land via separate `useMemo` blocks
+  // below so referential equality is preserved across renders.
+  const detail = useMemo(
+    () => ({
+      data: bundleQuery.data?.call,
+      isError: bundleQuery.isError,
+      error: bundleQuery.error,
+      isPending: bundleQuery.isPending,
+      refetch: bundleQuery.refetch,
+    }),
+    [bundleQuery.data?.call, bundleQuery.isError, bundleQuery.error, bundleQuery.isPending, bundleQuery.refetch],
+  );
+  const wordsQuery = useMemo(
+    () => ({
+      data: bundleQuery.data ? { words: bundleQuery.data.words } : undefined,
+      refetch: bundleQuery.refetch,
+    }),
+    [bundleQuery.data, bundleQuery.refetch],
+  );
+  const checkpointsQuery = useMemo(
+    () => ({
+      data: bundleQuery.data ? { checkpoints: bundleQuery.data.script_checkpoints } : undefined,
+      refetch: bundleQuery.refetch,
+    }),
+    [bundleQuery.data, bundleQuery.refetch],
+  );
+  // Dedicated audio-url query restored (2026-05-28 PHASE 1d) so the
+  // <audio src> stays stable across the bundle's 3-second in-flight
+  // polls. The bundle re-signs audio_url every refetch which would
+  // reset playback to 0 every poll cycle — the 2026-05-16 incident.
+  // useCallAudioUrlQuery has a 50-min staleTime so it only fetches
+  // once per page mount.
   const audioUrlQuery = useCallAudioUrlQuery(id);
+  const flagsQuery = useCallFlagsQuery(id);
   const submitVerdict = useSubmitVerdict();
   const agentChat = useAgentChat();
   const reviewCheckpoint = useReviewCheckpoint();
@@ -355,9 +387,22 @@ export default function CallDetailPage({
 
   const [tab, setTab] = useState<"checkpoints" | "verdict" | "chat">("checkpoints");
 
-  // Plan §5b extension (2026-05-14): fetch segments at page level so the
-  // TranscriptPlayer can draw segment dividers; SegmentChips + SegmentCards
-  // share the cache via the same query key.
+  // Pulled up from below so the segments-cache-prime useEffect (and the
+  // bundle-aware refetch handlers) can reference `qc` without a temporal
+  // dead-zone error. The original declaration site at line ~474 has been
+  // removed in the 2026-05-28 PHASE 1 page-wiring change.
+  const qc = useQueryClient();
+
+  // Plan §5b extension (2026-05-14): segments for TranscriptPlayer
+  // dividers + SegmentChips + SegmentCards. 2026-05-28 PHASE 1d — the
+  // bundle's segment shape is a strict subset of what SegmentCards
+  // consumes (missing classifier_reasoning / reason / checkpoints /
+  // start_s / end_s / transcript_excerpt). Restored the standalone
+  // /api/calls/{id}/segments fetch so SegmentChips + SegmentCards see
+  // the full shape they need. The bundle still saves the other 4
+  // round-trips (detail + words + checkpoints + segments-via-page);
+  // the dedicated segments fetch is one extra call shared across all
+  // consumers via the ["call", id, "segments"] key.
   type _SegRow = {
     id: string;
     idx: number;
@@ -420,15 +465,15 @@ export default function CallDetailPage({
   });
 
   const c = detail.data;
-  const qc = useQueryClient();
 
-  // Words endpoint 404s until pipeline writes word_data. wordsQuery has
-  // staleTime=30min + retry<1 + refetchOnMount=false, so the cached 404
-  // sticks even after pipeline completes → ProcessingStepper never hides.
-  // Invalidate words query once status flips to completed.
+  // Words endpoint 404s until pipeline writes word_data. 2026-05-28 PHASE 1
+  // — the words slice now ships inside the bundle, so this safeguard
+  // invalidates the bundle key (not the legacy callWords key) so the next
+  // refetch picks up the now-written word_data once the pipeline lands at
+  // status="completed". Same intent as before, new cache layout.
   useEffect(() => {
-    if (c?.status === "completed" && wordsQuery.data === undefined) {
-      qc.invalidateQueries({ queryKey: reviewerKeys.callWords(id) });
+    if (c?.status === "completed" && (wordsQuery.data?.words?.length ?? 0) === 0) {
+      qc.invalidateQueries({ queryKey: reviewerKeys.callBundle(id) });
     }
   }, [c?.status, wordsQuery.data, qc, id]);
 

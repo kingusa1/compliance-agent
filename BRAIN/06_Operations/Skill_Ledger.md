@@ -51,6 +51,8 @@ Columns:
 | 2026-05-26 12:02 | active | python-reviewer | auto-trigger | row-safety-net-main-py | success | agent aca6fbb5: 1 CRIT (added ResponseValidationError handler) + 2 HIGH + 3 MED addressed in follow-up edit |
 | 2026-05-26 12:05 | active | code-reviewer | auto-trigger | reviewer-ts-bundle-hook | success | agent ad6f96e3: 1 HIGH (bundle invalidation in 7 mutation sites — slated for follow-up commit) + 3 MED type tightenings + 3 LOW |
 | 2026-05-26 12:13 | active | python-reviewer | auto-trigger | agent-drilldown-row-fix | success | agent af08612c: 1 CRIT (line 230 float casts added) + 1 HIGH + 2 MED — jsonable_encoder wrap + explicit float casts shipped |
+| 2026-05-26 12:15 | audit-waiver | (n/a) | waiver | pre-push | waived: push with kingusa1 not it@bbmgroup please | scripts/doctrine/audit.py |
+| 2026-05-26 12:37 | active | document-specialist | verification | agent-drilldown-internet-validate | success | agent a1b9560d: 6/6 claims CONFIRMED with sources (FastAPI #5618 #9330 #14313, Pydantic v2 docs, Starlette #1175) |
 
 ---
 
