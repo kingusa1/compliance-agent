@@ -2231,8 +2231,18 @@ def get_call_bundle(
                 str(s.rubric_source_id)
                 if getattr(s, "rubric_source_id", None) else None
             ),
-            "start_word": s.start_word,
-            "end_word": s.end_word,
+            # 2026-05-28 P0 hotfix — bundle previously referenced
+            # `s.start_word` / `s.end_word` which DO NOT EXIST on
+            # CallSegment. The correct columns are `start_word_idx` /
+            # `end_word_idx` (models.py:746-747). The miss raised
+            # AttributeError on every bundle GET, which surfaced to
+            # the call-detail page as a network-level "Failed to fetch"
+            # because the 500 response had no JSON body. Keep the
+            # frontend-facing field name `start_word` / `end_word` so
+            # the existing CallBundleSegment TS type continues to match;
+            # the rename is server-side only.
+            "start_word": s.start_word_idx,
+            "end_word": s.end_word_idx,
             "score": s.score,
             "bucket": s.bucket,
             "compliance_status": s.compliance_status,
