@@ -49,6 +49,7 @@ Columns:
 | timestamp | session | skill | role | task-id | status | evidence |
 |---|---|---|---|---|---|---|
 | 2026-05-26 13:01 | active | python-reviewer | auto-trigger | analyzer-d14-fix | success | agent a18c10bc: PASS analyzer concurrency 25->6 + off-loop json.loads via anyio; agents_routes ILIKE refactor still clean |
+| 2026-05-26 13:20 | active | python-reviewer | auto-trigger | analyzer-fuzzy-match-offload | success | agent a623a995: PASS off-loop fuzzy_match in 2 async sites; bounded threadpool; exceptions propagate |
 
 ---
 

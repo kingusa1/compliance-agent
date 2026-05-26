@@ -366,7 +366,15 @@ async def analyze_single_checkpoint(
         similarity = 1.0
         if parsed.get("status") in ("pass", "partial"):
             evidence_raw = parsed.get("evidence", "") or ""
-            match = fuzzy_match(transcript, evidence_raw)
+            # 2026-05-28 P0 D14 fix — `fuzzy_match` uses difflib's
+            # SequenceMatcher in a sliding-window loop (~7000 comparisons
+            # per checkpoint for a ~1000-word transcript). With concurrency
+            # 6 batches x 6 checkpoints = 36 in-flight calls, this is
+            # ~250k SequenceMatcher.ratio() calls per tick on the asyncio
+            # loop — the residual loop_lag source after the LLM-batch cap.
+            # Move it onto AnyIO's bounded threadpool so the loop stays
+            # responsive while it grinds.
+            match = await anyio.to_thread.run_sync(fuzzy_match, transcript, evidence_raw)
             verified = match["verified"]
             similarity = match["similarity"]
             if match.get("missing_quote") and not evidence_raw.strip():
@@ -653,7 +661,10 @@ async def _analyze_batch(
 
             if status in ("pass", "partial"):
                 evidence_raw = r.get("evidence", "") or ""
-                match = fuzzy_match(transcript, evidence_raw)
+                # 2026-05-28 P0 D14 fix — off-loop SequenceMatcher.
+                # See the per-checkpoint retry path above for full
+                # rationale. Same threadpool, same bounded limiter.
+                match = await anyio.to_thread.run_sync(fuzzy_match, transcript, evidence_raw)
                 verified = match["verified"]
                 similarity = match["similarity"]
                 if match.get("missing_quote") and not evidence_raw.strip():
