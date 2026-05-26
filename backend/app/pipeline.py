@@ -3038,6 +3038,12 @@ def _step_finalize(call_id: str, db: Session) -> dict:
     except Exception as e:  # noqa: BLE001 — promote is best-effort
         log.warning(f"NAME_PROMOTE_FAILED call_id={call_id} err={e!r}")
 
+    # 2026-05-27 — restored db.commit() after a previous edit accidentally
+    # dropped it (python-reviewer CRITICAL on f032114 catch). Without this
+    # commit, every write in this step (completed_at, derive_compliance,
+    # L3 lifecycle, meter merge, NAME_PROMOTE) is silently discarded when
+    # the thread-scoped SessionLocal is closed by `_run_step_finalize_in_thread`.
+    db.commit()
     log.info(f"\U0001f4be SAVED call_id={call_id}")
     return {
         "compliance_status": call.compliance_status,

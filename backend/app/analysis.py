@@ -1046,11 +1046,25 @@ def _extract_agent_name_regex(transcript: str) -> str | None:
     # 2026-05-27 TRANSFER SUPPRESSION (Jack→Bradley fix). Lead-gen calls
     # often end with "I'm gonna get you through to Bradley". Without
     # suppression the regex sometimes picked the hand-off target instead of
-    # the opener. We compute the set of transfer-target first names from the
+    # the opener. Compute the set of transfer-target first names from the
     # WHOLE transcript first, then reject any candidate whose first name is
-    # in that set — the opener's self-intro happens before the transfer
-    # mention, so the first non-suppressed match wins.
+    # in that set.
     transfer_targets = _extract_transfer_target_names(transcript or "")
+    # 2026-05-27 python-reviewer HIGH — same-first-name deadlock guard.
+    # If the opener's self-intro candidate would also be flagged as a
+    # transfer target (e.g. agent named "Jack" transfers to a colleague
+    # also named "Jack"), the suppression would un-name the call. So we
+    # ONLY suppress a candidate when it appears in the transfer-target
+    # set AND does NOT also appear earlier in the head as a self-intro
+    # capture. The self-intro capture's position is preserved via
+    # `self_intro_first_names` so the head scan can tell "this is the
+    # opener" from "this is purely a transfer target".
+    self_intro_first_names: set[str] = set()
+    for regex in (_AGENT_INTRO_TRIGGERS, _IT_IS_AGENT_INTRO):
+        for m in regex.finditer(head):
+            first_pre = (m.group(1) or "").strip("'\"-,.;: ").lower()
+            if first_pre and 2 <= len(first_pre) <= 25 and first_pre not in _NAME_STOPWORDS:
+                self_intro_first_names.add(first_pre)
     # Try the strict triggers first, then the gated "it's X here/from/…" pattern.
     for regex in (_AGENT_INTRO_TRIGGERS, _IT_IS_AGENT_INTRO):
         for m in regex.finditer(head):
@@ -1067,10 +1081,15 @@ def _extract_agent_name_regex(transcript: str) -> str | None:
             # defence-in-depth in case the regex grammar drifts.
             if _PII_TOKEN_RE.fullmatch(first or "") or _PII_TOKEN_RE.fullmatch(second or ""):
                 continue
-            # 2026-05-27 — reject hand-off targets. The opener said
-            # "I'm gonna get you through to Bradley"; Bradley is the
-            # closer on the next call, not this one's agent.
-            if first.lower() in transfer_targets:
+            # 2026-05-27 — reject hand-off targets UNLESS this same first
+            # name ALSO appears as an explicit self-introduction in the
+            # head. That guards against the same-name deadlock (Jack
+            # transferring to a colleague named Jack) where the suppression
+            # would otherwise un-name the call.
+            if (
+                first.lower() in transfer_targets
+                and first.lower() not in self_intro_first_names
+            ):
                 continue
             # Accept the surname only when it looks like a name (not a stopword,
             # alphabetic, plausible length).
