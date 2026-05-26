@@ -1054,7 +1054,50 @@ async def review_checkpoint_verdict(
     if needs_review_remaining > 0:
         call.reason += f" {needs_review_remaining} pending review."
 
-    log.info(f"📝 REVIEW checkpoint #{cp_index} → verdict={verdict}, new score={call.score}")
+    # 2026-05-27 QUEUE TAB FIX — owner-reported "click Reviewed shows
+    # nothing, click Pending shows my reviewed items". Root cause: this
+    # per-checkpoint override route only mutates score/compliant/reason
+    # but never touches `call.review_status`. Calls where the reviewer
+    # clicked Pass/Override on individual checkpoints stayed `unclaimed`
+    # forever, surfacing on the Pending tab and never on Reviewing or
+    # Reviewed.
+    #
+    # Two-tier auto-promotion (matches the reviewer's mental model):
+    #
+    #   1. ANY per-checkpoint override on an `unclaimed` call → flip to
+    #      `in_review`. The reviewer has touched it; it's no longer
+    #      "needs attention from someone".
+    #
+    #   2. EVERY non-error checkpoint has a reviewer_verdict → flip to
+    #      `reviewed`, stamp reviewed_at + reviewed_by. The reviewer has
+    #      implicitly signed off every line. The whole-call /verdict
+    #      route still works for explicit batch sign-off.
+    reviewed_count = sum(
+        1 for r in non_error if r.get("reviewer_verdict") in ("pass", "fail")
+    )
+    all_reviewed = total > 0 and reviewed_count == total
+    promoted_to: str | None = None
+    if all_reviewed and call.review_status != "reviewed":
+        call.review_status = "reviewed"
+        call.reviewed_at = utcnow()
+        call.reviewed_by = _reviewer["id"]
+        call.verdict_state = "HUMAN_CONFIRMED"
+        promoted_to = "reviewed"
+    elif call.review_status == "unclaimed":
+        call.review_status = "in_review"
+        promoted_to = "in_review"
+
+    if promoted_to:
+        log.info(
+            f"📝 REVIEW checkpoint #{cp_index} → verdict={verdict}, "
+            f"new score={call.score}, auto-promoted review_status -> "
+            f"{promoted_to} ({reviewed_count}/{total} reviewed)"
+        )
+    else:
+        log.info(
+            f"📝 REVIEW checkpoint #{cp_index} → verdict={verdict}, "
+            f"new score={call.score} ({reviewed_count}/{total} reviewed)"
+        )
     db.commit()
 
     # 2026-05-27 — publish realtime SSE so other tabs / the tracker /
@@ -1068,6 +1111,11 @@ async def review_checkpoint_verdict(
             "score": call.score,
             "compliant": call.compliant,
             "needs_review_remaining": needs_review_remaining,
+            # 2026-05-27 — surface the new review_status so the queue
+            # page can repaint the row's tab membership live without a
+            # full refresh.
+            "review_status": call.review_status,
+            "auto_promoted_to": promoted_to,
         })
     except Exception as rt_e:  # noqa: BLE001
         log.warning(f"realtime publish failed (non-fatal): {rt_e}")

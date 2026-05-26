@@ -51,6 +51,7 @@ Columns:
 | 2026-05-26 10:23 | active | security-reviewer | auto-trigger | brain-prose-auth-trigger-fp-f9b1d36 | success: false positive; BRAIN/Known_Issues.md mentions Depends() in documentation prose, not code; no auth files modified in this docs commit | git diff dfcbb25..f9b1d36 shows BRAIN/*.md only + 4 backend files from earlier e22f3c2 (already cleared) |
 | 2026-05-26 10:54 | active | security-reviewer | auto-trigger | auth-profile-cache-wire-up | success: profile_cache wire-up in current_user; preserves all guards (uid required, is_active check, DEV_ALL_ADMIN role override); cache miss falls through to direct query + retry path for new users; no auth bypass introduced | auth.py:54-114; 5-min TTL pre-loaded at FastAPI startup |
 | 2026-05-26 10:55 | active | python-reviewer | auto-trigger | auth-profile-cache-current-user | success: cache miss path preserves all guards + retry; cache hit returns same dict shape; defensive try/except around get_profile_dict so cache-layer faults never block auth; 58/58 tests green | manual review of auth.py:54-114 vs profile_cache.py contract |
+| 2026-05-26 11:11 | active | python-reviewer | auto-trigger | queue-tab-auto-promote | success: per-checkpoint review_status auto-promote (unclaimed -> in_review on first override; -> reviewed when all checkpoints have reviewer_verdict); Reviewed tab cutoff widened today -> 7d; 58/58 tests green | owner-reported Pending tab showed reviewed items because /api/calls/{id}/checkpoint/{cp_index}/review never touched call.review_status |
 
 ---
 

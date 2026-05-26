@@ -1540,9 +1540,22 @@ def get_queue(
     elif filter == "in_review":
         q = q.filter(Call.review_status == "in_review")
     elif filter == "reviewed_today":
+        # 2026-05-27 QUEUE TAB FIX — owner-reported the Reviewed tab was
+        # always empty even when they had reviewed work. Two contributing
+        # causes:
+        #   1. The per-checkpoint Override path (routes.review_checkpoint_
+        #      verdict) didn't promote review_status; calls stayed
+        #      `unclaimed`. Fixed at that callsite (auto-promote).
+        #   2. The 24h cutoff (`reviewed_at >= today`) hid yesterday's
+        #      sign-offs. Widened to the last 7 days so the tab reflects
+        #      the reviewer's recent work, matching their mental model
+        #      of "stuff I finished".
+        # Filter name kept as `reviewed_today` for API back-compat; the
+        # frontend's "Reviewed" pill now means "last 7d signed off".
+        seven_d_ago = now - timedelta(days=7)
         q = q.filter(
             Call.review_status == "reviewed",
-            Call.reviewed_at >= today,
+            Call.reviewed_at >= seven_d_ago,
         )
     else:  # "all"
         q = q.filter(
