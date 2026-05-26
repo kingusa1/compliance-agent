@@ -238,8 +238,28 @@ async def lifespan(app: FastAPI):
                 "Set it to the Supabase pooler URL on Railway."
             )
 
-    # Clean up stuck calls from previous runs. Skip silently if DB unreachable
-    # so the process can still start in degraded mode (readyz will report 503).
+    # 2026-05-28 P0 owner-reported: every Railway redeploy was marking
+    # in-flight user uploads as `failed` with reason "Processing was
+    # interrupted by server restart". On a hot fix wave that meant
+    # every push wiped any call that happened to be processing at the
+    # moment. Users saw the same call repeatedly stuck in 'Pipeline
+    # failed' on the call-detail page and had to manually click Retry.
+    #
+    # New behavior (wave 13): RESUME instead of FAIL. Stuck calls with
+    # a stored audio path get their status reset to `pending` and the
+    # background pipeline re-dispatched against the same audio file
+    # AFTER FastAPI startup completes (we can't dispatch from inside
+    # the lifespan setup — `asyncio.create_task` needs a running event
+    # loop). Calls without a stored audio path (incomplete uploads
+    # that never made it to storage) are legitimately broken and stay
+    # marked `failed`.
+    #
+    # The redispatch is fire-and-forget — failure to re-enqueue any
+    # single call must NOT block boot. The existing 3s safety-net poll
+    # on the call detail page (useCallBundleQuery) means the reviewer
+    # sees the call move from `pending` -> `processing` -> terminal as
+    # the pipeline runs.
+    _resume_candidates: list[tuple[str, str, str | None]] = []  # (id, file_path, script_id)
     try:
         from app.models import Call
         db = SessionLocal()
@@ -247,12 +267,31 @@ async def lifespan(app: FastAPI):
             stuck = db.query(Call).filter(
                 Call.status.in_(["pending_stream", "pending", "processing"])
             ).all()
+            resumed = 0
+            killed = 0
             for call in stuck:
-                call.status = "failed"
-                call.reason = "Processing was interrupted by server restart"
+                fp = getattr(call, "file_path", None) or getattr(call, "audio_storage_key", None)
+                if fp:
+                    # Reset to pending; the lifespan post-startup hook
+                    # below will create_task the redispatch once the
+                    # event loop is running and the routes are mounted.
+                    call.status = "pending"
+                    call.reason = "Resuming after server restart"
+                    _resume_candidates.append((str(call.id), str(fp), getattr(call, "script_id", None)))
+                    resumed += 1
+                else:
+                    # No audio reference -> upload never completed; mark
+                    # failed so the queue surfaces the broken row to a
+                    # reviewer rather than leaving it Forever Pending.
+                    call.status = "failed"
+                    call.reason = "Upload incomplete (no audio file stored before restart)"
+                    killed += 1
             db.commit()
             if stuck:
-                app_log.info(f"CLEANUP {len(stuck)} stuck calls marked as failed on startup")
+                app_log.info(
+                    f"CLEANUP startup: {resumed} stuck calls reset to pending for redispatch, "
+                    f"{killed} marked failed (no audio file)"
+                )
         finally:
             db.close()
     except Exception as e:  # noqa: BLE001 — DB may be down at boot; readyz will surface it
@@ -374,6 +413,51 @@ async def lifespan(app: FastAPI):
     # a metric instead of a silent UI hang. Standard ops pattern from
     # death.andgravity / Twisted / aiohttp production playbooks.
     loop_lag_task = asyncio.create_task(_loop_lag_canary())
+
+    # 2026-05-28 (wave 13) — auto-resume stuck calls picked up by the
+    # startup cleanup block at line ~241. The cleanup reset their status
+    # to `pending` and recorded their file_path / script_id in the
+    # module-local list `_resume_candidates`. Re-dispatch each via the
+    # same `_process_in_background` coroutine the upload endpoint uses,
+    # bounded by the existing pipeline semaphore so we don't overwhelm
+    # the worker on boot. Fire-and-forget — a single bad redispatch
+    # must NOT block startup. Skipped when Inngest pipeline is on
+    # (durable workflow handles its own resume via the redispatch
+    # watchdog cron — see workflows/redispatch_watchdog.py).
+    resume_tasks: list = []
+    if _resume_candidates and not settings.use_inngest_pipeline:
+        try:
+            from app.routes import _process_in_background
+
+            async def _resume_one(cid: str, fp: str, sid: str | None) -> None:
+                try:
+                    app_log.info(f"AUTO_RESUME call_id={cid} file_path={fp!r}")
+                    await _process_in_background(cid, fp, sid)
+                except Exception as e:  # noqa: BLE001
+                    app_log.warning(f"AUTO_RESUME_FAILED call_id={cid}: {type(e).__name__}: {e}")
+
+            def _log_resume_task_exc(task: asyncio.Task) -> None:
+                # `_resume_one` swallows every Exception internally and logs
+                # AUTO_RESUME_FAILED, so this callback only catches the
+                # extremely rare case where the coroutine raised something
+                # outside that try/except (e.g. BaseException-subclass on
+                # shutdown). Log at WARNING + consume.
+                if task.cancelled():
+                    return
+                exc = task.exception()
+                if exc is not None:
+                    app_log.warning(
+                        "AUTO_RESUME_TASK_LEAK: %s: %s",
+                        type(exc).__name__, exc,
+                    )
+
+            for cid, fp, sid in _resume_candidates:
+                t = asyncio.create_task(_resume_one(cid, fp, sid))
+                t.add_done_callback(_log_resume_task_exc)
+                resume_tasks.append(t)
+            app_log.info(f"AUTO_RESUME dispatched {len(resume_tasks)} task(s) after restart")
+        except Exception as e:  # noqa: BLE001 — boot must never block on resume setup
+            app_log.warning(f"AUTO_RESUME_SETUP_FAILED: {type(e).__name__}: {e}")
 
     try:
         yield

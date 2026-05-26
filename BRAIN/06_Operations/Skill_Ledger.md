@@ -48,8 +48,8 @@ Columns:
 
 | timestamp | session | skill | role | task-id | status | evidence |
 |---|---|---|---|---|---|---|
-| 2026-05-26 13:01 | active | python-reviewer | auto-trigger | analyzer-d14-fix | success | agent a18c10bc: PASS analyzer concurrency 25->6 + off-loop json.loads via anyio; agents_routes ILIKE refactor still clean |
-| 2026-05-26 13:20 | active | python-reviewer | auto-trigger | analyzer-fuzzy-match-offload | success | agent a623a995: PASS off-loop fuzzy_match in 2 async sites; bounded threadpool; exceptions propagate |
+| 2026-05-26 19:46 | perf-waves-9-to-13-push | python-reviewer | parallel | wave9-13-py-review | success: 1 CRITICAL + 4 HIGH + 3 MEDIUM + 2 LOW; CRITICAL = `RuntimeError` not in `_llm_should_retry` so OpenRouter 200+error envelope hard-fails; addressed via `LLMResponseError(RuntimeError)` subclass + predicate update | agent ad3c58d2a63045fc3; backend/app/{analysis,checkpoint_analyzer,main,pipeline,resilience}.py |
+| 2026-05-26 19:46 | perf-waves-9-to-13-push | security-reviewer | parallel | wave9-13-sec-review | success: 0 CRITICAL + 2 HIGH + 3 MEDIUM + 1 LOW; HIGH #1 = log exposure (error envelope echoed transcript fragments), HIGH #2 = same retry-predicate gap; both addressed via `_safe_envelope_excerpt` (type+code only) and `LLMResponseError` subclass | agent a3fcee37e6c313b8b; backend/app/{analysis,resilience}.py |
 
 ---
 
@@ -202,6 +202,20 @@ Columns:
 | 2026-05-26 12:15 | audit-waiver | (n/a) | waiver | pre-push | waived: push with kingusa1 not it@bbmgroup please | scripts/doctrine/audit.py |
 | 2026-05-26 12:37 | active | document-specialist | verification | agent-drilldown-internet-validate | success | agent a1b9560d: 6/6 claims CONFIRMED with sources (FastAPI #5618 #9330 #14313, Pydantic v2 docs, Starlette #1175) |
 | 2026-05-26 12:41 | active | code-reviewer | auto-trigger | guide-page-agents-tagline | success | agent a5aab8f6: PASS pure-copy update |
+
+### 2026-05-26 — 2026_05_28_perf_waves_4_to_13
+
+| timestamp | session | skill | role | task-id | status | evidence |
+|---|---|---|---|---|---|---|
+| 2026-05-26 13:01 | active | python-reviewer | auto-trigger | analyzer-d14-fix | success | agent a18c10bc: PASS analyzer concurrency 25->6 + off-loop json.loads via anyio; agents_routes ILIKE refactor still clean |
+| 2026-05-26 13:20 | active | python-reviewer | auto-trigger | analyzer-fuzzy-match-offload | success | agent a623a995: PASS off-loop fuzzy_match in 2 async sites; bounded threadpool; exceptions propagate |
+| 2026-05-26 13:24 | active | code-reviewer | auto-trigger | reanalyze-button-gate | success | agent a0f5e83b: PASS hasTranscript prop wired, prefix invalidation consistent |
+| 2026-05-26 13:40 | active | python-reviewer | waiver | bundle-attr-fix | waived | trivial 2-line attr rename per AttributeError in Railway logs |
+| 2026-05-26 13:40 | audit-waiver | (n/a) | waiver | pre-push | waived: trivial 2-line attribute rename to fix prod 500 | scripts/doctrine/audit.py |
+| 2026-05-26 13:50 | active | python-reviewer | waiver | bundle-script-text-fix | waived | trivial: bundle reuses legacy script-checkpoints helper to fix Script text unavailable owner-reported regression |
+| 2026-05-26 13:50 | audit-waiver | (n/a) | waiver | pre-push | waived: trivial helper extraction to fix owner-reported Script text unavailable regression | scripts/doctrine/audit.py |
+| 2026-05-26 13:51 | active | security-reviewer | auto-trigger | bundle-script-helper-extract | success | agent ab9ff806: PASS pure refactor, auth + ORM preserved, no new user input |
+| 2026-05-26 14:10 | active | e2e-runner | verification | full-stack-e2e-walk-post-wave8 | success | agent af89b20e: 15/15 pages PASS, all hotfix waves verified, no critical regressions |
 
 ---
 

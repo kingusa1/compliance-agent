@@ -33,9 +33,23 @@ def _llm_before_sleep(retry_state):
 _LLM_PERMANENT_4XX = {400, 401, 402, 403, 404}
 
 
+class LLMResponseError(RuntimeError):
+    """LLM provider returned HTTP 200 with a malformed/error body.
+
+    OpenRouter and Anthropic both return rate-limit / overloaded / partial-
+    failure envelopes as HTTP 200 bodies with an `error` field instead of
+    proper 4xx/5xx codes. Wave 11 (2026-05-28) raises this for the missing-
+    `choices` / missing-`content` defensive-shape path. Listed in
+    `_llm_should_retry` so tenacity treats the transient envelope the same
+    as a 5xx — retry up to 7 times — instead of hard-failing on attempt 1.
+    """
+
+
 def _llm_should_retry(exc: BaseException) -> bool:
     if isinstance(exc, httpx.TimeoutException):
         return True
+    if isinstance(exc, LLMResponseError):
+        return True  # 200-with-error-envelope from OpenRouter/Anthropic
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
         if code in _LLM_PERMANENT_4XX:

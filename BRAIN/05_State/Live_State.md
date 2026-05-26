@@ -1,7 +1,66 @@
 ---
 created: 2026-05-10
-updated: 2026-05-27
-tags: [state, live, ground-truth, d10-n-a, transfer-aware-agent, quality-checker-agent, slow-button, pass-button-name-lookup, d13-orphan-stubs, d1-d2-name-promote-reverse]
+updated: 2026-05-28
+tags: [state, live, ground-truth, perf-p0, loop-lag, row-leak, alias-filter, fk-race, auto-resume, waves-4-to-13]
+---
+
+# Live State — Perf P0 cascade waves 4-8 LIVE; 9-13 LOCAL UNPUSHED (2026-05-28, `3be1035`)
+
+> 🟢 **2026-05-28 — Tip on origin/main: `3be1035`. Waves 4 → 8 deployed + e2e-verified (15/15 pages PASS, Playwright agent af89b20e). Waves 9 → 13 ready locally but UNPUSHED per owner mandate of 2026-05-28 14:48 UTC ("fix locally, no push until I say push").**
+>
+> ## Live on prod (Railway + Vercel)
+>
+> | Wave | sha | Headline |
+> |---|---|---|
+> | 4 | `589fc63` | agent_drilldown DISTINCT scan KILLED → ILIKE prefix match; LLM concurrency 25→6; json.loads off-loop via anyio. /healthz 73 s → 0.85 s; /api/stats 204 s → 1.27 s. |
+> | 5 | `6d00376` | `fuzzy_match` SequenceMatcher (sliding-window per cp) moved off the asyncio loop. |
+> | 6 | `13bd5cc` | ReanalyzeButton gated on `hasTranscript` so no more 422 on stuck calls. |
+> | 7 | `f0640a4` | bundle endpoint correct CallSegment attr names (`start_word_idx`/`end_word_idx`) — was AttributeError → 500 → "Failed to fetch". |
+> | 8 | `3be1035` | bundle returns full `script_checkpoints` with `required` text via shared helper. Fixes "Script text unavailable" on every CheckpointCard. |
+>
+> Measured impact (before → after wave 4):
+>
+> | endpoint | before | after |
+> |---|---|---|
+> | /healthz | 73 s | 0.85 s |
+> | /api/stats | 204 s | 1.27 s |
+> | /api/me | stuck | 0.96 s |
+> | /api/deals | unresponsive | 0.78 s |
+> | /api/queue | unresponsive | 0.77 s |
+> | /api/agents/Bradley/drilldown | empty data | 1.16 s |
+>
+> ## Local fix queue — 5 waves NOT pushed (awaiting owner `push` command)
+>
+> | Wave | File | What | Targets |
+> |---|---|---|---|
+> | 9 | `backend/app/checkpoint_analyzer.py` | `find_word_range` batched off-loop via ONE `anyio.to_thread.run_sync` (88 cps × ~30K set-ops moved off loop) | Residual 600-1500 ms loop_lag |
+> | 10 | `backend/app/checkpoint_analyzer.py` | AgentTrace persist FIRE-AND-FORGET via `asyncio.create_task` + `anyio.to_thread` (~72 sync DB inserts + json.dumps moved off loop) | Loop-lag from observability writeback |
+> | 11 | `backend/app/analysis.py` | Defensive `data["choices"]` / `data["content"]` shape checks in `_call_openrouter`, openrouter cached path, `_call_anthropic`. Raises typed `RuntimeError` with logged error envelope. | `KeyError('choices')` flood when OpenRouter returns rate-limit/overloaded/auth envelope |
+> | 12 | `backend/app/pipeline.py` | Defensive `Flag.segment_id` null-out at end of `_write_extraction_outputs`. Re-queries live CallSegment IDs, nulls dangling references. | `ForeignKeyViolation flags_segment_id_fkey` on concurrent rewrite (dedup upload + concurrent re-analyze race, observed on call `dac15e11` 2026-05-26 15:31) |
+> | 13 | `backend/app/main.py` | Startup cleanup now AUTO-RESUMES stuck calls instead of marking failed: status → `pending`, re-dispatch pipeline via `_process_in_background` after lifespan yield. Calls with no audio file still marked `failed`. Skipped when Inngest is on. | Owner-reported "Pipeline failed — Processing was interrupted by server restart" on every deploy |
+>
+> Total diff: ~280 lines across 4 files, all `ast.parse` clean.
+>
+> ## Expected metrics after waves 9-13 deploy
+>
+> | metric | current | target |
+> |---|---|---|
+> | `loop_lag_canary` worst | 1497 ms (observed live during session) | < 500 ms |
+> | /healthz p99 under burst | 22 000 ms (observed once at 16:09) | < 1500 ms |
+> | `KeyError('choices')` per hour | ~12, no context | 0 (replaced by `OpenRouter returned no choices: <envelope>` warnings) |
+> | FK violations on flag writes | occasional on dedup re-analyze | 0 (graceful null-out) |
+> | "Pipeline failed: server restart" stuck calls per deploy | every redeploy | 0 (auto-resumed) |
+>
+> ## Doctrine state at session close (2026-05-28)
+>
+> - `python scripts/doctrine/integrity.py verify` — PASS
+> - 5 local unpushed waves on working tree (`backend/app/checkpoint_analyzer.py` + `backend/app/analysis.py` + `backend/app/pipeline.py` + `backend/app/main.py`)
+> - Skill_Ledger active session has many rows from today's diagnosis + fixes
+> - Retroactive_Review_Queue — empty
+>
+> Full session log: [[../04_Sessions/2026_05_28_Session_perf_waves_4_to_13]]
+> Next-session resume prompt: [[../07_Tomorrow/2026_05_29_Resume_Prompt]]
+
 ---
 
 # Live State — PM wave: queue tab + agent page + composite bundle (2026-05-27 PM, `10522b8`)

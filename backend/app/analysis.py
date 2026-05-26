@@ -16,7 +16,31 @@ from app.watt_compliance.script_detect import DetectionResult, detect as script_
 from app.watt_compliance.taxonomy import Severity, VerdictAction
 from app.config import settings
 from app.logger import log
-from app.resilience import LLM_RETRY
+from app.resilience import LLM_RETRY, LLMResponseError
+
+
+def _safe_envelope_excerpt(data: object) -> str:
+    """Return a PII-safe excerpt of a provider error envelope.
+
+    OpenRouter and Anthropic error envelopes have shape::
+
+        {"error": {"type": "rate_limit_error", "code": "...", "message": "..."}}
+
+    `message` and arbitrary other fields may echo transcript fragments,
+    request bodies, or user names back. Wave 11 followup (2026-05-28) —
+    log ONLY `type` + `code`, never the free-text `message` or the raw
+    body. Falls back to ``"<no-envelope>"`` when nothing matches. Caller
+    can append the safe string to the warning line and the typed
+    `LLMResponseError`.
+    """
+    if not isinstance(data, dict):
+        return "<non-dict-body>"
+    err = data.get("error")
+    if not isinstance(err, dict):
+        return "<no-error-key>"
+    err_type = err.get("type") or "unknown"
+    err_code = err.get("code") or "unknown"
+    return f"type={err_type} code={err_code}"
 from app.schemas import ComplianceResult, CheckpointComplianceResult, CheckpointResult, RuleCheckpoint
 
 V1_PROMPT = """You are a compliance analyst for an energy brokerage.
@@ -412,8 +436,36 @@ async def _call_openai_compat(url: str, api_key: str, model: str, prompt: str, t
         )
         response.raise_for_status()
 
+    # 2026-05-28 P0 (wave 11) \u2014 defensive shape check. Owner-observed
+    # `KeyError: 'choices'` flooding Railway when OpenRouter returns an
+    # error envelope (rate-limit, model-overloaded, auth blip) without
+    # the `choices` array. The bare `data["choices"][0]` was raising
+    # KeyError, which is NOT in tenacity's default retry predicate.
+    # Raises `LLMResponseError` (RuntimeError subclass listed in
+    # `_llm_should_retry`) so the retry layer treats transient
+    # 200-with-error-envelope responses the same as a 5xx \u2014 retry up to
+    # 7 times with exponential backoff. Logs a PII-safe envelope excerpt
+    # (`type=...` / `code=...` only, never the free-text `message` field
+    # which can echo transcript fragments).
     data = response.json()
-    content = data["choices"][0]["message"]["content"].strip()
+    choices = (data or {}).get("choices") or []
+    if not choices or not isinstance(choices, list):
+        envelope = _safe_envelope_excerpt(data)
+        log.warning(
+            f"\u26a0\ufe0f LLM [{label}] response missing 'choices' "
+            f"(model={model}); envelope={envelope}"
+        )
+        raise LLMResponseError(f"OpenRouter returned no choices ({envelope})")
+    try:
+        content = (choices[0].get("message") or {}).get("content") or ""
+        content = content.strip()
+    except (AttributeError, IndexError, TypeError) as parse_e:
+        envelope = _safe_envelope_excerpt(data)
+        log.warning(
+            f"\u26a0\ufe0f LLM [{label}] choices[0].message.content extraction failed "
+            f"(model={model}); err={type(parse_e).__name__}; envelope={envelope}"
+        )
+        raise LLMResponseError(f"OpenRouter response malformed: {type(parse_e).__name__}")
     content = _strip_code_fences(content)
     log.info(f"\U0001f916 LLM [{label}] response \u2192 {len(content)} chars")
     return content
@@ -508,8 +560,28 @@ async def _call_openrouter_cached(
             timeout=timeout,
         )
         response.raise_for_status()
+    # 2026-05-28 P0 (wave 11) — same defensive shape check as the legacy
+    # path above. The cached-prefix variant hits the same OpenRouter
+    # surface so the same KeyError mode applies.
     data = response.json()
-    content = data["choices"][0]["message"]["content"].strip()
+    choices = (data or {}).get("choices") or []
+    if not choices or not isinstance(choices, list):
+        envelope = _safe_envelope_excerpt(data)
+        log.warning(
+            f"⚠️ LLM [openrouter cached] response missing 'choices'; "
+            f"envelope={envelope}"
+        )
+        raise LLMResponseError(f"OpenRouter (cached path) returned no choices ({envelope})")
+    try:
+        content = (choices[0].get("message") or {}).get("content") or ""
+        content = content.strip()
+    except (AttributeError, IndexError, TypeError) as parse_e:
+        envelope = _safe_envelope_excerpt(data)
+        log.warning(
+            f"⚠️ LLM [openrouter cached] content extraction failed; "
+            f"err={type(parse_e).__name__}; envelope={envelope}"
+        )
+        raise LLMResponseError(f"OpenRouter (cached path) malformed: {type(parse_e).__name__}")
     content = _strip_code_fences(content)
     # OpenRouter forwards Anthropic's prompt-cache usage counters when
     # they're present; missing keys mean the cache flag wasn't honoured
@@ -588,8 +660,28 @@ async def _call_anthropic(
         )
         response.raise_for_status()
 
+    # 2026-05-28 P0 (wave 11) — Anthropic direct uses `content` not
+    # `choices`. Same defensive pattern: error envelopes (rate-limit,
+    # 529 overloaded, auth) come back without `content` and a bare
+    # KeyError floods Railway logs.
     data = response.json()
-    content = data["content"][0]["text"].strip()
+    content_blocks = (data or {}).get("content") or []
+    if not content_blocks or not isinstance(content_blocks, list):
+        envelope = _safe_envelope_excerpt(data)
+        log.warning(
+            f"⚠️ LLM [{label}] Anthropic response missing 'content'; "
+            f"envelope={envelope}"
+        )
+        raise LLMResponseError(f"Anthropic returned no content ({envelope})")
+    try:
+        content = (content_blocks[0].get("text") or "").strip()
+    except (AttributeError, IndexError, TypeError) as parse_e:
+        envelope = _safe_envelope_excerpt(data)
+        log.warning(
+            f"⚠️ LLM [{label}] Anthropic content[0].text extraction failed; "
+            f"err={type(parse_e).__name__}; envelope={envelope}"
+        )
+        raise LLMResponseError(f"Anthropic content malformed: {type(parse_e).__name__}")
     content = _strip_code_fences(content)
     usage = data.get("usage", {})
     cache_hit = usage.get("cache_read_input_tokens", 0)

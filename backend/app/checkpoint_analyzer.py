@@ -589,66 +589,116 @@ async def _analyze_batch(
         # once per batch for cost + accuracy reasons, but the prompt is
         # split into per-checkpoint slices and the parsed JSON array is
         # split into per-checkpoint result objects.
+        #
+        # 2026-05-28 P0 D14 fix (wave 10) — observability writeback runs
+        # FIRE-AND-FORGET in the background. The previous inline path
+        # opened a SessionLocal, built 12 AgentTrace rows per batch with
+        # json.dumps(indent=2) on multi-KB cp_result objects, then
+        # synchronously committed — all on the asyncio loop. With 6
+        # concurrent batches that's ~72 sync DB inserts + 72 JSON
+        # serializations per pipeline run, contributing to the observed
+        # residual 600-1500ms loop_lag spikes.
+        #
+        # Move it off the loop entirely: snapshot the per-checkpoint
+        # data we need into a plain dict NOW (cheap, just slicing),
+        # then asyncio.create_task() a helper that runs the DB work on
+        # a fresh SessionLocal in the threadpool. Failure remains
+        # swallowed (observability writeback should NEVER fail the
+        # verdict path). The done-callback consumes exceptions so
+        # GC doesn't log "Task exception was never retrieved".
         if call_id:
             try:
-                from app.database import SessionLocal
-                from app.models import AgentTrace
                 latency_ms = int((_time.perf_counter() - started) * 1000)
-                # All checkpoints in this batch share the same run_id so the
-                # UI can group them together. Per-cp latency is the BATCH
-                # latency divided evenly — actual per-cp inference cost is
-                # not separable since they came back in one response.
                 run_id = str(_uuid.uuid4())
-                # Common transcript header so each per-cp prompt is
-                # self-contained when expanded in the feed UI.
                 hdr = (
                     "[Batched analyzer call — this checkpoint was one of "
                     f"{len(batch)} sent in a single API request. Same transcript "
                     "+ supplier prompt, sliced here for per-checkpoint review.]\n\n"
                 )
-                _db = SessionLocal()
-                try:
-                    rows: list[AgentTrace] = []
-                    for i, cp in enumerate(batch):
-                        cp_id = cp.get("id") or f"unknown:{i}"
-                        cp_name = cp.get("name") or cp.get("rule_text") or "checkpoint"
-                        # User prompt slice = header + this cp's rule + transcript ref
-                        user_content = (
-                            hdr
-                            + f"Checkpoint #{i+1}: {cp_name}\n"
-                            + f"Strictness: {strictness}\n"
-                            + f"Rule: {cp.get('rule_text') or cp.get('description') or '(see full prompt)'}\n\n"
-                            + f"Full batch prompt:\n{prompt}"
+                _trace_snapshots: list[dict] = []
+                for i, cp in enumerate(batch):
+                    cp_id = cp.get("id") or f"unknown:{i}"
+                    cp_name = cp.get("name") or cp.get("rule_text") or "checkpoint"
+                    user_content = (
+                        hdr
+                        + f"Checkpoint #{i+1}: {cp_name}\n"
+                        + f"Strictness: {strictness}\n"
+                        + f"Rule: {cp.get('rule_text') or cp.get('description') or '(see full prompt)'}\n\n"
+                        + f"Full batch prompt:\n{prompt}"
+                    )
+                    _trace_snapshots.append({
+                        "cp_id": str(cp_id),
+                        "user_content": user_content[:50000],
+                        "cp_result": parsed[i] if i < len(parsed) else {},
+                        "turn": i * 2,
+                        "latency_ms": latency_ms // max(1, len(batch)),
+                    })
+
+                def _persist_traces(snapshots: list[dict], call_id_: str, run_id_: str) -> None:
+                    """Sync DB work: opens its own SessionLocal, builds
+                    AgentTrace rows, commits, closes. Runs on the AnyIO
+                    threadpool (limiter=400 in main.py:362). Never raises
+                    back into the verdict path — wrapped at the create_task
+                    level."""
+                    from app.database import SessionLocal as _SL
+                    from app.models import AgentTrace as _AT
+                    _db = _SL()
+                    try:
+                        rows: list = []
+                        for s in snapshots:
+                            assist_content = json.dumps(s["cp_result"], indent=2, ensure_ascii=False)
+                            rows.append(_AT(
+                                id=str(_uuid.uuid4()),
+                                call_id=call_id_,
+                                checkpoint_id=s["cp_id"],
+                                run_id=run_id_,
+                                turn=s["turn"],
+                                role="user",
+                                tool_name="checkpoint_analyzer",
+                                content=s["user_content"],
+                            ))
+                            rows.append(_AT(
+                                id=str(_uuid.uuid4()),
+                                call_id=call_id_,
+                                checkpoint_id=s["cp_id"],
+                                run_id=run_id_,
+                                turn=s["turn"] + 1,
+                                role="assistant",
+                                tool_name="checkpoint_analyzer",
+                                content=assist_content,
+                                latency_ms=s["latency_ms"],
+                            ))
+                        _db.add_all(rows)
+                        _db.commit()
+                    finally:
+                        _db.close()
+
+                async def _bg_trace_persist() -> None:
+                    try:
+                        await anyio.to_thread.run_sync(
+                            _persist_traces, _trace_snapshots, call_id, run_id,
                         )
-                        cp_result = parsed[i] if i < len(parsed) else {}
-                        assist_content = json.dumps(cp_result, indent=2, ensure_ascii=False)
-                        rows.append(AgentTrace(
-                            id=str(_uuid.uuid4()),
-                            call_id=call_id,
-                            checkpoint_id=str(cp_id),
-                            run_id=run_id,
-                            turn=i * 2,
-                            role="user",
-                            tool_name="checkpoint_analyzer",
-                            content=user_content[:50000],
-                        ))
-                        rows.append(AgentTrace(
-                            id=str(_uuid.uuid4()),
-                            call_id=call_id,
-                            checkpoint_id=str(cp_id),
-                            run_id=run_id,
-                            turn=i * 2 + 1,
-                            role="assistant",
-                            tool_name="checkpoint_analyzer",
-                            content=assist_content,
-                            latency_ms=latency_ms // max(1, len(batch)),
-                        ))
-                    _db.add_all(rows)
-                    _db.commit()
-                finally:
-                    _db.close()
+                    except Exception as bg_e:  # noqa: BLE001 — trace failure must never break verdict
+                        log.warning(f"📜 trace persist failed (non-fatal): {bg_e}")
+
+                _trace_task = asyncio.create_task(_bg_trace_persist())
+
+                def _log_trace_task_exc(t: asyncio.Task) -> None:
+                    # Consume the exception so GC doesn't log 'Task exception
+                    # was never retrieved', but log at WARNING so a degraded
+                    # threadpool / DB never silently drops the audit trail.
+                    if t.cancelled():
+                        return
+                    exc = t.exception()
+                    if exc is not None:
+                        log.warning(
+                            "📜 trace persist task raised after handler: %s: %s",
+                            type(exc).__name__, exc,
+                        )
+
+                _trace_task.add_done_callback(_log_trace_task_exc)
             except Exception:
-                pass  # never break verdict on trace failure
+                pass  # never break verdict on trace setup failure
 
         # Verify quotes and build results
         results = []
@@ -904,14 +954,31 @@ async def analyze_all_checkpoints(
     # so the frontend can seek audio precisely on click. Uses the word_data
     # kwarg that's already passed in from pipeline.py + every HITL retry
     # route. No-op when word_data is empty or the LLM didn't cite evidence.
-    enriched_count = 0
-    for cp in results:
-        evidence = cp.get("evidence") or ""
-        start_ms, end_ms = find_word_range(evidence, word_data)
-        cp["start_ms"] = start_ms
-        cp["end_ms"] = end_ms
-        if start_ms is not None:
-            enriched_count += 1
+    #
+    # 2026-05-28 P0 D14 fix (wave 9) — `find_word_range` runs a sliding
+    # window of set intersections (~30K ops per checkpoint on a 1000-word
+    # transcript). With 88 checkpoints on a verbal-script call that's
+    # ~2.6M set-ops inline on the asyncio loop, producing the residual
+    # 600-1500ms `loop_lag_canary` spikes observed in prod even after
+    # wave 5 offloaded `fuzzy_match`. Wrap the WHOLE per-checkpoint loop
+    # in ONE `anyio.to_thread.run_sync` call so the entire enrichment
+    # pass runs on a single threadpool worker, leaving the asyncio loop
+    # responsive for the other concurrent pipeline coroutines.
+    def _enrich_word_ranges(rs: list[dict], wd: list[dict] | None) -> int:
+        count = 0
+        for cp in rs:
+            evidence = cp.get("evidence") or ""
+            s_ms, e_ms = find_word_range(evidence, wd)
+            cp["start_ms"] = s_ms
+            cp["end_ms"] = e_ms
+            if s_ms is not None:
+                count += 1
+        return count
+
+    if results:
+        enriched_count = await anyio.to_thread.run_sync(_enrich_word_ranges, results, word_data)
+    else:
+        enriched_count = 0
     log.info(
         f"\U0001f517 ENRICH start_ms populated for {enriched_count}/{len(results)} checkpoints "
         f"(word_data size={len(word_data) if word_data else 0})"

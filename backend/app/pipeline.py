@@ -3240,8 +3240,47 @@ def _write_extraction_outputs(call: Call, db: Session) -> None:
     if vuln_flag is not None:
         flags.append(vuln_flag)
 
+    # 2026-05-28 P0 (wave 12) — defensive segment_id validation before
+    # COMMIT to prevent FK violations on concurrent rewrites.
+    #
+    # Observed in prod 2026-05-26 15:31:26 UTC for call_id=dac15e11:
+    #
+    #   psycopg2.errors.ForeignKeyViolation: insert or update on table
+    #   "flags" violates foreign key constraint "flags_segment_id_fkey"
+    #   Key (segment_id)=(8fc9223a-...) is not present in table
+    #   "call_segments"
+    #
+    # Race condition: a duplicate upload (sha256-dedup matched the
+    # existing call_id) triggered concurrent finalize runs on the same
+    # call. The first run's CallSegment INSERTs were rolled back when
+    # the analyzer raised KeyError('choices'), but the in-Python
+    # `segments` list (queried earlier in this function at line 3156)
+    # still held those rows. `derive_flags` set `segment_id` from
+    # that list, then commit failed because the segment no longer
+    # existed in the DB.
+    #
+    # Defense: re-query the live segment IDs for this call right before
+    # COMMIT, and null-out any flag.segment_id pointing at a segment
+    # that's no longer present. Flag.segment_id is `nullable=True` with
+    # `ondelete="SET NULL"` (models.py:772) so a NULL is a legitimate
+    # state — the flag still surfaces on the call-level view, just
+    # without the per-segment anchor.
+    from app.models import CallSegment as _CSeg
+    _live_segment_ids = {
+        row[0] for row in db.query(_CSeg.id).filter(_CSeg.call_id == call.id).all()
+    }
+    _orphaned = 0
     for flag in flags:
+        if flag.segment_id is not None and flag.segment_id not in _live_segment_ids:
+            flag.segment_id = None
+            _orphaned += 1
         db.add(flag)
+    if _orphaned:
+        log.warning(
+            f"FLAG_SEGMENT_ORPHANED call_id={call.id} orphaned={_orphaned} "
+            f"flags={len(flags)} live_segments={len(_live_segment_ids)} "
+            f"— concurrent rewrite race avoided (set segment_id=None)"
+        )
 
     # W3.A — pricing-mismatch flags. Behind a feature flag so we can
     # ship even if the extractor is too noisy on real calls.
@@ -3252,7 +3291,11 @@ def _write_extraction_outputs(call: Call, db: Session) -> None:
         pricing_flags = derive_pricing_mismatch_flags(
             call.id, call.transcript or "", script, segments
         )
+        # Same defensive null-out for pricing flags (they reuse the
+        # same `segments` list).
         for flag in pricing_flags:
+            if flag.segment_id is not None and flag.segment_id not in _live_segment_ids:
+                flag.segment_id = None
             db.add(flag)
         pricing_flag_count = len(pricing_flags)
 
