@@ -8,7 +8,7 @@ conftest so fixture setup matches the rest of the suite.
 import json
 
 from app.compliance import derive_compliance
-from app.models import Call, ComplianceDecision
+from app.models import Call, CallSegment, ComplianceDecision
 
 
 def test_empty_checkpoints_stays_pending(test_db):
@@ -110,3 +110,164 @@ def test_partial_is_not_compliant(test_db):
     test_db.commit()
     result = derive_compliance(c, test_db)
     assert result == "non_compliant"
+
+
+# ── Segments path (modern pipeline) regression tests ─────────────────────
+# 2026-05-26: derive_compliance was demoting bucket-aggregator verdicts
+# (compliant/pending/non_compliant set by pipeline._step_score) back to
+# the V1 flat-list rules, producing inverted statuses. See compliance.py
+# docstring for the full incident. These tests pin the segments path so
+# the regression can't recur.
+
+
+def _add_segment(db, call_id, idx, stage, bucket, score):
+    """Helper: stamp a CallSegment row so derive_compliance routes to the
+    segments path."""
+    seg = CallSegment(
+        call_id=call_id,
+        idx=idx,
+        stage=stage,
+        bucket=bucket,
+        score=score,
+        compliant=(bucket == "pass"),
+        compliance_status={
+            "pass": "compliant",
+            "coaching": "compliant",
+            "review": "pending",
+            "blocked": "non_compliant",
+        }[bucket],
+    )
+    db.add(seg)
+    return seg
+
+
+def test_segments_path_preserves_coaching_as_compliant(test_db):
+    """1-segment call with bucket=coaching (e.g. 21/26 medium issues only).
+
+    _step_score sets compliance_status="compliant" and call.compliant=False
+    (worst_bucket != "pass"). derive_compliance MUST NOT overwrite this
+    with the V1 rule that demotes any non-pass checkpoint to non_compliant.
+
+    Real production case 24e184ee: 1 medium-severity partial demoted the
+    whole coaching-bucket call to non_compliant pre-fix.
+    """
+    c = Call(
+        id="c_seg_coaching", filename="x.mp3", file_path="c1/x.mp3",
+        transcript="...", duration_seconds=120,
+        compliance_status="compliant",  # set by _step_score
+        compliant=False,
+        score="21/26",
+        checkpoint_results=json.dumps([
+            {"id": "cp_1", "status": "pass", "confidence": "high", "severity": "medium"},
+            {"id": "cp_2", "status": "partial", "confidence": "high", "severity": "medium"},
+            {"id": "cp_3", "status": "fail", "confidence": "high", "severity": "medium"},
+        ]),
+    )
+    test_db.add(c)
+    test_db.flush()
+    _add_segment(test_db, "c_seg_coaching", 0, "verbal", "coaching", "21/26")
+    test_db.commit()
+
+    result = derive_compliance(c, test_db)
+    assert result == "compliant"
+    assert c.compliance_status == "compliant"
+    # Audit row written for the bucket aggregator's verdict
+    cd = test_db.query(ComplianceDecision).filter_by(call_id="c_seg_coaching").one()
+    assert cd.status == "compliant"
+    assert c.compliance_source == "bucket_aggregator"
+
+
+def test_segments_path_preserves_blocked_as_non_compliant(test_db):
+    """Multi-segment call with worst_bucket=blocked → status stays non_compliant.
+
+    Real production case 4c62d964: 3 segments (pre_sales=blocked,
+    verbal=coaching, loa=review). _step_score correctly set
+    compliance_status="non_compliant". derive_compliance MUST NOT revert
+    this to "pending" just because some checkpoints had needs_review=True
+    (V1 Rule 1 was overriding the correct verdict).
+    """
+    c = Call(
+        id="c_seg_blocked", filename="x.mp3", file_path="c2/x.mp3",
+        transcript="...", duration_seconds=570,
+        compliance_status="non_compliant",  # set by _step_score
+        compliant=False,
+        score="69/125",
+        checkpoint_results=json.dumps([
+            {"id": "cp_1", "status": "fail", "confidence": "high", "severity": "critical",
+             "needs_review": True},  # would trip V1 Rule 1 → pending
+            {"id": "cp_2", "status": "partial", "confidence": "low", "severity": "high"},
+        ]),
+    )
+    test_db.add(c)
+    test_db.flush()
+    _add_segment(test_db, "c_seg_blocked", 0, "pre_sales", "blocked", "48/88")
+    _add_segment(test_db, "c_seg_blocked", 1, "verbal", "coaching", "21/26")
+    _add_segment(test_db, "c_seg_blocked", 2, "loa", "review", "0/11")
+    test_db.commit()
+
+    result = derive_compliance(c, test_db)
+    assert result == "non_compliant"
+    assert c.compliance_status == "non_compliant"
+    cd = test_db.query(ComplianceDecision).filter_by(call_id="c_seg_blocked").one()
+    assert cd.status == "non_compliant"
+    # Failing checkpoints surfaced for audit
+    assert cd.failing_checkpoints is not None
+    failing = json.loads(cd.failing_checkpoints)
+    assert "cp_1" in failing and "cp_2" in failing
+
+
+def test_segments_path_preserves_pending_with_no_decision_row(test_db):
+    """Segment in bucket=review keeps the call pending and writes NO
+    ComplianceDecision row (matches V1 semantics — pending = awaiting
+    human decision, no auto-decision recorded)."""
+    c = Call(
+        id="c_seg_pending", filename="x.mp3", file_path="c3/x.mp3",
+        transcript="...", duration_seconds=60,
+        compliance_status="pending",
+        compliant=False,
+        score="3/26",
+        checkpoint_results=json.dumps([
+            {"id": "cp_1", "status": "fail", "confidence": "high", "severity": "medium"},
+        ]),
+    )
+    test_db.add(c)
+    test_db.flush()
+    _add_segment(test_db, "c_seg_pending", 0, "verbal", "review", "3/26")
+    test_db.commit()
+
+    result = derive_compliance(c, test_db)
+    assert result == "pending"
+    assert c.compliance_status == "pending"
+    assert test_db.query(ComplianceDecision).filter_by(call_id="c_seg_pending").count() == 0
+
+
+def test_segments_path_does_not_demote_compliant_with_partials(test_db):
+    """Regression for the inverted-verdict pattern: a call with a single
+    coaching segment whose flat ``checkpoint_results`` contain partial /
+    fail entries MUST NOT be downgraded. The bug was that V1 Rule 2
+    (any non-pass → non_compliant) would clobber the bucket aggregator's
+    correct ``compliant`` verdict every time the segment had even one
+    medium-severity issue (which is the *defining* trait of the coaching
+    bucket — by definition, coaching means medium issues only)."""
+    c = Call(
+        id="c_seg_partial", filename="x.mp3", file_path="c5/x.mp3",
+        transcript="...", duration_seconds=120,
+        compliance_status="compliant",
+        compliant=False,
+        score="23/26",
+        checkpoint_results=json.dumps([
+            {"id": "cp_1", "status": "pass", "confidence": "high", "severity": "medium"},
+            {"id": "cp_2", "status": "partial", "confidence": "high", "severity": "medium"},
+            {"id": "cp_3", "status": "fail", "confidence": "high", "severity": "medium"},
+        ]),
+    )
+    test_db.add(c)
+    test_db.flush()
+    _add_segment(test_db, "c_seg_partial", 0, "verbal", "coaching", "23/26")
+    test_db.commit()
+
+    result = derive_compliance(c, test_db)
+    # Stays compliant — segments path is authoritative; V1 demotion would
+    # have flipped this to non_compliant.
+    assert result == "compliant"
+    assert c.compliance_status == "compliant"

@@ -2393,6 +2393,99 @@ def admin_backfill_compliant_strict(
     }
 
 
+@router.post("/api/admin/rederive-compliance", status_code=200)
+def admin_rederive_compliance(
+    db: Session = Depends(get_db),
+    _user: dict = Depends(require_lead),
+) -> dict[str, int]:
+    """Re-run ``derive_compliance`` for every Call that has CallSegments.
+
+    Repairs rows mis-stamped by the pre-2026-05-26 ``derive_compliance``
+    function, which overwrote ``_step_score``'s bucket-based status with
+    weaker V1 flat-list rules (Rule 1: any ``needs_review=True`` checkpoint
+    → pending; Rule 2: any non-pass → non_compliant). Production audit
+    found:
+
+    - Blocked-bucket calls reverted to ``compliance_status="pending"``
+      because at least one of their failing checkpoints had needs_review
+      set OR a low-confidence verdict — the V1 Rule 1 short-circuit fired
+      ahead of the severity-tier-aware bucket aggregator.
+    - Coaching-bucket calls demoted to ``compliance_status="non_compliant"``
+      because the V1 Rule 2 treats any medium-severity ``partial`` /
+      ``fail`` as a hard breach — which is precisely the *definition* of
+      the coaching bucket. Every coaching call has at least one such
+      checkpoint by construction.
+
+    The repaired function in ``app/compliance.py`` now checks for
+    ``CallSegment`` rows first and preserves ``_step_score``'s verdict;
+    this endpoint runs the corrected function once per call so existing
+    rows converge to the right status without re-running the pipeline.
+
+    Idempotent: re-running yields zero changes once data is correct.
+    Gated by ``require_lead``. Writes one ``record_audit`` row covering
+    the entire pass for forensic reconstructability.
+    """
+    from app.compliance import derive_compliance
+    from app.models import Call as _Call, CallSegment as _Seg
+
+    # Distinct call_ids that have at least one segment.
+    seg_call_ids = [
+        row[0]
+        for row in db.query(_Seg.call_id).distinct().filter(_Seg.call_id.isnot(None)).all()
+    ]
+
+    changed = 0
+    by_target_status: dict[str, int] = {"compliant": 0, "pending": 0, "non_compliant": 0}
+    skipped_missing = 0
+
+    for cid in seg_call_ids:
+        call = db.query(_Call).filter_by(id=cid).first()
+        if call is None:
+            skipped_missing += 1
+            continue
+        before = (call.compliance_status or "").strip() or "pending"
+        derived = derive_compliance(call, db)
+        if derived != before:
+            changed += 1
+            by_target_status[derived] = by_target_status.get(derived, 0) + 1
+
+    if changed:
+        record_audit(
+            db,
+            action="backfill.rederive_compliance",
+            entity_type="call",
+            entity_id=None,
+            payload={
+                "scanned": len(seg_call_ids),
+                "changed": changed,
+                "to_compliant": by_target_status.get("compliant", 0),
+                "to_pending": by_target_status.get("pending", 0),
+                "to_non_compliant": by_target_status.get("non_compliant", 0),
+                "skipped_missing": skipped_missing,
+            },
+            actor_id=_user.get("id") if isinstance(_user, dict) else None,
+        )
+        db.commit()
+
+    log.info(
+        "BACKFILL_REDERIVE_COMPLIANCE scanned=%d changed=%d "
+        "to_compliant=%d to_pending=%d to_non_compliant=%d",
+        len(seg_call_ids),
+        changed,
+        by_target_status.get("compliant", 0),
+        by_target_status.get("pending", 0),
+        by_target_status.get("non_compliant", 0),
+    )
+    return {
+        "scanned": len(seg_call_ids),
+        "changed": changed,
+        "to_compliant": by_target_status.get("compliant", 0),
+        "to_pending": by_target_status.get("pending", 0),
+        "to_non_compliant": by_target_status.get("non_compliant", 0),
+        "skipped_missing": skipped_missing,
+    }
+
+
 @router.post("/api/admin/sweep-orphans", status_code=200)
 def admin_sweep_orphans(
     db: Session = Depends(get_db),
