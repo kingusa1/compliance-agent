@@ -329,8 +329,15 @@ async def lifespan(app: FastAPI):
     # matches FastAPI Discussion #12269's production guidance.
     try:
         import anyio.to_thread
-        anyio.to_thread.current_default_thread_limiter().total_tokens = 200
-        app_log.info("anyio threadpool limiter total_tokens=200")
+        # 2026-05-27 — bumped 200 → 400 to match the Railway 24 vCPU /
+        # 24 GB Pro replica (owner maxed the box). Off-loop file reads
+        # for 5 transcribers × N concurrent pipelines now consume the
+        # AnyIO limiter (since the same-day asyncio.to_thread →
+        # anyio.to_thread.run_sync switch); 200 tokens was a bottleneck
+        # under bulk concurrency with concurrent file I/O + sync DB
+        # writes competing for the same pool.
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 400
+        app_log.info("anyio threadpool limiter total_tokens=400")
     except Exception as e:  # noqa: BLE001
         app_log.warning(f"failed to raise anyio threadpool limiter: {e!r}")
 

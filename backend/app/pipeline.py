@@ -91,7 +91,16 @@ _STEP_DONE_EVENTS = {
 }
 
 
-_STEP_RETRY_MAX_ATTEMPTS = 3
+# 2026-05-27 — bumped 3 → 5 attempts after the 9-way concurrent soak
+# showed 3 attempts (90s wall-clock per call) exhausted under sustained
+# supplier-peel SELECT-FOR-UPDATE contention on a shared deal stub. 5
+# attempts × jittered backoff (0.5/1/2/4/8s ceilings, full-jitter draw)
+# = ≤15s additional wall-clock per call, well within the ~3-5 min
+# typical pipeline budget and matches the lock-release window under
+# upstream pipeline mid-write. Live evidence in 2026-05-27 PM soak log:
+# `STEP_RETRY transient call_id=0147b7b5 step=detect_metadata attempt=2`
+# (the 3rd attempt was inside the original budget but still timed out).
+_STEP_RETRY_MAX_ATTEMPTS = 5
 _STEP_RETRY_BASE_DELAY_S = 0.5
 
 

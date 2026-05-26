@@ -244,10 +244,16 @@ class TestTraceStepRetry:
     async def test_step_retry_exhausts_publishes_step_err(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Step fn raises statement_timeout on ALL 3 attempts. Verifies:
-        function called 3 times; ``step_retry`` published twice (between
-        the 3 attempts); ``step_err`` published once at the outer catch;
-        exception propagates."""
+        """Step fn raises statement_timeout on ALL attempts. Verifies:
+        function called ``_STEP_RETRY_MAX_ATTEMPTS`` times; ``step_retry``
+        published one fewer (between attempts); ``step_err`` published
+        once at the outer catch; exception propagates.
+
+        2026-05-27 — generalised away from a hardcoded `== 3` so the
+        retry budget can be tuned without rewriting the test. Live soak
+        showed 3 attempts insufficient under sustained contention; bump
+        to 5 ships in the same wave.
+        """
         from app import pipeline
 
         published: list[tuple[str, str]] = []
@@ -271,6 +277,7 @@ class TestTraceStepRetry:
         )
 
         attempts = {"n": 0}
+        max_attempts = pipeline._STEP_RETRY_MAX_ATTEMPTS
 
         def fn() -> str:
             attempts["n"] += 1
@@ -284,9 +291,9 @@ class TestTraceStepRetry:
 
         with pytest.raises(OperationalError):
             await pipeline._trace_step("call-2", "detect_metadata", fn)
-        assert attempts["n"] == 3  # initial + 2 retries
+        assert attempts["n"] == max_attempts
         kinds = [e[1] for e in published]
-        assert kinds.count("step_retry") == 2
+        assert kinds.count("step_retry") == max_attempts - 1
         assert kinds.count("step_err") == 1
         assert "step_ok" not in kinds
 
@@ -559,17 +566,19 @@ class TestPoolConfig:
 
     def test_pool_size_capped(self) -> None:
         pool = db_module.engine.pool
-        assert pool.size() <= 25, (
-            f"pool_size={pool.size()} exceeds Supavisor-safe cap (25). "
-            "Larger pools sit idle past Supavisor's ~5min kill window and "
-            "produce mid-query SSL disconnects."
+        assert pool.size() <= 40, (
+            f"pool_size={pool.size()} exceeds Supabase-Pro-safe cap (40). "
+            "Bigger pools risk Supavisor connection budget pressure. "
+            "2026-05-27 retune: 30 warm conns sized for Railway 24 vCPU "
+            "/ 24 GB Pro replica."
         )
 
     def test_max_overflow_capped(self) -> None:
         pool = db_module.engine.pool
         max_overflow = getattr(pool, "_max_overflow", 20)
-        assert max_overflow <= 50, (
-            f"max_overflow={max_overflow} exceeds Supavisor-safe cap (50)."
+        assert max_overflow <= 80, (
+            f"max_overflow={max_overflow} exceeds Supabase-Pro-safe cap (80). "
+            "2026-05-27 retune: 60 burst headroom for bulk-upload concurrency."
         )
 
     def test_recycle_under_supavisor_kill_window(self) -> None:

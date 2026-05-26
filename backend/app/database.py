@@ -49,21 +49,23 @@ engine = create_engine(
     #
     # New config (mirrors Supabase's published guidance for Supavisor +
     # SQLAlchemy):
-    #   pool_size=20        — small warm pool; transaction-mode pooler
-    #                         multiplexes many app connections onto each
-    #                         server connection. Bumped from 10 → 20 on
-    #                         2026-05-27 after the 9-way concurrent soak
+    #   pool_size=30        — warm pool sized for the Railway 24 vCPU /
+    #                         24 GB Pro replica (owner maxed the box on
+    #                         2026-05-27). Bumped from 10 → 20 → 30 across
+    #                         this session as the 9-way concurrent soak
     #                         exposed `QueuePool limit of size 10 overflow
     #                         20 reached` TimeoutErrors at the score +
     #                         finalize steps. Per-step SessionLocal
     #                         (since 2026-05-25) + the supplier-peel
     #                         SELECT-FOR-UPDATE holding a slot for up to
     #                         15s × N pipelines = exhaustion at concurrency
-    #                         ≥6. 20 × 1 replica = 20 warm conns, well
-    #                         under Supavisor's 200-client per-Micro cap.
-    #   max_overflow=40     — bumped from 20 → 40. Burst headroom for
-    #                         upload + reanalyze under 10+ concurrent
-    #                         pipelines. 20+40=60 total ≪ Supavisor 200.
+    #                         ≥6. 30 × 1 replica = 30 warm conns; well
+    #                         under Supavisor's per-instance ceiling.
+    #   max_overflow=60     — bumped from 20 → 40 → 60. Burst headroom
+    #                         for upload + reanalyze under 10+ concurrent
+    #                         pipelines. 30+60=90 total stays under
+    #                         Supabase Pro's Supavisor client budget while
+    #                         giving the 24 vCPU box room to soak.
     #   pool_recycle=240    — 60s safety margin under Supavisor's 300s
     #                         `server_idle_timeout`. Recycling at
     #                         exactly 300 races the pooler's kill timer:
@@ -78,8 +80,8 @@ engine = create_engine(
     #                         under burst load; a 10s timeout returns a
     #                         503 quickly so the frontend's retry kicks
     #                         in.
-    pool_size=20,
-    max_overflow=40,
+    pool_size=30,
+    max_overflow=60,
     # 2026-05-26 — Bumped pool_recycle 240→1800 (30 min). Per
     # Close.com's robust-connections recipe + CYBERTEC's TCP-keepalive
     # guidance, `pool_recycle` should be LONGER than typical transaction
@@ -92,7 +94,13 @@ engine = create_engine(
     #   https://making.close.com/posts/data-stores-robust-connections/
     #   https://www.cybertec-postgresql.com/en/tcp-keepalive-for-a-better-postgresql-experience/
     pool_recycle=1800,
-    pool_timeout=10,
+    # 2026-05-27 — bumped 10s → 20s. The 10s budget was tuned for "fail
+    # fast so frontend retry kicks in", but under bulk concurrency the
+    # supplier-peel SELECT FOR UPDATE can block for up to 15s on the
+    # statement_timeout boundary; the 10s pool_timeout was tripping
+    # BEFORE that resolved, returning a 503 even though a slot would
+    # have freed up in another 2-5s. 20s straddles the lock-wait window.
+    pool_timeout=20,
     pool_use_lifo=True,
     # Default compiled-statement cache is 500; lift to 1200 so the hot
     # query shapes (queue, tracker, calls, deals) stop falling out and
