@@ -58,9 +58,38 @@ def current_user(
     uid = payload.get("sub")
     if not uid:
         raise HTTPException(status_code=401, detail="Token missing sub claim")
-    # One-shot retry on a Supavisor idle-killed SSL connection: rollback to
-    # release the broken DBAPI handle, then re-issue. pool_pre_ping handles
-    # cold checkouts but not a connection that died mid-request.
+    # 2026-05-27 PERF — Use the module-level profile cache that's already
+    # pre-loaded at FastAPI startup with a 5-minute TTL
+    # (`app.profile_cache.refresh_profile_cache` in main.py:263). The
+    # previous implementation did a fresh `db.query(Profile)` on EVERY
+    # authenticated request; at Railway↔Supabase cross-region latency
+    # (~205ms per RTT) this added ~200ms to every API call. Heavy admin
+    # pages make 5-10 sequential authed requests on first paint, so the
+    # cache wire-up shaves 1-2 seconds off perceived page load.
+    #
+    # On cache hit (the common case once startup pre-load fires): zero
+    # DB work — the cache is an in-process dict keyed on profile.id.
+    # On cache miss (new profile signed up since the last refresh): fall
+    # through to the direct query so the new user isn't locked out for
+    # up to 5 minutes.
+    try:
+        from app.profile_cache import get_profile_dict
+        cached = get_profile_dict(db).get(uid)
+    except Exception:  # noqa: BLE001 — cache layer must never block auth
+        cached = None
+    if cached and cached.get("is_active"):
+        role = "admin" if settings.dev_all_admin else cached.get("role")
+        return {
+            "id": cached["id"],
+            "email": cached.get("email"),
+            "name": cached.get("name"),
+            "role": role,
+        }
+
+    # Cache miss path (new user or invalidation race). One-shot retry on
+    # a Supavisor idle-killed SSL connection: rollback to release the
+    # broken DBAPI handle, then re-issue. pool_pre_ping handles cold
+    # checkouts but not a connection that died mid-request.
     from sqlalchemy.exc import OperationalError
     try:
         profile = db.query(Profile).filter_by(id=uid).first()

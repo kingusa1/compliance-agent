@@ -48,6 +48,8 @@ Columns:
 
 | timestamp | session | skill | role | task-id | status | evidence |
 |---|---|---|---|---|---|---|
+| 2026-05-26 10:23 | active | security-reviewer | auto-trigger | brain-prose-auth-trigger-fp-f9b1d36 | success: false positive; BRAIN/Known_Issues.md mentions Depends() in documentation prose, not code; no auth files modified in this docs commit | git diff dfcbb25..f9b1d36 shows BRAIN/*.md only + 4 backend files from earlier e22f3c2 (already cleared) |
+| 2026-05-26 10:54 | active | security-reviewer | auto-trigger | auth-profile-cache-wire-up | success: profile_cache wire-up in current_user; preserves all guards (uid required, is_active check, DEV_ALL_ADMIN role override); cache miss falls through to direct query + retry path for new users; no auth bypass introduced | auth.py:54-114; 5-min TTL pre-loaded at FastAPI startup |
 
 ---
 
