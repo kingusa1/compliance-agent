@@ -4,6 +4,39 @@ updated: 2026-05-27
 tags: [state, live, ground-truth, d10-n-a, transfer-aware-agent, quality-checker-agent, slow-button, pass-button-name-lookup, d13-orphan-stubs, d1-d2-name-promote-reverse]
 ---
 
+# Live State — PM wave: queue tab + agent page + composite bundle (2026-05-27 PM, `10522b8`)
+
+> 🟢 **2026-05-27 PM late — Tip `10522b8`. 5 commits today afternoon (69e79a8 → a273e0b → 4204de4 → f65ee4e → 10522b8). All Railway healthcheck PASS + Vercel deploys triggered for frontend touches.**
+>
+> ## What landed across the PM wave
+>
+> ### `69e79a8` — Auth profile cache wire-up
+> `current_user` in `app/auth.py` now hits `app.profile_cache.get_profile_dict(db).get(uid)` ahead of the direct query. Cache pre-loaded at FastAPI startup with 5-min TTL. Measured impact: -370 ms avg per authed request (heaviest endpoint /api/deals: 2006 → 1002 ms, -50 %).
+>
+> ### `4204de4` — Queue tab inversion fix
+> Per-checkpoint Pass / Override → Fail now auto-promotes `Call.review_status`:
+> - ANY override on `unclaimed` → `in_review`
+> - EVERY non-error checkpoint has a `reviewer_verdict` → `reviewed`
+>
+> Reviewed tab cutoff widened from "today midnight" to "last 7 days". SSE `verdict_changed` payload carries `review_status` + `auto_promoted_to` for live row repaints.
+>
+> ### `f65ee4e` — Agent detail page enterprise upgrade
+> Backend `agent_drilldown` gains 9 new fields (total_calls_lifetime, avg_score_30d, severity_breakdown_30d, top_failed_checkpoints_30d, supplier_mix_30d, call_type_mix_30d, qc_block_count_30d, weekly_trend, best/worst_call_id). Frontend `/agents/[name]` now has 6-KPI hero + 4 breakdown panels (8-week trend sparkline / severity bars / top-failed list / supplier+call-type mix bars) + best/worst quick-jumps + retraining banner.
+>
+> ### `10522b8` — Composite call-detail bundle endpoint
+> New `GET /api/calls/{id}/bundle` returns detail + segments + words + script_checkpoints + audio_url in ONE response. Cuts the call-detail page from 5 sequential round-trips to 1. Frontend wiring deferred to next session (the backend is the load-bearing piece; existing single-resource endpoints stay for back-compat + SSE invalidation).
+>
+> ## Open carry-forward
+>
+> 1. **Wire frontend useCallBundle hook** to consume `/api/calls/{id}/bundle` — 1.5-2 s saved per call-detail page open.
+> 2. **Process-level cache for /api/deals + /api/customers list endpoints** (30-60 s TTL).
+> 3. **D14 residual loop_lag ~1.5 s** — sync json paths in checkpoint_analyzer.
+> 4. **D4 score volatility** — re-measure after D10 bakes.
+> 5. **QC banner UI** on call detail page (backend writes `Call.quality_check`; frontend doesn't render).
+> 6. **Inngest Cloud Pro** ($75/mo) + **Supabase Micro → 2XL** ($480/mo) — owner approval pending.
+
+---
+
 # Live State — Auth profile cache wire-up (2026-05-27 PM, `69e79a8`)
 
 > 🟢 **2026-05-27 PM — Tip `69e79a8`. Owner-observed "website is slow" diagnosed and fixed: it was NOT a resource issue.**

@@ -6,7 +6,23 @@ tags: [state, issues, gotchas, d9-widening, lag-fix, max-config, n-a-vocabulary,
 
 # Known issues / gotchas
 
-## 🚨 2026-05-27 PM — Status after the full-day agents wave (`e22f3c2`)
+## 🚨 2026-05-27 PM late — Status after the perf + queue + agent + bundle wave (`10522b8`)
+
+| ID | severity | status | notes |
+|---|---|---|---|
+| D-PERF-AUTH | HIGH | ✅ FIXED 69e79a8 | profile_cache wired into current_user; -370ms avg per authed request |
+| D-QUEUE-TAB | HIGH | ✅ FIXED 4204de4 | per-checkpoint auto-promote review_status + 7d Reviewed cutoff |
+| D-AGENT-UX | MEDIUM | ✅ FIXED f65ee4e | 6-KPI hero + 4 breakdown panels + sparkline + best/worst quick-jumps |
+| D-BUNDLE-EP | MEDIUM | partial — backend shipped 10522b8 | frontend useCallBundle hook deferred to next session |
+| D4 | MEDIUM | OPEN | Score volatility — re-measure after D10 bakes |
+| D6 | HIGH | mitigated | SSE per-call fan-out — 3s poll covers it |
+| D14 | LOW | OPEN | Residual loop_lag ~1.5s; sync json paths in checkpoint_analyzer |
+
+Frontend wiring of /api/calls/{id}/bundle is the highest-leverage remaining win (1.5-2 s saved per call-detail page open). Backend is in place.
+
+---
+
+## 🚨 2026-05-27 — Status after the full-day agents wave (`e22f3c2`)
 
 | ID | severity | status | notes |
 |---|---|---|---|
