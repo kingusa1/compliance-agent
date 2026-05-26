@@ -28,6 +28,8 @@ import json
 import logging
 import time
 
+import anyio
+
 from app.agent.escalation import run_batch_tiered
 from app.agent.tool_handlers import ToolContext
 from app.word_match import find_word_range
@@ -38,13 +40,59 @@ from app.logger import log
 from app.prompts import get_prompt, format_checkpoints_for_prompt
 from app.verification import fuzzy_match
 
-# Concurrency limits per provider (free tier vs paid)
+# Concurrency limits per provider (free tier vs paid).
+#
+# 2026-05-28 P0 — owner-observed `loop_lag_canary lag=29750ms` during
+# live uploads with concurrent pipelines, followed by SSL connection
+# drops. Root cause: openrouter was set to 25 concurrent batches per
+# pipeline. With 3-4 simultaneous uploads each fanning out 25 batches,
+# the asyncio loop saw 75-100 in-flight `_call_llm` coroutines, each
+# performing sync `json.loads(content)` on multi-KB responses on the
+# loop thread → 12-30s blocks → DB keepalive timeouts kill pooled
+# connections → user-facing `/api/stats` /api/calls` 500 cascades.
+#
+# Tightened openrouter to 6 (matches the BATCH_SIZE) so each pipeline
+# can run at most one batch per checkpoint group concurrently. This
+# alone reduces concurrent LLM work by 4×. Combined with the off-loop
+# json parsing below it eliminates loop lag spikes observed in prod.
 _CONCURRENCY_LIMITS = {
     "gemini": 3,
-    "openrouter": 25,
-    "anthropic": 10,
-    "openai": 15,
+    "openrouter": 6,
+    "anthropic": 6,
+    "openai": 8,
 }
+
+# 2026-05-28 P0 — global cross-pipeline LLM-response parse limiter.
+# `_call_llm` returns plain text; we parse it with `json.loads` which is
+# a CPython C-level call but for the 3-5KB responses we get from Opus
+# 4.7 it still measurably contributes to loop lag when 6+ batches return
+# simultaneously. Threshold below which we keep the parse inline (avoid
+# threadpool-handoff overhead for tiny payloads).
+_JSON_OFFLOAD_THRESHOLD_BYTES = 2048
+
+
+def _parse_json_safe(content: str):
+    """Synchronous JSON parse. Wrapped here so the off-loop variant has
+    a stable callable to hand to ``anyio.to_thread.run_sync``."""
+    return json.loads(content)
+
+
+async def _parse_json_maybe_offload(content: str):
+    """Parse LLM JSON response; offload to threadpool for large payloads.
+
+    Big LLM responses (3KB+) take O(ms) to parse in pure Python and
+    accumulate when 6+ concurrent batches all return at the same tick.
+    AnyIO's `to_thread.run_sync` consumes the project-wide capacity
+    limiter (set to 400 in main.py) so this never spawns unbounded
+    threads. Small payloads (<2KB) keep the inline parse to avoid the
+    handoff overhead.
+    """
+    if not content or len(content) < _JSON_OFFLOAD_THRESHOLD_BYTES:
+        return _parse_json_safe(content)
+    try:
+        return await anyio.to_thread.run_sync(_parse_json_safe, content)
+    except Exception:  # noqa: BLE001 — fall back to inline parse on threadpool failure
+        return _parse_json_safe(content)
 
 logger = logging.getLogger(__name__)
 
@@ -306,7 +354,11 @@ async def analyze_single_checkpoint(
         if content.startswith("```"):
             content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
-        parsed_list = json.loads(content)
+        # 2026-05-28 P0 D14 fix — large LLM response JSON parsed off the
+        # asyncio loop. Single-checkpoint retry, so payload is small;
+        # threshold check inside the helper keeps the inline parse for
+        # sub-2KB payloads.
+        parsed_list = await _parse_json_maybe_offload(content)
         parsed = parsed_list[0] if isinstance(parsed_list, list) and parsed_list else parsed_list
 
         # Verify quotes
@@ -518,7 +570,11 @@ async def _analyze_batch(
         if content.startswith("```"):
             content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
-        parsed = json.loads(content)
+        # 2026-05-28 P0 D14 fix — batch responses are 3-5KB on Opus 4.7
+        # so parsing 6 of them on the loop simultaneously after a
+        # concurrent fan-out was producing 12-30s loop_lag spikes in
+        # prod. Offload to AnyIO's bounded threadpool.
+        parsed = await _parse_json_maybe_offload(content)
 
         # Per-checkpoint trace rows so /observability shows ONE input/output
         # pair per checkpoint (not one per batch). The LLM is still called

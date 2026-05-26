@@ -48,11 +48,7 @@ Columns:
 
 | timestamp | session | skill | role | task-id | status | evidence |
 |---|---|---|---|---|---|---|
-| 2026-05-26 12:02 | active | python-reviewer | auto-trigger | row-safety-net-main-py | success | agent aca6fbb5: 1 CRIT (added ResponseValidationError handler) + 2 HIGH + 3 MED addressed in follow-up edit |
-| 2026-05-26 12:05 | active | code-reviewer | auto-trigger | reviewer-ts-bundle-hook | success | agent ad6f96e3: 1 HIGH (bundle invalidation in 7 mutation sites — slated for follow-up commit) + 3 MED type tightenings + 3 LOW |
-| 2026-05-26 12:13 | active | python-reviewer | auto-trigger | agent-drilldown-row-fix | success | agent af08612c: 1 CRIT (line 230 float casts added) + 1 HIGH + 2 MED — jsonable_encoder wrap + explicit float casts shipped |
-| 2026-05-26 12:15 | audit-waiver | (n/a) | waiver | pre-push | waived: push with kingusa1 not it@bbmgroup please | scripts/doctrine/audit.py |
-| 2026-05-26 12:37 | active | document-specialist | verification | agent-drilldown-internet-validate | success | agent a1b9560d: 6/6 claims CONFIRMED with sources (FastAPI #5618 #9330 #14313, Pydantic v2 docs, Starlette #1175) |
+| 2026-05-26 13:01 | active | python-reviewer | auto-trigger | analyzer-d14-fix | success | agent a18c10bc: PASS analyzer concurrency 25->6 + off-loop json.loads via anyio; agents_routes ILIKE refactor still clean |
 
 ---
 
@@ -194,6 +190,17 @@ Columns:
 | 2026-05-26 11:16 | active | code-reviewer | auto-trigger | agent-page-quality-redesign | success: 6-card hero + 4 breakdown panels (trend sparkline, severity bars, top-failed list, supplier+call-type stacked mix); best/worst call quick-jumps + retraining banner; tsc clean on changed files | owner mandate: more attractive + all info quality reviewer needs to take a decision |
 | 2026-05-26 11:16 | active | python-reviewer | auto-trigger | agent-drilldown-enrichment | success: 9 new fields (total_calls_lifetime, avg_score_30d, severity_breakdown_30d, top_failed_checkpoints_30d, supplier_mix_30d, call_type_mix_30d, qc_block_count_30d, weekly_trend, best/worst_call_id); each field degrades to defaults on schema mismatch; 58/58 tests green | graceful try/except around every new query; non-blocking |
 | 2026-05-26 11:20 | active | python-reviewer | auto-trigger | call-bundle-composite-endpoint | success: /api/calls/{id}/bundle returns detail+segments+words+script_checkpoints+audio_url in one response; cuts call-detail page from 5 sequential round-trips to ~1; all sub-fetches graceful-degrade; 58/58 tests green | selectinload(Call.checkpoints) + word_data already on Call row + per-segment iteration is in-memory |
+
+### 2026-05-26 — 2026_05_28_p0_row_leak_alias_fix_bundle_wireup
+
+| timestamp | session | skill | role | task-id | status | evidence |
+|---|---|---|---|---|---|---|
+| 2026-05-26 12:02 | active | python-reviewer | auto-trigger | row-safety-net-main-py | success | agent aca6fbb5: 1 CRIT (added ResponseValidationError handler) + 2 HIGH + 3 MED addressed in follow-up edit |
+| 2026-05-26 12:05 | active | code-reviewer | auto-trigger | reviewer-ts-bundle-hook | success | agent ad6f96e3: 1 HIGH (bundle invalidation in 7 mutation sites — slated for follow-up commit) + 3 MED type tightenings + 3 LOW |
+| 2026-05-26 12:13 | active | python-reviewer | auto-trigger | agent-drilldown-row-fix | success | agent af08612c: 1 CRIT (line 230 float casts added) + 1 HIGH + 2 MED — jsonable_encoder wrap + explicit float casts shipped |
+| 2026-05-26 12:15 | audit-waiver | (n/a) | waiver | pre-push | waived: push with kingusa1 not it@bbmgroup please | scripts/doctrine/audit.py |
+| 2026-05-26 12:37 | active | document-specialist | verification | agent-drilldown-internet-validate | success | agent a1b9560d: 6/6 claims CONFIRMED with sources (FastAPI #5618 #9330 #14313, Pydantic v2 docs, Starlette #1175) |
+| 2026-05-26 12:41 | active | code-reviewer | auto-trigger | guide-page-agents-tagline | success | agent a5aab8f6: PASS pure-copy update |
 
 ---
 

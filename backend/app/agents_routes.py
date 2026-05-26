@@ -196,44 +196,44 @@ def agent_drilldown(
     cutoff_7 = now - timedelta(days=7)
     cutoff_30 = now - timedelta(days=30)
 
-    # 2026-05-28 P0 — canonical-name resolution.
+    # 2026-05-28 P0 — canonical-name resolution (rev 2: prefix-match).
     #
     # The `/agents` listing groups raw agent_names through
-    # `_canonicalize_agent` (alias table + first-token heuristics), so an
-    # agent rendered as "Bradley" on the list can be backed by raw
-    # `agent_name` values like "Bradley Clayton", "Bradley C", "Brad" on
-    # individual call rows. The old drilldown filtered with
-    # `Call.agent_name == agent_name`, which evaluated `agent_name ==
-    # "Bradley"` against rows that store the full string — zero matches,
-    # every KPI rendered as 0, "No calls for this agent yet".
+    # `_canonicalize_agent` (alias table + first-token), so the list-
+    # rendered "Bradley" can be backed by raw `agent_name` values like
+    # "Bradley Clayton" / "Bradley C" / "Brad". Filtering with
+    # `Call.agent_name == agent_name` evaluated `agent_name == "Bradley"`
+    # against rows storing the full string — zero matches, empty page.
     #
-    # Fix: build the alias map once at the top of the route, resolve the
-    # requested name to its set of raw aliases (the requested name itself
-    # PLUS every raw name that canonicalises onto it), then change every
-    # downstream filter from `agent_name == :agent` to `agent_name IN
-    # (:aliases)`. This keeps the list-to-drilldown navigation honest and
-    # is correct against historical data created before the alias table
-    # was populated.
-    aliases = _load_agent_aliases(db)
-    canon_target = _canonicalize_agent(agent_name, aliases) or agent_name
-    # Raw names that canonicalise to the same target — includes the
-    # requested name itself (covers the common case of no alias yet
-    # registered for this agent).
-    raw_alias_names: list[str] = [agent_name]
-    try:
-        all_raw = [
-            row[0]
-            for row in db.query(Call.agent_name)
-            .filter(Call.agent_name.isnot(None))
-            .distinct()
-            .all()
-        ]
-        for raw in all_raw:
-            if raw and raw != agent_name:
-                if (_canonicalize_agent(raw, aliases) or raw) == canon_target:
-                    raw_alias_names.append(raw)
-    except Exception as e:  # noqa: BLE001 — degrade to exact match on error
-        log.warning(f"agent alias expansion failed: {e}")
+    # The first rev (3998423) folded all distinct raw agent_names
+    # through canonicalisation via a full `Call.agent_name DISTINCT`
+    # scan on every drilldown call. Under polling load that scan
+    # starved the DB pool — `/healthz` measured at 73 s, `/api/stats`
+    # at 204 s during the regression window.
+    #
+    # Rev 2 (this commit) drops the DISTINCT scan entirely. Instead the
+    # filter becomes:
+    #     Call.agent_name == agent_name        (exact: full URL = full
+    #                                            stored name, e.g.
+    #                                            "Bradley Clayton")
+    #   OR Call.agent_name ILIKE 'agent_name %' (suffix: list canonical
+    #                                            "Bradley" matches
+    #                                            "Bradley Clayton")
+    #   OR Call.agent_name ILIKE 'agent_name-%' (hyphenated)
+    #
+    # ILIKE on the leading characters is index-friendly via
+    # `text_pattern_ops` if present; even on a plain B-tree it scans
+    # only `agent_name`-prefixed rows. No full-table DISTINCT, no
+    # Python-side fold, no extra round-trip.
+    from sqlalchemy import or_
+    # Escape ILIKE metacharacters so a Postgres-special character in the
+    # URL parameter ("%", "_") doesn't widen the match unexpectedly.
+    _safe = agent_name.replace("%", r"\%").replace("_", r"\_").strip()
+    _agent_filter = or_(
+        Call.agent_name == agent_name,
+        Call.agent_name.ilike(f"{_safe} %"),
+        Call.agent_name.ilike(f"{_safe}-%"),
+    )
 
     # Critical flag count over the last 7 days. The `flags` table may not
     # exist in older DBs — degrade to 0 if so.
@@ -245,12 +245,12 @@ def agent_drilldown(
                 SELECT COUNT(*) AS n
                 FROM flags f
                 JOIN calls c ON c.id = f.call_id
-                WHERE c.agent_name = ANY(:agents)
+                WHERE (c.agent_name = :agent OR c.agent_name ILIKE :agent_prefix OR c.agent_name ILIKE :agent_hyphen)
                   AND f.severity = 'critical'
                   AND f.created_at >= :cutoff
                 """
             ),
-            {"agents": raw_alias_names, "cutoff": cutoff_7},
+            {"agent": agent_name, "agent_prefix": f"{_safe} %", "agent_hyphen": f"{_safe}-%", "cutoff": cutoff_7},
         ).fetchone()
         critical_count_7d = int(row.n) if row else 0
     except (OperationalError, ProgrammingError):
@@ -264,7 +264,7 @@ def agent_drilldown(
             func.count(Call.id).label("total"),
             func.count().filter(Call.compliant.is_(True)).label("ok"),
         )
-        .filter(Call.agent_name.in_(raw_alias_names), Call.created_at >= cutoff_30)
+        .filter(_agent_filter, Call.created_at >= cutoff_30)
         .one()
     )
     # 2026-05-28 P0 — explicit float() casts so a Decimal/Numeric column
@@ -283,7 +283,7 @@ def agent_drilldown(
         db.query(func.count(FixDirective.id))
         .join(Call, Call.id == FixDirective.call_id)
         .filter(
-            Call.agent_name.in_(raw_alias_names),
+            _agent_filter,
             FixDirective.status.in_(("pending", "in_progress")),
         )
         .scalar()
@@ -303,11 +303,11 @@ def agent_drilldown(
                 FROM fix_directives fd
                 JOIN calls c ON c.id = fd.call_id
                 LEFT JOIN customer_deals d ON d.id = c.deal_id
-                WHERE c.agent_name = ANY(:agents)
+                WHERE (c.agent_name = :agent OR c.agent_name ILIKE :agent_prefix OR c.agent_name ILIKE :agent_hyphen)
                   AND fd.status IN ('pending', 'in_progress')
                 """
             ),
-            {"agents": raw_alias_names},
+            {"agent": agent_name, "agent_prefix": f"{_safe} %", "agent_hyphen": f"{_safe}-%"},
         ).fetchone()
         open_value = _safe_float(row.v) if row else None
     except (OperationalError, ProgrammingError):
@@ -329,12 +329,12 @@ def agent_drilldown(
             FROM fix_directives fd
             JOIN calls c              ON c.id = fd.call_id
             LEFT JOIN customer_deals d ON d.id = c.deal_id
-            WHERE c.agent_name = ANY(:agents)
+            WHERE (c.agent_name = :agent OR c.agent_name ILIKE :agent_prefix OR c.agent_name ILIKE :agent_hyphen)
               AND fd.status = 'dead'
             ORDER BY rejected_at DESC NULLS LAST
             LIMIT 100
         """.format(dead_col=("fd.dead_reason" if has_dead_reason_col else "NULL"))
-        rows = db.execute(text(sql), {"agents": raw_alias_names}).fetchall()
+        rows = db.execute(text(sql), {"agent": agent_name, "agent_prefix": f"{_safe} %", "agent_hyphen": f"{_safe}-%"}).fetchall()
         for r in rows:
             dr = r.dead_reason
             if not dr and r.body:
@@ -385,7 +385,11 @@ def agent_drilldown(
             _Call.compliance_status, _Call.created_at, _Call.completed_at,
             _Call.reason, _Call.duration_seconds,
         )
-        .filter(_Call.agent_name.in_(raw_alias_names))
+        .filter(or_(
+            _Call.agent_name == agent_name,
+            _Call.agent_name.ilike(f"{_safe} %"),
+            _Call.agent_name.ilike(f"{_safe}-%"),
+        ))
         .order_by(_Call.created_at.desc())
         .limit(20)
         .all()
@@ -425,7 +429,7 @@ def agent_drilldown(
 
     total_calls_lifetime = (
         db.query(func.count(Call.id))
-        .filter(Call.agent_name.in_(raw_alias_names))
+        .filter(_agent_filter)
         .scalar()
         or 0
     )
@@ -436,7 +440,7 @@ def agent_drilldown(
     score_rows = (
         db.query(Call.score)
         .filter(
-            Call.agent_name.in_(raw_alias_names),
+            _agent_filter,
             Call.created_at >= cutoff_30,
             Call.score.isnot(None),
         )
@@ -464,12 +468,12 @@ def agent_drilldown(
                 SELECT f.severity, COUNT(*) AS n
                   FROM flags f
                   JOIN calls c ON c.id = f.call_id
-                 WHERE c.agent_name = ANY(:agents)
+                 WHERE (c.agent_name = :agent OR c.agent_name ILIKE :agent_prefix OR c.agent_name ILIKE :agent_hyphen)
                    AND f.created_at >= :cutoff
                  GROUP BY f.severity
                 """
             ),
-            {"agents": raw_alias_names, "cutoff": cutoff_30},
+            {"agent": agent_name, "agent_prefix": f"{_safe} %", "agent_hyphen": f"{_safe}-%", "cutoff": cutoff_30},
         ).fetchall()
         for r in sev_rows:
             # 2026-05-28 P0 — defensive str() coerce so a JSON-column row
@@ -491,7 +495,7 @@ def agent_drilldown(
         cp_rows = (
             db.query(Call.checkpoint_results)
             .filter(
-                Call.agent_name.in_(raw_alias_names),
+                _agent_filter,
                 Call.created_at >= cutoff_30,
                 Call.checkpoint_results.isnot(None),
             )
@@ -529,11 +533,12 @@ def agent_drilldown(
                 """
                 SELECT COALESCE(detected_supplier, 'Unknown') AS s, COUNT(*) AS n
                   FROM calls
-                 WHERE agent_name = ANY(:agents) AND created_at >= :cutoff
+                 WHERE (agent_name = :agent OR agent_name ILIKE :agent_prefix OR agent_name ILIKE :agent_hyphen)
+                   AND created_at >= :cutoff
                  GROUP BY s
                 """
             ),
-            {"agents": raw_alias_names, "cutoff": cutoff_30},
+            {"agent": agent_name, "agent_prefix": f"{_safe} %", "agent_hyphen": f"{_safe}-%", "cutoff": cutoff_30},
         ).fetchall():
             # 2026-05-28 P0 — defensive str() coerce so an unhashable
             # column value (json/array dialects) can't poison the dict
@@ -544,11 +549,12 @@ def agent_drilldown(
                 """
                 SELECT COALESCE(call_type, 'unset') AS t, COUNT(*) AS n
                   FROM calls
-                 WHERE agent_name = ANY(:agents) AND created_at >= :cutoff
+                 WHERE (agent_name = :agent OR agent_name ILIKE :agent_prefix OR agent_name ILIKE :agent_hyphen)
+                   AND created_at >= :cutoff
                  GROUP BY t
                 """
             ),
-            {"agents": raw_alias_names, "cutoff": cutoff_30},
+            {"agent": agent_name, "agent_prefix": f"{_safe} %", "agent_hyphen": f"{_safe}-%", "cutoff": cutoff_30},
         ).fetchall():
             call_type_mix[str(r.t) if r.t is not None else "unset"] = int(r.n)
     except (OperationalError, ProgrammingError):
@@ -564,12 +570,12 @@ def agent_drilldown(
                 """
                 SELECT COUNT(*) AS n
                   FROM calls
-                 WHERE agent_name = ANY(:agents)
+                 WHERE (agent_name = :agent OR agent_name ILIKE :agent_prefix OR agent_name ILIKE :agent_hyphen)
                    AND created_at >= :cutoff
                    AND (quality_check->>'verdict') = 'block'
                 """
             ),
-            {"agents": raw_alias_names, "cutoff": cutoff_30},
+            {"agent": agent_name, "agent_prefix": f"{_safe} %", "agent_hyphen": f"{_safe}-%", "cutoff": cutoff_30},
         ).fetchone()
         qc_block_count_30d = int(row.n) if row else 0
     except (OperationalError, ProgrammingError):
@@ -589,13 +595,13 @@ def agent_drilldown(
                   (NOW() AT TIME ZONE 'utc')::date - ((w.i + 1) * 7) AS week_start,
                   (
                     SELECT COUNT(*)::int FROM calls c
-                     WHERE c.agent_name = ANY(:agents)
+                     WHERE (c.agent_name = :agent OR c.agent_name ILIKE :agent_prefix OR c.agent_name ILIKE :agent_hyphen)
                        AND c.created_at >= (NOW() AT TIME ZONE 'utc')::date - ((w.i + 1) * 7)
                        AND c.created_at <  (NOW() AT TIME ZONE 'utc')::date - (w.i * 7)
                   ) AS total,
                   (
                     SELECT COUNT(*)::int FROM calls c
-                     WHERE c.agent_name = ANY(:agents)
+                     WHERE (c.agent_name = :agent OR c.agent_name ILIKE :agent_prefix OR c.agent_name ILIKE :agent_hyphen)
                        AND c.compliant IS TRUE
                        AND c.created_at >= (NOW() AT TIME ZONE 'utc')::date - ((w.i + 1) * 7)
                        AND c.created_at <  (NOW() AT TIME ZONE 'utc')::date - (w.i * 7)
@@ -604,7 +610,7 @@ def agent_drilldown(
                 ORDER BY w.i DESC
                 """
             ),
-            {"agents": raw_alias_names},
+            {"agent": agent_name, "agent_prefix": f"{_safe} %", "agent_hyphen": f"{_safe}-%"},
         ).fetchall()
         weekly_trend = [
             {
