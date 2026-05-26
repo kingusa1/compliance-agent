@@ -6,7 +6,26 @@ tags: [state, issues, gotchas, d9-widening, lag-fix, max-config, n-a-vocabulary,
 
 # Known issues / gotchas
 
-## 🚨 2026-05-27 — Open carry-forward after enterprise max-out config wave
+## 🚨 2026-05-27 PM — Status after the full-day agents wave (`e22f3c2`)
+
+| ID | severity | status | notes |
+|---|---|---|---|
+| D1 | HIGH | **FIXED e22f3c2** | NAME_PROMOTE_REVERSE: Deal→Call propagation when both non-placeholder and divergent |
+| D2 | MEDIUM | partial closure | BUSINESS_DETECT returned full TA name today; needs more samples to confirm regression closed |
+| D4 | MEDIUM | OPEN | Score volatility (likely improves with D10) |
+| D6 | HIGH | mitigated | 3s poll fallback still covers SSE per-call fan-out gap |
+| D10 | CRITICAL | **FIXED 3a84308** | n_a vocabulary (schema + analyzer + score math + chips + 7 tests) |
+| D13 | MEDIUM | **FIXED e22f3c2** | Orphan stubs from SHA-256 dedup — atomic conditional DELETE |
+| D14 | LOW | OPEN | Residual loop_lag ~1.5s (sync json paths in checkpoint_analyzer) |
+| D-QC | — | **NEW + SHIPPED dfcbb25** | QualityCheckerAgent live |
+| D-AGENT-XFER | — | **NEW + SHIPPED f032114+f5becf4** | Transfer-aware agent detection (Jack→Bradley) |
+| D-PASS-BTN | HIGH | **FIXED dfcbb25** | Name-based lookup for verdict overrides |
+
+Open items for next session: D14 (lag profiling), D4 (re-measure), D6 (deep SSE), QC banner UI build.
+
+---
+
+## 🚨 2026-05-27 AM — Open carry-forward after enterprise max-out config wave
 
 Today shipped D9 widening (supplier-peel re-raise) + LAG fix (off-loop file reads for 5 transcribers) + max-out pool/retry/anyio config (pool 30/60, STEP_RETRY 5, anyio 400, pool_timeout 20s) on a Railway 24 vCPU / 24 GB Pro replica. Soak test under new config: **0 of 7 calls failed** (vs 7 of 10 failed yesterday under pool 10/20). What's still open:
 

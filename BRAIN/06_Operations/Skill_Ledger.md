@@ -48,17 +48,6 @@ Columns:
 
 | timestamp | session | skill | role | task-id | status | evidence |
 |---|---|---|---|---|---|---|
-| 2026-05-26 08:49 | active | security-reviewer | auto-trigger | auth-trigger-false-positive-2026-05-27 | success: 0 CRIT/HIGH/MED/LOW; confirmed Depends() trigger matched BRAIN prose only, no auth code changed; file-read helpers no traversal risk; pool 30/60 no new DoS vector | agent ac4e00312c5ba2d72; full e745147..HEAD diff reviewed |
-| 2026-05-26 09:27 | active | database-reviewer | auto-trigger | n-a-vocab-migration | success: 0 CRIT/0 HIGH blocking; idempotent IF NOT EXISTS verified; partial index correct; lock impact metadata-only at 10k rows; chain validated single-head | agent afa907598b880348c |
-| 2026-05-26 09:27 | active | python-reviewer | auto-trigger | n-a-vocab-backend | success: 2 HIGH (4 missed callsites, dict access divergence) + 1 MED (mutation) + 1 LOW (qualifier list) all addressed; 58/58 tests green | agent a844b147a641ef035 |
-| 2026-05-26 09:27 | active | code-reviewer | auto-trigger | n-a-vocab-frontend | success: 1 HIGH (n_a counter+filter) addressed in page.tsx and SegmentCards.tsx; 3 MED/LOW noted, no impact on chip rendering; tsc clean on touched files | agent a0403d43371763064 |
-| 2026-05-26 09:46 | active | executor | primary | transfer-aware-detection-jack-giles | success: added _AGENT_TRANSFER_CUE regex + transfer_targets suppression + LLM prompt section explaining lead_gen opener-vs-closer + concrete Jack/Bradley example | transcript 97d052a8 captured agent='Bradley' but real opener is 'Jack Giles' per regex + LLM ground-truth |
-| 2026-05-26 09:46 | active | executor | primary | pass-button-name-lookup | success: backend route accepts ?name=X query param; frontend mutation + optimistic update both resolve by name first, fall back to int index | cpCards reorders script-defined CPs vs verdicts; position N mismatched call.checkpoint_results[N] |
-| 2026-05-26 09:46 | active | executor | primary | quality-checker-agent | success: new agent/quality_checker.py + 2026_05_27_quality_check migration + Call.quality_check column + bg task in orchestrator + verdict_changed+quality_check_done SSE events | owner mandate 2026-05-27: every record gets second-opinion AI agent |
-| 2026-05-26 09:56 | active | python-reviewer | auto-trigger | agents-wave-f032114 | success: 1 CRIT (db.commit removed) + 1 HIGH (same-name suppression deadlock) + 1 MED + 1 LOW + 1 LOW all addressed in f5becf4 | agent a7b7b95c73413ab66 |
-| 2026-05-26 09:56 | active | database-reviewer | auto-trigger | quality-check-migration | success: 0 CRIT/HIGH; 2 MED (ORM type variant, SQLite bare except) deferred as polish; lock impact metadata-only at 7-50k rows | agent aeb25f5b1ad068c9e |
-| 2026-05-26 09:56 | active | code-reviewer | auto-trigger | review-by-name-mutation | success: 1 HIGH (duplicate-name collision) + 1 MED (whitespace name guard) addressed; rollback + TS narrowing + deprecation + SSE wiring all clean | agent ad052b86576a43b54 |
-| 2026-05-26 10:19 | active | python-reviewer | auto-trigger | d13-d1d2-polish | success: 1 HIGH (race condition in dedup_stub_cleanup) + 3 MED (NAME_PROMOTE_REVERSE doc gap, async task GC warning, alembic downgrade bare except) + 2 LOW; HIGH + 2 MED addressed; 58/58 tests green | agent ab914bdcea77b47fd; atomic conditional DELETE pattern |
 
 ---
 
@@ -172,6 +161,22 @@ Columns:
 | 2026-05-26 08:13 | active | python-reviewer | auto-trigger | pool-bump-20-40 | success: bumped pool_size 10 to 20, max_overflow 20 to 40 (60 max) to absorb 9-way bulk-upload burst; test cap raised 15/30 to 25/50; 51/51 tests green | live log captured QueuePool TimeoutError at score+finalize under 9 concurrent pipelines |
 | 2026-05-26 08:19 | active | python-reviewer | auto-trigger | enterprise-max-config | success: bumped pool_size 20 to 30, max_overflow 40 to 60 (90 max sessions), pool_timeout 10s to 20s, STEP_RETRY 3 to 5 attempts, anyio threadpool 200 to 400 tokens; test caps updated; 51/51 tests green | owner maxed Railway to 24 vCPU + 24 GB Pro replica; soak test exposed 30-max pool exhaustion at 9-way concurrency |
 | 2026-05-26 08:46 | active | playwright-mcp | primary | soak-test-new-config-validation | success: 0 of 7 calls failed under maxed config (vs 7 of 10 yesterday under pool 10/20); D9 widening + LAG fix validated live | Railway log captured SUPPLIER_PEEL_RETRYABLE + STEP_RETRY + SAVED on multiple call_ids; rederive scanned=7 changed=0 |
+
+### 2026-05-26 — 2026-05-27-full-day-agents-wave
+
+| timestamp | session | skill | role | task-id | status | evidence |
+|---|---|---|---|---|---|---|
+| 2026-05-26 08:49 | active | security-reviewer | auto-trigger | auth-trigger-false-positive-2026-05-27 | success: 0 CRIT/HIGH/MED/LOW; confirmed Depends() trigger matched BRAIN prose only, no auth code changed; file-read helpers no traversal risk; pool 30/60 no new DoS vector | agent ac4e00312c5ba2d72; full e745147..HEAD diff reviewed |
+| 2026-05-26 09:27 | active | database-reviewer | auto-trigger | n-a-vocab-migration | success: 0 CRIT/0 HIGH blocking; idempotent IF NOT EXISTS verified; partial index correct; lock impact metadata-only at 10k rows; chain validated single-head | agent afa907598b880348c |
+| 2026-05-26 09:27 | active | python-reviewer | auto-trigger | n-a-vocab-backend | success: 2 HIGH (4 missed callsites, dict access divergence) + 1 MED (mutation) + 1 LOW (qualifier list) all addressed; 58/58 tests green | agent a844b147a641ef035 |
+| 2026-05-26 09:27 | active | code-reviewer | auto-trigger | n-a-vocab-frontend | success: 1 HIGH (n_a counter+filter) addressed in page.tsx and SegmentCards.tsx; 3 MED/LOW noted, no impact on chip rendering; tsc clean on touched files | agent a0403d43371763064 |
+| 2026-05-26 09:46 | active | executor | primary | transfer-aware-detection-jack-giles | success: added _AGENT_TRANSFER_CUE regex + transfer_targets suppression + LLM prompt section explaining lead_gen opener-vs-closer + concrete Jack/Bradley example | transcript 97d052a8 captured agent='Bradley' but real opener is 'Jack Giles' per regex + LLM ground-truth |
+| 2026-05-26 09:46 | active | executor | primary | pass-button-name-lookup | success: backend route accepts ?name=X query param; frontend mutation + optimistic update both resolve by name first, fall back to int index | cpCards reorders script-defined CPs vs verdicts; position N mismatched call.checkpoint_results[N] |
+| 2026-05-26 09:46 | active | executor | primary | quality-checker-agent | success: new agent/quality_checker.py + 2026_05_27_quality_check migration + Call.quality_check column + bg task in orchestrator + verdict_changed+quality_check_done SSE events | owner mandate 2026-05-27: every record gets second-opinion AI agent |
+| 2026-05-26 09:56 | active | python-reviewer | auto-trigger | agents-wave-f032114 | success: 1 CRIT (db.commit removed) + 1 HIGH (same-name suppression deadlock) + 1 MED + 1 LOW + 1 LOW all addressed in f5becf4 | agent a7b7b95c73413ab66 |
+| 2026-05-26 09:56 | active | database-reviewer | auto-trigger | quality-check-migration | success: 0 CRIT/HIGH; 2 MED (ORM type variant, SQLite bare except) deferred as polish; lock impact metadata-only at 7-50k rows | agent aeb25f5b1ad068c9e |
+| 2026-05-26 09:56 | active | code-reviewer | auto-trigger | review-by-name-mutation | success: 1 HIGH (duplicate-name collision) + 1 MED (whitespace name guard) addressed; rollback + TS narrowing + deprecation + SSE wiring all clean | agent ad052b86576a43b54 |
+| 2026-05-26 10:19 | active | python-reviewer | auto-trigger | d13-d1d2-polish | success: 1 HIGH (race condition in dedup_stub_cleanup) + 3 MED (NAME_PROMOTE_REVERSE doc gap, async task GC warning, alembic downgrade bare except) + 2 LOW; HIGH + 2 MED addressed; 58/58 tests green | agent ab914bdcea77b47fd; atomic conditional DELETE pattern |
 
 ---
 

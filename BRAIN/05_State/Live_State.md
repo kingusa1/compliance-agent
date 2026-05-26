@@ -1,10 +1,70 @@
 ---
 created: 2026-05-10
 updated: 2026-05-27
-tags: [state, live, ground-truth, d9-widening, lag-off-loop-reads, enterprise-max-config, zero-failure-soak]
+tags: [state, live, ground-truth, d10-n-a, transfer-aware-agent, quality-checker-agent, slow-button, pass-button-name-lookup, d13-orphan-stubs, d1-d2-name-promote-reverse]
 ---
 
-# Live State — D9 widening + LAG fix + enterprise max-out config (2026-05-27, `9e506e4`)
+# Live State — Full-day agents wave (2026-05-27, `e22f3c2`)
+
+> 🟢 **2026-05-27 — Tip `e22f3c2` on `main`. Railway healthcheck PASS. 9 commit waves shipped across the day; reviewer trio fired on every push; doctrine integrity verify PASS on every push.**
+>
+> ## What shipped today (in chronological order)
+>
+> ### Wave 1-3 — D9 widening + LAG fix + enterprise max-out config (cd6f157 → 27e16ec → 9e506e4)
+> Supplier-peel SAVEPOINT re-raise + transcriber off-loop reads + pool 30/60 + retries 5 + anyio 400 (Railway 24 vCPU / 24 GB Pro replica). Soak validated: 0/7 calls failed under 9-way burst vs 7/10 yesterday. loop_lag dropped 13393ms → 1469ms.
+>
+> ### Wave 5 — D10 n_a vocabulary + slow-button fix + OpenRouter audit (3a84308)
+> - **Slow Pass / Override → Fail buttons now instant** — backend `abstract_and_store_review` made fire-and-forget; frontend `useReviewCheckpoint` got optimistic update; `useSubmitVerdict` off-page invalidations switched to `refetchType: "none"`.
+> - **`embed_text` now routes via OpenRouter** when OPENROUTER_API_KEY is set; closes the "embedding failed: Missing credentials" log spam.
+> - **Realtime everywhere** — new SSE event `verdict_changed` fans out to other tabs.
+> - **D10 n_a vocabulary** — schema migration + 14-prompt update + score math + frontend chip + 7 tests. Closes ~21% of AI verdict accuracy gap per analyst report (pattern 1 alone removes ~16 phantom failures per call).
+> - **OpenRouter wiring audit** — LLM dispatch, agent chat, feedback embeddings, RAG embeddings, Gemini STT all routed through OpenRouter; Deepgram/AssemblyAI/Cohere/Groq STT direct (OpenRouter doesn't proxy STT).
+>
+> ### Wave 6 — Transfer-aware agent detection + Pass-button name lookup + QualityCheckerAgent (f032114 → f5becf4 → dfcbb25)
+> **Jack Giles vs Bradley (live call 97d052a8):**
+> - Transcript: `[00:08] Agent: yeah that's me jack giles ... [00:47] Agent: i'm gonna get you through to bradley now he's my pricing manager`. AI picked Bradley wrongly.
+> - New `_AGENT_TRANSFER_CUE` regex matches 7 hand-off phrase families.
+> - `_extract_agent_name_regex` rejects transfer targets unless the same first name also appears in a self-intro (same-name deadlock guard).
+> - `DETECT_NAMES_PROMPT` adds a TRANSFER / HAND-OFF RULE section with the canonical Jack→Bradley example.
+>
+> **Pass button broken for some checkpoints:**
+> - Root cause: `cpCards` reorders script-defined CPs vs verdicts; UI position N ≠ `call.checkpoint_results[N]`.
+> - Backend route accepts `?name=X` query param; resolves position-anchored > first-match-by-name > int index (back-compat).
+> - Frontend mutation + optimistic update both send + resolve by name.
+>
+> **QualityCheckerAgent (new agent):**
+> - `app/agent/quality_checker.py` (298 lines) — second-opinion AI agent.
+> - 5 audit checks: AGENT_NAME (with explicit transfer-target rule), CUSTOMER_NAME, SUPPLIER, CALL_TYPE, VERDICT consistency.
+> - Returns `{verdict, issues, score, summary, model, checked_at, elapsed_ms}` JSON envelope.
+> - Migration `2026_05_27_quality_check` adds `Call.quality_check` JSONB + partial expression index.
+> - Wired into orchestrator as fire-and-forget `asyncio.create_task` after `_trace_step("finalize")`. Done-callback consumes exceptions so GC doesn't log "Task exception was never retrieved".
+> - New SSE event `quality_check_done`.
+> - **Restored `db.commit()` in `_step_finalize`** — python-reviewer CRITICAL catch; an earlier revert had dropped it.
+>
+> ### Wave 7 — D13 dedup-stub cleanup + D1/D2 NAME_PROMOTE_REVERSE + polish (e22f3c2)
+> **D13 closure:**
+> - Owner-reported "30% of bulk uploads silently dropped" was actually content-hash dedups against earlier sessions.
+> - `/api/calls/upload` dedup path now atomically deletes the caller-supplied stub when no Call links and the name is a placeholder. Single conditional DELETE (race-safe).
+>
+> **D1/D2 closure:**
+> - New NAME_PROMOTE_REVERSE in `_step_finalize`: when Call and Deal customer_names both non-placeholder + diverge, set Call.customer_name = Deal.customer_name. Owner mandate honored.
+>
+> **Reviewer polish:**
+> - `_bg_quality_check` imports hoisted out of closure.
+> - `except asyncio.CancelledError` branch for graceful uvicorn shutdown observability.
+> - Task done callback consumes exceptions.
+> - Alembic SQLite path narrows `except Exception` to `except OperationalError` for "duplicate column" / "no such column" only.
+>
+> ## Open carry-forward for next session
+>
+> 1. **D14 residual loop_lag ~1.5s** — sync json paths in checkpoint_analyzer batch dispatch.
+> 2. **D4 score volatility** — re-measure after D10 fully bakes.
+> 3. **D6 SSE per-call fan-out gap** — still mitigated by 3 s poll fallback.
+> 4. **QC banner UI on call detail page** — backend writes `Call.quality_check`; frontend doesn't render it yet.
+> 5. **Inngest Cloud Pro** ($75/mo) — pending owner approval.
+> 6. **Supabase Micro → 2XL** ($480/mo) — pending owner approval.
+
+> ## ⏪ HISTORICAL — D9 widening + LAG fix + enterprise max-out config (2026-05-27, `9e506e4`)
 
 > 🟢 **2026-05-27 08:21 UTC — Tip `9e506e4` on `main`. Railway Pro 24 vCPU / 24 GB healthcheck PASS. Soak test under maxed config: 0 of 7 calls failed (vs 7 of 10 failed yesterday under pool 10/20).**
 >
