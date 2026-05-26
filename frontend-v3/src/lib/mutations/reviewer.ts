@@ -114,7 +114,11 @@ export function useReviewCheckpoint() {
     mutationFn: ({ callId, index, verdict, notes, name }: CheckpointReviewArgs) => {
       const qs = new URLSearchParams({ verdict });
       if (notes) qs.set("notes", notes);
-      if (name) qs.set("name", name);
+      // 2026-05-27 code-reviewer MEDIUM — only forward name when it's
+      // non-empty after trim. Whitespace would match any malformed row
+      // whose .name is also blank, patching the wrong CP.
+      const trimmedName = name?.trim();
+      if (trimmedName) qs.set("name", trimmedName);
       return putJson(
         `/api/calls/${encodeURIComponent(callId)}/checkpoint/${index}/review?${qs.toString()}`,
       );
@@ -140,14 +144,34 @@ export function useReviewCheckpoint() {
           const parsed = JSON.parse(prev.checkpoint_results as string);
           if (Array.isArray(parsed)) {
             let resolvedIndex = -1;
-            if (name) {
-              const target = name.trim().toLowerCase();
-              resolvedIndex = parsed.findIndex(
-                (r: unknown) =>
-                  typeof r === "object" && r !== null &&
-                  typeof (r as { name?: unknown }).name === "string" &&
-                  ((r as { name: string }).name).trim().toLowerCase() === target,
-              );
+            // 2026-05-27 code-reviewer HIGH — checkpoint_results MAY contain
+            // duplicate `.name` rows (the JSON column has no uniqueness
+            // constraint, and the frontend cpCards union can produce
+            // duplicates when a script-defined CP also has an unmatched
+            // verdict). When the caller's `index` lands on a row whose
+            // name matches the supplied `name`, prefer THAT row over the
+            // first-match — it disambiguates the duplicate by position.
+            // Only fall back to the broad first-match when no
+            // position-aligned name match exists.
+            const target = name?.trim().toLowerCase();
+            if (target) {
+              // 1. Position-anchored: caller's index also has the right name.
+              if (
+                index >= 0 && index < parsed.length &&
+                typeof parsed[index] === "object" && parsed[index] !== null &&
+                typeof (parsed[index] as { name?: unknown }).name === "string" &&
+                ((parsed[index] as { name: string }).name).trim().toLowerCase() === target
+              ) {
+                resolvedIndex = index;
+              } else {
+                // 2. First-match-by-name fallback.
+                resolvedIndex = parsed.findIndex(
+                  (r: unknown) =>
+                    typeof r === "object" && r !== null &&
+                    typeof (r as { name?: unknown }).name === "string" &&
+                    ((r as { name: string }).name).trim().toLowerCase() === target,
+                );
+              }
             }
             if (resolvedIndex < 0 && index >= 0 && index < parsed.length) {
               resolvedIndex = index;

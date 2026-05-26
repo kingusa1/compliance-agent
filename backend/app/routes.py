@@ -929,15 +929,35 @@ async def review_checkpoint_verdict(
         results = json.loads(call.checkpoint_results)
     except json.JSONDecodeError:
         raise HTTPException(400, "Call.checkpoint_results is not valid JSON")
-    # Resolve the actual index: prefer name match (order-independent),
-    # fall back to the int passed in the URL.
+    # Resolve the actual index. 2026-05-27 code-reviewer HIGH — when
+    # `checkpoint_results` has duplicate `.name` rows, prefer the
+    # position-anchored match first (caller's `cp_index` also has the
+    # matching name) so the override doesn't always land on the first
+    # occurrence. Falls back to first-match-by-name, then to int `cp_index`.
     resolved_index: int = cp_index
     if name:
         norm_target = name.strip().lower()
-        for i, r in enumerate(results):
-            if isinstance(r, dict) and (r.get("name") or "").strip().lower() == norm_target:
-                resolved_index = i
-                break
+        if norm_target:
+            # 1. Position-anchored: caller's int index also has the right name.
+            if 0 <= cp_index < len(results):
+                row = results[cp_index]
+                if (
+                    isinstance(row, dict)
+                    and (row.get("name") or "").strip().lower() == norm_target
+                ):
+                    resolved_index = cp_index
+                else:
+                    # 2. First-match-by-name fallback.
+                    for i, r in enumerate(results):
+                        if isinstance(r, dict) and (r.get("name") or "").strip().lower() == norm_target:
+                            resolved_index = i
+                            break
+            else:
+                # cp_index out of range — still try first-match-by-name.
+                for i, r in enumerate(results):
+                    if isinstance(r, dict) and (r.get("name") or "").strip().lower() == norm_target:
+                        resolved_index = i
+                        break
     if resolved_index < 0 or resolved_index >= len(results):
         raise HTTPException(
             400,

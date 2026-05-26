@@ -55,6 +55,9 @@ Columns:
 | 2026-05-26 09:46 | active | executor | primary | transfer-aware-detection-jack-giles | success: added _AGENT_TRANSFER_CUE regex + transfer_targets suppression + LLM prompt section explaining lead_gen opener-vs-closer + concrete Jack/Bradley example | transcript 97d052a8 captured agent='Bradley' but real opener is 'Jack Giles' per regex + LLM ground-truth |
 | 2026-05-26 09:46 | active | executor | primary | pass-button-name-lookup | success: backend route accepts ?name=X query param; frontend mutation + optimistic update both resolve by name first, fall back to int index | cpCards reorders script-defined CPs vs verdicts; position N mismatched call.checkpoint_results[N] |
 | 2026-05-26 09:46 | active | executor | primary | quality-checker-agent | success: new agent/quality_checker.py + 2026_05_27_quality_check migration + Call.quality_check column + bg task in orchestrator + verdict_changed+quality_check_done SSE events | owner mandate 2026-05-27: every record gets second-opinion AI agent |
+| 2026-05-26 09:56 | active | python-reviewer | auto-trigger | agents-wave-f032114 | success: 1 CRIT (db.commit removed) + 1 HIGH (same-name suppression deadlock) + 1 MED + 1 LOW + 1 LOW all addressed in f5becf4 | agent a7b7b95c73413ab66 |
+| 2026-05-26 09:56 | active | database-reviewer | auto-trigger | quality-check-migration | success: 0 CRIT/HIGH; 2 MED (ORM type variant, SQLite bare except) deferred as polish; lock impact metadata-only at 7-50k rows | agent aeb25f5b1ad068c9e |
+| 2026-05-26 09:56 | active | code-reviewer | auto-trigger | review-by-name-mutation | success: 1 HIGH (duplicate-name collision) + 1 MED (whitespace name guard) addressed; rollback + TS narrowing + deprecation + SSE wiring all clean | agent ad052b86576a43b54 |
 
 ---
 
