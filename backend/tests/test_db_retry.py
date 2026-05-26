@@ -541,20 +541,26 @@ class TestAsyncHelper:
 
 class TestPoolConfig:
     """The pool sizing matters for Supavisor (transaction-mode pooler)
-    behaviour. Drift to a too-large pool reintroduces the mid-query
-    disconnect window we just spent two days closing.
+    behaviour. The original 25/50 config sat idle past Supavisor's
+    ~5min kill window and produced mid-query SSL disconnects; the
+    2026-05-25 retune dropped to 10/20 to fit under that window.
 
-    Bounds:
-      pool_size       ≤ 15   — Supavisor multiplexes; tiny warm pool
-                               is enough.
-      max_overflow    ≤ 30   — burst headroom only.
-      pool_recycle    ≤ 600  — beat Supavisor's idle-kill window.
+    Bounds (2026-05-27 retune, post bulk-upload soak test):
+      pool_size       ≤ 25   — Supavisor multiplexes; warm pool stays small
+                               but the score+finalize WORKFLOW_STEP path
+                               under 9-way burst exhausted 10/20=30, so the
+                               cap was lifted to 25/50=75. TCP keepalives
+                               + pool_recycle≤1800 + tcp_user_timeout=10s
+                               now mitigate the original idle-kill issue,
+                               so a slightly warmer pool is safe.
+      max_overflow    ≤ 50   — burst headroom for bulk-upload concurrency.
+      pool_recycle    ≤ 1800 — beat Supavisor's idle-kill window.
     """
 
     def test_pool_size_capped(self) -> None:
         pool = db_module.engine.pool
-        assert pool.size() <= 15, (
-            f"pool_size={pool.size()} exceeds Supavisor-safe cap (15). "
+        assert pool.size() <= 25, (
+            f"pool_size={pool.size()} exceeds Supavisor-safe cap (25). "
             "Larger pools sit idle past Supavisor's ~5min kill window and "
             "produce mid-query SSL disconnects."
         )
@@ -562,8 +568,8 @@ class TestPoolConfig:
     def test_max_overflow_capped(self) -> None:
         pool = db_module.engine.pool
         max_overflow = getattr(pool, "_max_overflow", 20)
-        assert max_overflow <= 30, (
-            f"max_overflow={max_overflow} exceeds Supavisor-safe cap (30)."
+        assert max_overflow <= 50, (
+            f"max_overflow={max_overflow} exceeds Supavisor-safe cap (50)."
         )
 
     def test_recycle_under_supavisor_kill_window(self) -> None:

@@ -49,13 +49,21 @@ engine = create_engine(
     #
     # New config (mirrors Supabase's published guidance for Supavisor +
     # SQLAlchemy):
-    #   pool_size=10        — small warm pool; transaction-mode pooler
+    #   pool_size=20        — small warm pool; transaction-mode pooler
     #                         multiplexes many app connections onto each
-    #                         server connection, so a tiny warm set is
-    #                         enough. 10 × N replicas stays under the
-    #                         per-project connection ceiling.
-    #   max_overflow=20     — burst headroom for upload + reanalyze
-    #                         spikes without blowing the pooler.
+    #                         server connection. Bumped from 10 → 20 on
+    #                         2026-05-27 after the 9-way concurrent soak
+    #                         exposed `QueuePool limit of size 10 overflow
+    #                         20 reached` TimeoutErrors at the score +
+    #                         finalize steps. Per-step SessionLocal
+    #                         (since 2026-05-25) + the supplier-peel
+    #                         SELECT-FOR-UPDATE holding a slot for up to
+    #                         15s × N pipelines = exhaustion at concurrency
+    #                         ≥6. 20 × 1 replica = 20 warm conns, well
+    #                         under Supavisor's 200-client per-Micro cap.
+    #   max_overflow=40     — bumped from 20 → 40. Burst headroom for
+    #                         upload + reanalyze under 10+ concurrent
+    #                         pipelines. 20+40=60 total ≪ Supavisor 200.
     #   pool_recycle=240    — 60s safety margin under Supavisor's 300s
     #                         `server_idle_timeout`. Recycling at
     #                         exactly 300 races the pooler's kill timer:
@@ -70,8 +78,8 @@ engine = create_engine(
     #                         under burst load; a 10s timeout returns a
     #                         503 quickly so the frontend's retry kicks
     #                         in.
-    pool_size=10,
-    max_overflow=20,
+    pool_size=20,
+    max_overflow=40,
     # 2026-05-26 — Bumped pool_recycle 240→1800 (30 min). Per
     # Close.com's robust-connections recipe + CYBERTEC's TCP-keepalive
     # guidance, `pool_recycle` should be LONGER than typical transaction
