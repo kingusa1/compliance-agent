@@ -72,7 +72,15 @@ def test_logged_step_emits_workflow_step_logs_on_success(monkeypatch):
     class _ListHandler(logging.Handler):
         def emit(self, record): captured.append(record)
 
-    h = _ListHandler(level=logging.INFO)
+    # 2026-05-24: the start-of-step log was demoted to DEBUG in
+    # workflows/process_call.py:_logged_step to stop saturating Railway's
+    # 500 lines/s replica budget. The pipeline_step_log table row is
+    # the load-bearing observability artefact for "this step began";
+    # the log line is decorative. Capture at DEBUG so this test still
+    # exercises both start + ok emit paths.
+    h = _ListHandler(level=logging.DEBUG)
+    prior_level = compliance_logger.level
+    compliance_logger.setLevel(logging.DEBUG)
     compliance_logger.addHandler(h)
     try:
         async def _ok():
@@ -85,10 +93,11 @@ def test_logged_step_emits_workflow_step_logs_on_success(monkeypatch):
         messages = [r.getMessage() for r in captured]
         starts = [m for m in messages if "WORKFLOW_STEP step=transcribe" in m and "status=start" in m]
         oks = [m for m in messages if "WORKFLOW_STEP step=transcribe" in m and "status=ok" in m]
-        assert starts, f"expected start log, got: {messages}"
+        assert starts, f"expected start log (DEBUG), got: {messages}"
         assert oks, f"expected ok log, got: {messages}"
     finally:
         compliance_logger.removeHandler(h)
+        compliance_logger.setLevel(prior_level)
 
 
 def test_logged_step_emits_err_log_and_reraises_on_failure(monkeypatch):
