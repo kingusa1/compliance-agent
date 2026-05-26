@@ -5,14 +5,37 @@ from contextlib import asynccontextmanager
 
 import sentry_sdk
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.encoders import ENCODERS_BY_TYPE
+from fastapi.exceptions import ResponseValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
+from pydantic_core import PydanticSerializationError
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
 from sqlalchemy import text
+from sqlalchemy.engine import Row
 from sqlalchemy.exc import DBAPIError, DisconnectionError, OperationalError
+
+# 2026-05-28 P0 — global Row→dict encoder.
+#
+# Production observed: ``PydanticSerializationError: Unable to serialize
+# unknown type: <class 'sqlalchemy.engine.row.Row'>`` firing on a route
+# whose handler accidentally bubbled a raw SQLAlchemy ``Row`` (typically
+# from ``db.execute(text(...)).fetchone()`` or ``.fetchall()``) up through
+# FastAPI's ``serialize_response``. The crash takes the route to a 500.
+#
+# Registering ``Row → dict(r._mapping)`` in FastAPI's
+# ``ENCODERS_BY_TYPE`` makes ``jsonable_encoder`` (used for every route
+# WITHOUT a ``response_model``) handle Row transparently. For routes WITH
+# a ``response_model``, the dedicated exception handler below catches
+# the PydanticSerializationError, logs the offending path, and falls
+# back to ``jsonable_encoder`` so the response succeeds with a clean
+# dict payload instead of cascading a 500. The handler logs enough
+# diagnostic context (route path, error message, stack location) to
+# pinpoint the offending route across the next release.
+ENCODERS_BY_TYPE[Row] = lambda r: dict(r._mapping)
 
 import inngest.fast_api
 
@@ -421,6 +444,108 @@ def _is_disconnect(exc: BaseException) -> bool:
         return True
     msg = str(exc).lower()
     return any(sig in msg for sig in _DB_DISCONNECT_SIGNATURES)
+
+
+def _row_safety_diag(request: Request) -> tuple[str, str]:
+    """Extract route template + endpoint qualname from the request scope.
+
+    Falls back to ``request.url.path`` + ``"unknown"`` when the scope is
+    missing the typed route handle (e.g., the request hit a middleware
+    short-circuit before routing resolved). Used by both Row-safety
+    handlers below so they emit the same diagnostic shape.
+    """
+    try:
+        route = request.scope.get("route")
+        route_path = getattr(route, "path", request.url.path)
+        endpoint_name = getattr(getattr(route, "endpoint", None), "__qualname__", "unknown")
+    except Exception:  # noqa: BLE001 — diagnostic helper, never raise
+        route_path = request.url.path
+        endpoint_name = "unknown"
+    return route_path, endpoint_name
+
+
+@app.exception_handler(ResponseValidationError)
+async def _response_validation_row_handler(
+    request: Request, exc: ResponseValidationError
+) -> JSONResponse:
+    """Recover from ResponseValidationError on a leaked SQLAlchemy Row.
+
+    FastAPI runs ``response_field.validate()`` BEFORE ``serialize()`` when
+    a route has a ``response_model``. A raw ``sqlalchemy.engine.row.Row``
+    at the top level (e.g., a forgotten ``.fetchone()`` / ``.fetchall()``)
+    typically fails ``validate()`` first and FastAPI raises
+    ``ResponseValidationError`` — never reaching the ``serialize()``
+    layer that would have raised ``PydanticSerializationError``. So this
+    handler is the actual catcher for the top-level-Row failure mode.
+
+    Returns 500 with ``Retry-After: 1`` so the frontend's TanStack Query
+    retry layer absorbs the blip with bounded backoff while engineering
+    pinpoints the offending route from the structured log line.
+    """
+    route_path, endpoint_name = _row_safety_diag(request)
+    log.error(
+        "response_validation_error path=%s method=%s route_template=%s "
+        "endpoint=%s err=%s",
+        request.url.path,
+        request.method,
+        route_path,
+        endpoint_name,
+        str(exc)[:500],
+    )
+    try:
+        sentry_sdk.capture_exception(exc)
+    except Exception as sentry_err:  # noqa: BLE001 — Sentry must never break a request
+        log.debug("sentry_capture_failed: %r", sentry_err)
+    return JSONResponse(
+        {
+            "detail": (
+                "Response serialization failed. Engineering has been "
+                "notified. Please retry."
+            ),
+        },
+        status_code=500,
+        headers={"Retry-After": "1"},
+    )
+
+
+@app.exception_handler(PydanticSerializationError)
+async def _pydantic_row_serialization_handler(
+    request: Request, exc: PydanticSerializationError
+) -> JSONResponse:
+    """Recover from PydanticSerializationError raised in serialize_response.
+
+    Companion to ``_response_validation_row_handler``. ``Row`` objects
+    nested DEEP inside a passing ``validate()`` (e.g., a Row buried in
+    a JSON column that was loaded raw) survive validation but blow up
+    in ``dump_python()``. This handler catches that narrower case.
+
+    Same response contract as the validation handler: 500 + Retry-After
+    so TanStack Query backs off bounded retries instead of looping.
+    """
+    route_path, endpoint_name = _row_safety_diag(request)
+    log.error(
+        "pydantic_serialization_error path=%s method=%s route_template=%s "
+        "endpoint=%s err=%s",
+        request.url.path,
+        request.method,
+        route_path,
+        endpoint_name,
+        str(exc)[:500],
+    )
+    try:
+        sentry_sdk.capture_exception(exc)
+    except Exception as sentry_err:  # noqa: BLE001 — Sentry must never break a request
+        log.debug("sentry_capture_failed: %r", sentry_err)
+    return JSONResponse(
+        {
+            "detail": (
+                "Response serialization failed. Engineering has been "
+                "notified. Please retry."
+            ),
+        },
+        status_code=500,
+        headers={"Retry-After": "1"},
+    )
 
 
 @app.exception_handler(OperationalError)

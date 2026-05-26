@@ -132,6 +132,40 @@ export type CallAudioUrlResponse = {
   url: string;
 };
 
+// 2026-05-28 (PHASE 1) — composite call-detail bundle endpoint shape.
+// Backend route: GET /api/calls/{id}/bundle (routes.py:2168). Collapses
+// detail + segments + words + script_checkpoints + audio_url into ONE
+// authed round-trip, cutting the call-detail page from 5 sequential
+// ~500ms Railway→Supabase queries down to ~1. See BRAIN/04_Sessions/
+// 2026_05_27_Session_pm_perf_queue_agents_bundle.md for the design.
+export type CallBundleSegment = {
+  id: string;
+  idx: number;
+  stage: string;
+  rubric_kind?: string | null;
+  rubric_label?: string | null;
+  rubric_source_id?: string | null;
+  start_word: number | null;
+  end_word: number | null;
+  score: string | null;
+  bucket: string | null;
+  compliance_status: string | null;
+  compliant: boolean | null;
+  critical_breaches: number | null;
+  high_breaches: number | null;
+  medium_breaches: number | null;
+  confidence?: number | null;
+  checkpoint_results: unknown[];
+};
+
+export type CallBundleResponse = {
+  call: Call;
+  segments: CallBundleSegment[];
+  words: WordToken[];
+  script_checkpoints: ScriptCheckpoint[];
+  audio_url: string | null;
+};
+
 // ── Query keys ────────────────────────────────────────────────────
 
 export const reviewerKeys = {
@@ -142,6 +176,7 @@ export const reviewerKeys = {
   callFlags: (id: string) => ["call", id, "flags"] as const,
   callDirectives: (id: string) => ["call", id, "directives"] as const,
   callAudioUrl: (id: string) => ["call", id, "audio-url"] as const,
+  callBundle: (id: string) => ["call", id, "bundle"] as const,
   findings: (params?: FindingsParams) => ["findings", params ?? {}] as const,
   savedViews: () => ["saved-views"] as const,
 };
@@ -180,6 +215,10 @@ export function fetchCallDirectives(id: string): Promise<{ directives: Directive
 
 export function fetchCallAudioUrl(id: string): Promise<CallAudioUrlResponse> {
   return apiFetch<CallAudioUrlResponse>(_callPath(id, "/audio-url"));
+}
+
+export function fetchCallBundle(id: string): Promise<CallBundleResponse> {
+  return apiFetch<CallBundleResponse>(_callPath(id, "/bundle"));
 }
 
 export function fetchFindings(params: FindingsParams = {}): Promise<FindingsResponse> {
@@ -339,6 +378,42 @@ export function useCallDirectivesQuery(id: string) {
     queryKey: reviewerKeys.callDirectives(id),
     queryFn: () => fetchCallDirectives(id),
     enabled: !!id,
+  });
+}
+
+/**
+ * Composite call-detail bundle hook (2026-05-28 PHASE 1).
+ *
+ * Single GET /api/calls/{id}/bundle replaces 5 separate fetches:
+ *   - useCallDetailQuery     → bundle.call
+ *   - useCallWordsQuery      → bundle.words
+ *   - useCallCheckpointsQuery → bundle.script_checkpoints
+ *   - useCallAudioUrlQuery   → bundle.audio_url
+ *   - segments useQuery       → bundle.segments
+ *
+ * Saves ~1.5-2.0s of perceived load per call-detail page open by
+ * collapsing 5 sequential ~500ms Railway↔Supabase round-trips into one.
+ *
+ * Status-conditional 3s safety-net poll mirrors useCallDetailQuery's
+ * policy so the bundle auto-refreshes while the pipeline is in-flight
+ * even when the per-call SSE feed drops events (~15% fan-out gap, see
+ * BRAIN/05_State/Known_Issues.md D6). The poll halts the moment a
+ * terminal status arrives so completed calls remain SSE-driven.
+ *
+ * The individual single-resource hooks above stay live for back-compat —
+ * SSE invalidation patterns + mutation invalidations still target the
+ * per-resource keys. Mutations also invalidate the bundle key so a
+ * verdict override repaints the bundle's checkpoint slice.
+ */
+export function useCallBundleQuery(id: string, callStatus?: string) {
+  return useQuery({
+    queryKey: reviewerKeys.callBundle(id),
+    queryFn: () => fetchCallBundle(id),
+    enabled: !!id,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
+    refetchInterval: _isInFlightStatus(callStatus) ? 3000 : false,
   });
 }
 
