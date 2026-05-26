@@ -4,6 +4,80 @@ updated: 2026-05-27
 tags: [state, live, ground-truth, d10-n-a, transfer-aware-agent, quality-checker-agent, slow-button, pass-button-name-lookup, d13-orphan-stubs, d1-d2-name-promote-reverse]
 ---
 
+# Live State — Auth profile cache wire-up (2026-05-27 PM, `69e79a8`)
+
+> 🟢 **2026-05-27 PM — Tip `69e79a8`. Owner-observed "website is slow" diagnosed and fixed: it was NOT a resource issue.**
+>
+> ## Root cause (live-measured, 5-sample average)
+>
+> ```
+> /healthz (no auth, no DB):  299 ms  ← network baseline (Railway↔browser)
+> /api/me (auth + 1 query):   552 ms  ← +253 ms backend overhead
+> /api/observability/stuck:   548 ms  ← +249 ms per DB round-trip
+> ```
+>
+> Railway service runs in a different region from Supabase (Supabase
+> ap-south-1 per the 2026-05-16 audit). Every cross-region DB query
+> pays ~200 ms RTT. Heavy admin pages make 4-8 sequential DB queries
+> per request; `/api/deals` was 2006 ms, `/api/queue` 1738 ms,
+> `/api/tracker/rows` 1691 ms — that's N × 200 ms cross-region latency.
+>
+> The smoking gun: `app.profile_cache` was pre-loaded at FastAPI
+> startup with a 5-minute TTL (`main.py:263`: "profile_cache: pre-loaded
+> 1 profiles"), but `current_user` in `app/auth.py` was IGNORING it.
+> Every authenticated request did a fresh `db.query(Profile)
+> .filter_by(id=uid).first()`. That added ~200 ms to every API call.
+>
+> ## Fix (sha `69e79a8`)
+>
+> `current_user` now hits `get_profile_dict(db).get(uid)` ahead of the
+> direct query. On cache hit (the common case once startup pre-load
+> fires): zero DB work, ~5 ms function call. On cache miss (new
+> profile signed up within the last 5 minutes): falls through to the
+> direct query + Supavisor-disconnect retry path. All guards
+> preserved (uid required, is_active check, DEV_ALL_ADMIN override).
+>
+> Defensive try/except around `get_profile_dict` so a cache-layer
+> fault never blocks auth (degrades to the legacy direct query).
+>
+> ## Live impact (3-sample average, before vs after)
+>
+> | endpoint                       | before     | after      | Δ         |
+> |--------------------------------|------------|------------|-----------|
+> | /api/deals?limit=20            | 2006 ms    | 1002 ms    | -1004 ms (-50%) |
+> | /api/queue?tab=all             | 1738 ms    | 1184 ms    | -554 ms (-31%) |
+> | /api/tracker/rows?tab=active   | 1691 ms    | 1070 ms    | -621 ms (-37%) |
+> | /api/rejections                | 1209 ms    |  932 ms    | -277 ms |
+> | /api/calls?limit=20            | 1137 ms    |  740 ms    | -397 ms (-35%) |
+> | /api/customers                 |  915 ms    |  619 ms    | -296 ms (-32%) |
+> | /api/observability/stuck       |  835 ms    |  548 ms    | -287 ms (-34%) |
+> | /api/me                        |  614 ms    |  552 ms    |  -62 ms |
+> | /healthz                       |  336 ms    |  299 ms    | network baseline |
+>
+> Average ~370 ms saved per authed call. A call-detail page firing 5
+> sequential authed requests now saves ~1.8 s of perceived load.
+>
+> ## What's still slow + the architectural ceiling
+>
+> After the auth cache, the residual latency is the cross-region RTT
+> itself plus N-query sequences per route. Further wins require ONE of:
+>
+> 1. **Owner action — move Railway region** to ap-south-1 / asia-southeast1
+>    near Supabase. This is a single-click change in the Railway
+>    dashboard. Expected gain: ~150-200 ms shaved from every API call
+>    that hits the DB.
+> 2. **Code action — bundle multi-query pages** (call detail fires 5
+>    queries: detail + checkpoints + segments + words + audio_url) into
+>    one composite endpoint. ~3 round-trips → 1 = ~400 ms saved per
+>    call-detail page open.
+> 3. **Code action — cache more read-heavy aggregations** (e.g.
+>    /api/deals composite_pct, /api/tracker_aggregator counts) at the
+>    process level for short TTL.
+>
+> Deferred to next session.
+
+---
+
 # Live State — Full-day agents wave (2026-05-27, `e22f3c2`)
 
 > 🟢 **2026-05-27 — Tip `e22f3c2` on `main`. Railway healthcheck PASS. 9 commit waves shipped across the day; reviewer trio fired on every push; doctrine integrity verify PASS on every push.**
