@@ -228,19 +228,41 @@ export function useQueueQuery(filter: QueueFilter = "all") {
 // call…" pane long after the pipeline has finalized. The poll only runs
 // while the call is in-flight and turns itself OFF the moment the API
 // returns a final status, so completed calls remain SSE-driven.
+//
+// Set audited against every backend write to ``Call.status``:
+// - ``pending_stream`` — streaming uploads (routes.py upload boundary)
+// - ``pending``        — transient default after row insert
+// - ``processing``     — pipeline running (routes.py + pipeline.py)
+//
+// All other values are terminal (``completed`` / ``failed`` /
+// ``needs_classification`` halt / ``needs_manual_review``) and must NOT
+// keep the poll running. Earlier versions of this set leaked
+// ``queued`` / ``transcribing`` / ``analyzing`` / ``scoring`` —
+// those are SSE *event types*, never written to ``Call.status``.
 const _IN_FLIGHT_STATUSES = new Set([
   "processing",
-  "queued",
-  "transcribing",
-  "analyzing",
-  "scoring",
   "pending",
-  "needs_classification",
+  "pending_stream",
 ]);
 
+function _isInFlightStatus(status: string | null | undefined): boolean {
+  return _IN_FLIGHT_STATUSES.has((status ?? "").toLowerCase());
+}
+
 function _isInFlight(call: Call | undefined): boolean {
-  const s = (call?.status ?? "").toString().toLowerCase();
-  return _IN_FLIGHT_STATUSES.has(s);
+  return _isInFlightStatus(call?.status);
+}
+
+// Strip frequently-rotating fields from the cached Call so a 3 s poll
+// doesn't churn referential equality on consumers. Today the only such
+// field is ``audio_url`` — backend re-signs the URL on every GET, so
+// the string differs every refetch even when the underlying object is
+// unchanged. The ``<audio src>`` reads from useCallAudioUrlQuery
+// (50-min staleTime) so dropping the inline url here is harmless.
+function _stabilizeCallDetail<T extends Call>(c: T): T {
+  if (c?.audio_url === undefined) return c;
+  const { audio_url: _unused, ...rest } = c as T & { audio_url?: string };
+  return rest as T;
 }
 
 export function useCallDetailQuery(id: string) {
@@ -253,10 +275,15 @@ export function useCallDetailQuery(id: string) {
     // ONLY while ``data.status`` is in-flight. Stops automatically once
     // the call reaches a terminal status, so completed reviews are still
     // free of polling churn. ``Infinity`` staleTime is preserved so SSE
-    // invalidation continues to win when it does fire.
+    // invalidation continues to win when it does fire. ``select`` strips
+    // the freshly-signed ``audio_url`` from the cached object so the
+    // 3 s poll doesn't reset the ``<audio>`` element's src every cycle
+    // (the 2026-05-16 incident). The page reads audio_url from
+    // useCallAudioUrlQuery (50-min stable cache).
     staleTime: Infinity,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
+    select: _stabilizeCallDetail,
     refetchInterval: (query) => (_isInFlight(query.state.data) ? 3000 : false),
   });
 }
@@ -278,7 +305,7 @@ export function useCallWordsQuery(id: string, callStatus?: string) {
     // mirrors the callDetail / callCheckpoints policy and turns off
     // automatically once a terminal status arrives.
     retry: (count) => count < 1,
-    refetchInterval: callStatus && _IN_FLIGHT_STATUSES.has(callStatus.toLowerCase()) ? 3000 : false,
+    refetchInterval: _isInFlightStatus(callStatus) ? 3000 : false,
   });
 }
 
@@ -295,7 +322,7 @@ export function useCallCheckpointsQuery(id: string, callStatus?: string) {
     staleTime: Infinity,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
-    refetchInterval: callStatus && _IN_FLIGHT_STATUSES.has(callStatus.toLowerCase()) ? 3000 : false,
+    refetchInterval: _isInFlightStatus(callStatus) ? 3000 : false,
   });
 }
 

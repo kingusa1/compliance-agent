@@ -308,9 +308,14 @@ export default function CallDetailPage({
   const router = useRouter();
   const { id } = use(params);
 
-  // 2026-05-16 — subscribe to per-call SSE feed. Replaces the 3s in-flight
-  // refetchInterval on useCallDetailQuery / useCallCheckpointsQuery so audio
-  // stays mounted across pipeline-step transitions (no re-mount, no reset).
+  // 2026-05-16 — subscribe to per-call SSE feed for instant invalidation
+  // on each pipeline-step transition. 2026-05-26 — SSE remains primary,
+  // but a 3 s safety-net poll is layered on useCallDetailQuery /
+  // useCallCheckpointsQuery / useCallWordsQuery for the ~15% of per-call
+  // subscriptions that never receive their events (asyncio fan-out gap).
+  // The audio element's src is stabilised via select() + audioUrlQuery's
+  // 50-min staleTime so the poll cannot reset playback (the 2026-05-16
+  // incident the comment block this replaces was tracking).
   useCallEvents(id);
 
   const meQ = useMe();
@@ -1404,13 +1409,17 @@ export default function CallDetailPage({
             </div>
             <audio
               ref={audioRef}
-              // 2026-05-16 perf — prefer the audio_url baked into the
-              // detail response so we don't wait on the second RTT to
-              // /audio-url. Falls back to the dedicated endpoint for
-              // legacy callers or when the inline URL expires (50min
-              // staleTime on the dedicated endpoint re-issues a fresh
-              // signed URL well before the 1hr Supabase TTL).
-              src={c?.audio_url ?? audioUrlQuery.data?.url ?? undefined}
+              // 2026-05-26 — read the URL from useCallAudioUrlQuery
+              // (50-min staleTime so the same string is returned across
+              // poll refetches) and ONLY fall back to the call-detail
+              // inline URL when the dedicated query has no data yet.
+              // The detail object now strips ``audio_url`` via the
+              // ``select`` hook so the in-flight 3 s poll doesn't
+              // re-issue a fresh signed URL into the JSX on every tick
+              // (the 2026-05-16 audio-reset incident). The fallback
+              // covers legacy callers and the very first paint before
+              // useCallAudioUrlQuery resolves.
+              src={audioUrlQuery.data?.url ?? c?.audio_url ?? undefined}
               preload="metadata"
               onTimeUpdate={() => audioRef.current && setCurrentSec(audioRef.current.currentTime)}
               onPause={() => setPaused(true)}
