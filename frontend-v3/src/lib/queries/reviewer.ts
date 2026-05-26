@@ -218,17 +218,46 @@ export function useQueueQuery(filter: QueueFilter = "all") {
   });
 }
 
+// 2026-05-26 — In-flight statuses for which the call detail must auto-
+// refresh even when the SSE feed is silent. The SSE path is the primary
+// invalidation mechanism, but production observation shows ~15% of
+// per-call subscriptions never receive the matching events (a per-call
+// queue is created but the publish loop never lands an event into it —
+// likely a fan-out gap between worker threads and the asyncio loop).
+// Without a safety-net poll, the reviewer sees a stuck "Processing your
+// call…" pane long after the pipeline has finalized. The poll only runs
+// while the call is in-flight and turns itself OFF the moment the API
+// returns a final status, so completed calls remain SSE-driven.
+const _IN_FLIGHT_STATUSES = new Set([
+  "processing",
+  "queued",
+  "transcribing",
+  "analyzing",
+  "scoring",
+  "pending",
+  "needs_classification",
+]);
+
+function _isInFlight(call: Call | undefined): boolean {
+  const s = (call?.status ?? "").toString().toLowerCase();
+  return _IN_FLIGHT_STATUSES.has(s);
+}
+
 export function useCallDetailQuery(id: string) {
   return useQuery({
     queryKey: reviewerKeys.callDetail(id),
     queryFn: () => fetchCallDetail(id),
     enabled: !!id,
-    // 2026-05-23 — driven by useCallEvents(id) SSE. Every pipeline
-    // step + reviewer action publishes a `score_ready` / `step_started`
-    // event that invalidates this key. Static between events.
+    // 2026-05-23 — primary invalidation is the per-call SSE feed via
+    // useCallEvents(id). 2026-05-26 — added a 3 s safety-net poll
+    // ONLY while ``data.status`` is in-flight. Stops automatically once
+    // the call reaches a terminal status, so completed reviews are still
+    // free of polling churn. ``Infinity`` staleTime is preserved so SSE
+    // invalidation continues to win when it does fire.
     staleTime: Infinity,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
+    refetchInterval: (query) => (_isInFlight(query.state.data) ? 3000 : false),
   });
 }
 
@@ -246,18 +275,20 @@ export function useCallWordsQuery(id: string) {
   });
 }
 
-export function useCallCheckpointsQuery(id: string) {
+export function useCallCheckpointsQuery(id: string, callStatus?: string) {
   return useQuery({
     queryKey: reviewerKeys.callCheckpoints(id),
     queryFn: () => fetchCallCheckpoints(id),
     enabled: !!id,
     // 2026-05-23 — SSE drives invalidation on every pipeline-step
-    // transition (see useCallEvents on the call detail page). No
-    // window-focus / interval polling — the checkpoint cards already
-    // fill in live and the polling caused mid-review re-render.
+    // transition. 2026-05-26 — safety-net poll while the parent call is
+    // in-flight so checkpoint cards fill in even when SSE drops events.
+    // ``callStatus`` is hoisted in by the page-level hook so the query
+    // can decide without an extra round-trip to its own cache.
     staleTime: Infinity,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
+    refetchInterval: callStatus && _IN_FLIGHT_STATUSES.has(callStatus.toLowerCase()) ? 3000 : false,
   });
 }
 

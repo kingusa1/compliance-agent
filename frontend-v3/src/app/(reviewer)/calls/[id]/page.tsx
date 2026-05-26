@@ -317,7 +317,10 @@ export default function CallDetailPage({
   const detail = useCallDetailQuery(id);
   const wordsQuery = useCallWordsQuery(id);
   const flagsQuery = useCallFlagsQuery(id);
-  const checkpointsQuery = useCallCheckpointsQuery(id);
+  // 2026-05-26 — pass call.status down so the checkpoints query can
+  // safety-net poll while the pipeline is in-flight (matches the
+  // refetchInterval policy on useCallDetailQuery itself).
+  const checkpointsQuery = useCallCheckpointsQuery(id, detail.data?.status);
   const audioUrlQuery = useCallAudioUrlQuery(id);
   const submitVerdict = useSubmitVerdict();
   const agentChat = useAgentChat();
