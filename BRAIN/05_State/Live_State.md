@@ -1,12 +1,62 @@
 ---
 created: 2026-05-10
-updated: 2026-05-28
-tags: [state, live, ground-truth, perf-p0, loop-lag, row-leak, alias-filter, fk-race, auto-resume, waves-4-to-13]
+updated: 2026-05-29
+tags: [state, live, ground-truth, perf-p0, loop-lag, fk-race, auto-resume, waves-9-13-deployed, llm-response-error-retry]
+---
+
+# Live State — Perf P0 cascade waves 9-13 DEPLOYED + reviewer fixes (2026-05-29, `3e98fde`)
+
+> 🟢 **2026-05-29 — Tip on origin/main: `3e98fde`. Waves 9 → 13 pushed + Railway redeploy + Vercel REST parity deploy all green. Pre-push reviewer trio (python-reviewer agent ad3c58d2a63045fc3 + security-reviewer agent a3fcee37e6c313b8b) caught a CRITICAL `RuntimeError` retry-gap on wave 11 + 2 HIGH (PII envelope log exposure, silent done-callbacks). All three fixed inside the same commit; 32 touched-file pytest GREEN incl. 3 new regression tests locking the `LLMResponseError` retry contract.**
+>
+> ## Post-deploy verification (Phase 2)
+>
+> | metric | target | observed |
+> |---|---|---|
+> | /healthz status | 200 | 200 |
+> | /healthz p50 / p90 / p99 (10-call burst) | <1500ms | 0.94s / 0.97s / 0.97s ✅ |
+> | latency sweep on hot endpoints (7 ep × 1 call) | <1500ms | 0.76-0.99s, all 200/401 as expected ✅ |
+> | `KeyError('choices')` in logs since boot | 0 | 0 ✅ |
+> | `ForeignKeyViolation flags_segment_id_fkey` since boot | 0 | 0 ✅ |
+> | "Pipeline failed: server restart" stuck calls | 0 | 0 ✅ |
+> | `AUTO_RESUME dispatched N task(s) after restart` | informational | line NOT emitted — zero stuck calls at boot, wave 13 dormant but armed ✅ |
+>
+> ## Reviewer fixes folded into the same commit (3e98fde)
+>
+> 1. **CRITICAL — `LLMResponseError(RuntimeError)` subclass** in `app/resilience.py` + added to `_llm_should_retry`. The original wave-11 draft raised bare `RuntimeError` which is NOT in tenacity's retry predicate, so OpenRouter 200-with-error-envelope responses (rate-limit, overloaded) would have hard-failed on attempt 1 instead of being retried 7 times with exponential backoff. The new subclass IS retried.
+> 2. **HIGH — PII-safe envelope logging** via new `_safe_envelope_excerpt(data)` helper in `app/analysis.py`. Logs only `type=...` and `code=...` from `error` object; never the free-text `message` field or the raw body which can echo transcript fragments, user names, MPAN/MPRN values. Six call sites updated (3 `_call_openai_compat`, 1 `_call_openrouter_cached`, 2 `_call_anthropic`).
+> 3. **HIGH — Logging done-callbacks** in `checkpoint_analyzer.py` (`_log_trace_task_exc`) and `main.py` (`_log_resume_task_exc`). Previously `t.add_done_callback(lambda x: x.exception())` consumed the exception silently — now it logs at WARNING with `type(exc).__name__: <exc>` so a degraded threadpool / DB never silently drops the audit trail (per LAW_OF_ENTERPRISE_GRADE §audit-trail integrity).
+>
+> Plus regression tests in `tests/test_resilience.py`:
+> - `test_retries_on_llm_response_error_then_succeeds` — locks the retry contract
+> - `test_exhausts_retries_on_persistent_llm_response_error` — locks the 7-attempt ceiling
+> - `test_llm_response_error_is_runtime_error_subclass` — locks inheritance for `except RuntimeError` back-compat
+>
+> ## What's still open (carry-forward)
+>
+> | id | severity | note |
+> |---|---|---|
+> | D14 | LOW | Residual loop_lag canary not yet observed live post-deploy. Watch over next 24h. |
+> | D-12-TOCTOU | MEDIUM | Wave 12 narrows the FK race but doesn't eliminate it; `SELECT ... FOR UPDATE` would close the remaining window. Acceptable per owner; revisit only if FK violations recur. |
+> | D-13-BURST | MEDIUM | AUTO_RESUME at boot fires `asyncio.create_task` for ALL stuck calls simultaneously. Semaphore (`pipeline_concurrency=5`) bounds work but not enqueue. Will be exercised the next time a restart happens during active uploads — watch for new loop_lag spike. Hotfix wave 14 if observed: `await asyncio.sleep(2)` between create_task calls. |
+> | D4 | MEDIUM | Score volatility (unchanged from 2026-05-27). |
+> | D6 | HIGH→mitigated | SSE per-call gap, 3s poll covers. |
+>
+> ## Doctrine state at session close (2026-05-29)
+>
+> - `python scripts/doctrine/integrity.py verify` — PASS (pre-push hook PASS)
+> - LAW_OF_SKILLS audit pre-commit + pre-push — PASS, trio ledgered
+> - Skill_Ledger active session: 2 rows (python-reviewer + security-reviewer parallel)
+> - Retroactive_Review_Queue — empty
+> - Vercel: `dpl_HaZ5niWU7Qn4GPu61zBDT6tGvbSR` READY, aliased to `compliance-agent-mu.vercel.app`
+> - Railway: container restart 19:49:12 UTC, app startup complete, healthcheck GREEN
+>
+> Full session log: [[../04_Sessions/2026_05_29_Session_waves_9_to_13_push]]
+
 ---
 
 # Live State — Perf P0 cascade waves 4-8 LIVE; 9-13 LOCAL UNPUSHED (2026-05-28, `3be1035`)
 
-> 🟢 **2026-05-28 — Tip on origin/main: `3be1035`. Waves 4 → 8 deployed + e2e-verified (15/15 pages PASS, Playwright agent af89b20e). Waves 9 → 13 ready locally but UNPUSHED per owner mandate of 2026-05-28 14:48 UTC ("fix locally, no push until I say push").**
+> 🟢 **2026-05-28 — Tip on origin/main: `3be1035`. Waves 4 → 8 deployed + e2e-verified (15/15 pages PASS, Playwright agent af89b20e). Waves 9 → 13 ready locally but UNPUSHED per owner mandate of 2026-05-28 14:48 UTC ("fix locally, no push until I say push"). RESOLVED 2026-05-29 — pushed as 3e98fde with reviewer-fold-in (see top block).**
 >
 > ## Live on prod (Railway + Vercel)
 >

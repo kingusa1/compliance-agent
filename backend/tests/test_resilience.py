@@ -6,7 +6,7 @@ import httpx
 import pytest
 from tenacity import RetryError
 
-from app.resilience import DEEPGRAM_RETRY, LLM_RETRY
+from app.resilience import DEEPGRAM_RETRY, LLM_RETRY, LLMResponseError
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +125,59 @@ class TestOpenRouterRetry:
             await fn()
 
         assert call_count == 1
+
+    # ----- Wave 11 (2026-05-28) regression coverage --------------------
+    # `LLMResponseError(RuntimeError)` is raised by analysis.py when the
+    # provider returns HTTP 200 with a malformed/error envelope (rate-
+    # limit, overloaded, partial-failure). It MUST be retried — the bug
+    # python-reviewer + security-reviewer both caught pre-push was that
+    # the first wave 11 draft used bare RuntimeError, which is NOT in
+    # `_llm_should_retry`, so a transient overloaded blip would hard-fail
+    # the pipeline. These tests lock the retry contract.
+
+    @pytest.mark.asyncio
+    async def test_retries_on_llm_response_error_then_succeeds(self):
+        """LLMResponseError is retriable (wave 11 contract)."""
+        call_count = 0
+
+        @LLM_RETRY
+        async def fn():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise LLMResponseError("OpenRouter returned no choices (type=rate_limit code=429)")
+            return "ok"
+
+        result = await fn()
+        assert result == "ok"
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_exhausts_retries_on_persistent_llm_response_error(self):
+        """LLMResponseError uses all 7 attempts; persistent failure raises RetryError."""
+        call_count = 0
+
+        @LLM_RETRY
+        async def fn():
+            nonlocal call_count
+            call_count += 1
+            raise LLMResponseError("Anthropic returned no content (type=overloaded_error code=529)")
+
+        with pytest.raises(RetryError):
+            await fn()
+
+        assert call_count == 7
+
+    def test_llm_response_error_is_runtime_error_subclass(self):
+        """Existing code paths that broadly `except RuntimeError` (the
+        legacy contract before the typed subclass) still catch the new
+        envelope errors. Locks the inheritance so future refactors don't
+        silently break that compatibility."""
+        assert issubclass(LLMResponseError, RuntimeError)
+        try:
+            raise LLMResponseError("x")
+        except RuntimeError:
+            pass
 
 
 # ---------------------------------------------------------------------------
