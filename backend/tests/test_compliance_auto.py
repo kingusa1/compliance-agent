@@ -120,25 +120,30 @@ def test_partial_is_not_compliant(test_db):
 # the regression can't recur.
 
 
+def _bucket_to_status(bucket: str) -> str:
+    """Mirror of ``pipeline._step_score``'s bucket→status mapping for test
+    fixtures only. Kept local so a future bucket addition forces a test
+    update — the production mapping lives in ``pipeline.py``."""
+    return {
+        "pass": "compliant",
+        "coaching": "compliant",
+        "review": "pending",
+        "blocked": "non_compliant",
+    }[bucket]
+
+
 def _add_segment(db, call_id, idx, stage, bucket, score):
     """Helper: stamp a CallSegment row so derive_compliance routes to the
     segments path."""
-    seg = CallSegment(
+    db.add(CallSegment(
         call_id=call_id,
         idx=idx,
         stage=stage,
         bucket=bucket,
         score=score,
         compliant=(bucket == "pass"),
-        compliance_status={
-            "pass": "compliant",
-            "coaching": "compliant",
-            "review": "pending",
-            "blocked": "non_compliant",
-        }[bucket],
-    )
-    db.add(seg)
-    return seg
+        compliance_status=_bucket_to_status(bucket),
+    ))
 
 
 def test_segments_path_preserves_coaching_as_compliant(test_db):
@@ -239,6 +244,58 @@ def test_segments_path_preserves_pending_with_no_decision_row(test_db):
     assert result == "pending"
     assert c.compliance_status == "pending"
     assert test_db.query(ComplianceDecision).filter_by(call_id="c_seg_pending").count() == 0
+
+
+def test_rerun_keeps_single_is_current_decision(test_db):
+    """Re-running derive_compliance on the same call must leave exactly
+    one ComplianceDecision row with ``is_current=True``. Prior rows get
+    their flag demoted to False by ``_write_decision_row``.
+
+    Without this invariant, downstream queries that do
+    ``.filter_by(is_current=True).first()`` would non-deterministically
+    pick between duplicate live rows.
+    """
+    c = Call(
+        id="c_rerun", filename="x.mp3", file_path="c1/x.mp3",
+        transcript="...", duration_seconds=10,
+        checkpoint_results=json.dumps([
+            {"id": "cp_1", "status": "fail", "confidence": "high"},
+        ]),
+    )
+    test_db.add(c)
+    test_db.commit()
+    # First pass: V1 path writes a non_compliant decision row.
+    derive_compliance(c, test_db)
+    # Second pass: same data, same effective verdict.
+    derive_compliance(c, test_db)
+    rows = test_db.query(ComplianceDecision).filter_by(call_id="c_rerun").all()
+    assert len(rows) == 2  # one demoted, one current
+    current_rows = [r for r in rows if r.is_current]
+    assert len(current_rows) == 1
+    assert current_rows[0].status == "non_compliant"
+
+
+def test_commit_false_defers_write_to_caller(test_db):
+    """``commit=False`` lets a batch caller (e.g. the rederive backfill
+    endpoint) accumulate multiple calls' verdicts into one outer
+    transaction. derive_compliance still mutates the ORM object — the
+    caller is responsible for the final commit."""
+    c = Call(
+        id="c_no_commit", filename="x.mp3", file_path="c1/x.mp3",
+        transcript="...", duration_seconds=10,
+        checkpoint_results=json.dumps([
+            {"id": "cp_1", "status": "pass", "confidence": "high"},
+        ]),
+    )
+    test_db.add(c)
+    test_db.commit()
+    result = derive_compliance(c, test_db, commit=False)
+    assert result == "compliant"
+    assert c.compliance_status == "compliant"
+    # Caller commits.
+    test_db.commit()
+    cd = test_db.query(ComplianceDecision).filter_by(call_id="c_no_commit").one()
+    assert cd.status == "compliant"
 
 
 def test_segments_path_does_not_demote_compliant_with_partials(test_db):

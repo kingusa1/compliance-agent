@@ -2393,6 +2393,14 @@ def admin_backfill_compliant_strict(
     }
 
 
+# Advisory lock id for /api/admin/rederive-compliance — stable int that
+# only this endpoint takes. Postgres `pg_try_advisory_xact_lock` fails
+# fast (no wait) when another invocation holds it, so two concurrent
+# leads cannot double-stamp ComplianceDecision rows. SQLite (CI) ignores
+# advisory locks silently.
+_REDERIVE_LOCK_ID = 20260526
+
+
 @router.post("/api/admin/rederive-compliance", status_code=200)
 def admin_rederive_compliance(
     db: Session = Depends(get_db),
@@ -2421,60 +2429,125 @@ def admin_rederive_compliance(
     this endpoint runs the corrected function once per call so existing
     rows converge to the right status without re-running the pipeline.
 
+    Atomicity contract: every per-call ``derive_compliance`` call is run
+    with ``commit=False`` so the whole batch lands in a single transaction
+    via the trailing ``db.commit()``. A mid-loop exception triggers
+    ``db.rollback()`` and the endpoint returns the partial outcome — no
+    half-migrated state. Per-call failures are isolated with their own
+    nested SAVEPOINT so one bad row doesn't abort the rest of the pass.
+
+    Concurrency contract: a Postgres advisory lock (``pg_try_advisory_xact_lock``)
+    fails fast with 409 if another invocation is already running, so two
+    leads can't both demote the same ``ComplianceDecision.is_current``
+    row and insert dueling replacements.
+
     Idempotent: re-running yields zero changes once data is correct.
     Gated by ``require_lead``. Writes one ``record_audit`` row covering
-    the entire pass for forensic reconstructability.
+    the entire pass with per-call transition detail (capped) for forensic
+    reconstructability.
     """
     from app.compliance import derive_compliance
     from app.models import Call as _Call, CallSegment as _Seg
+    from sqlalchemy import text as _sql_text
 
-    # Distinct call_ids that have at least one segment.
+    # Single-flight gate (Postgres only; no-op on SQLite/CI).
+    try:
+        acquired = db.execute(
+            _sql_text("SELECT pg_try_advisory_xact_lock(:id)"),
+            {"id": _REDERIVE_LOCK_ID},
+        ).scalar()
+        if acquired is False:
+            raise HTTPException(
+                status_code=409,
+                detail="Another rederive-compliance run is already in progress",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        # SQLite or any non-Postgres dialect — advisory locks unavailable;
+        # fall through (single-tenant deployment has a low collision risk).
+        log.info("rederive-compliance: advisory lock unsupported on this dialect")
+
     seg_call_ids = [
         row[0]
         for row in db.query(_Seg.call_id).distinct().filter(_Seg.call_id.isnot(None)).all()
     ]
 
+    # Bulk-load every Call in one IN(...) round-trip rather than N
+    # SELECTs — eliminates the N+1 cited by python-reviewer.
+    call_map: dict[str, _Call] = {
+        c.id: c
+        for c in db.query(_Call).filter(_Call.id.in_(seg_call_ids)).all()
+    } if seg_call_ids else {}
+
     changed = 0
     by_target_status: dict[str, int] = {"compliant": 0, "pending": 0, "non_compliant": 0}
     skipped_missing = 0
+    skipped_error = 0
+    transitions: list[dict[str, str]] = []
 
-    for cid in seg_call_ids:
-        call = db.query(_Call).filter_by(id=cid).first()
-        if call is None:
-            skipped_missing += 1
-            continue
-        before = (call.compliance_status or "").strip() or "pending"
-        derived = derive_compliance(call, db)
-        if derived != before:
-            changed += 1
-            by_target_status[derived] = by_target_status.get(derived, 0) + 1
+    try:
+        for cid in seg_call_ids:
+            call = call_map.get(cid)
+            if call is None:
+                skipped_missing += 1
+                continue
 
-    if changed:
-        record_audit(
-            db,
-            action="backfill.rederive_compliance",
-            entity_type="call",
-            entity_id=None,
-            payload={
-                "scanned": len(seg_call_ids),
-                "changed": changed,
-                "to_compliant": by_target_status.get("compliant", 0),
-                "to_pending": by_target_status.get("pending", 0),
-                "to_non_compliant": by_target_status.get("non_compliant", 0),
-                "skipped_missing": skipped_missing,
-            },
-            actor_id=_user.get("id") if isinstance(_user, dict) else None,
-        )
+            before = (call.compliance_status or "").strip() or "pending"
+            sp = db.begin_nested()  # per-call SAVEPOINT
+            try:
+                derived = derive_compliance(call, db, commit=False)
+                sp.commit()
+            except Exception as exc:  # noqa: BLE001 — isolate one row from the batch
+                sp.rollback()
+                skipped_error += 1
+                log.error(
+                    "rederive-compliance: call_id=%s failed: %r",
+                    cid, exc,
+                )
+                continue
+
+            if derived != before:
+                changed += 1
+                by_target_status[derived] = by_target_status.get(derived, 0) + 1
+                # Cap transitions detail to avoid bloating the audit JSONB
+                # column on enormous backfills (300 entries × ~80 bytes ≈
+                # 24 KB — well within Postgres jsonb practical limits).
+                if len(transitions) < 300:
+                    transitions.append({"call_id": cid, "from": before, "to": derived})
+
+        if changed:
+            record_audit(
+                db,
+                action="backfill.rederive_compliance",
+                entity_type="call",
+                entity_id=None,
+                payload={
+                    "scanned": len(seg_call_ids),
+                    "changed": changed,
+                    "transitions": transitions,
+                    "to_compliant": by_target_status.get("compliant", 0),
+                    "to_pending": by_target_status.get("pending", 0),
+                    "to_non_compliant": by_target_status.get("non_compliant", 0),
+                    "skipped_missing": skipped_missing,
+                    "skipped_error": skipped_error,
+                },
+                actor_id=_user.get("id") if isinstance(_user, dict) else None,
+            )
         db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     log.info(
         "BACKFILL_REDERIVE_COMPLIANCE scanned=%d changed=%d "
-        "to_compliant=%d to_pending=%d to_non_compliant=%d",
-        len(seg_call_ids),
-        changed,
+        "to_compliant=%d to_pending=%d to_non_compliant=%d "
+        "skipped_missing=%d skipped_error=%d",
+        len(seg_call_ids), changed,
         by_target_status.get("compliant", 0),
         by_target_status.get("pending", 0),
         by_target_status.get("non_compliant", 0),
+        skipped_missing, skipped_error,
     )
     return {
         "scanned": len(seg_call_ids),
@@ -2483,6 +2556,7 @@ def admin_rederive_compliance(
         "to_pending": by_target_status.get("pending", 0),
         "to_non_compliant": by_target_status.get("non_compliant", 0),
         "skipped_missing": skipped_missing,
+        "skipped_error": skipped_error,
     }
 
 
