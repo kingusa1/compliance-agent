@@ -315,11 +315,13 @@ export default function CallDetailPage({
 
   const meQ = useMe();
   const detail = useCallDetailQuery(id);
-  const wordsQuery = useCallWordsQuery(id);
+  // 2026-05-26 — pass call.status down so dependent queries can safety-
+  // net poll while the pipeline is in-flight. Without this, useCallWords
+  // returns 404 once mid-pipeline (file not written yet), retries 0
+  // times per its retry policy, and the cache stays empty forever —
+  // leaving the ProcessingStepper visible after the call finalized.
+  const wordsQuery = useCallWordsQuery(id, detail.data?.status);
   const flagsQuery = useCallFlagsQuery(id);
-  // 2026-05-26 — pass call.status down so the checkpoints query can
-  // safety-net poll while the pipeline is in-flight (matches the
-  // refetchInterval policy on useCallDetailQuery itself).
   const checkpointsQuery = useCallCheckpointsQuery(id, detail.data?.status);
   const audioUrlQuery = useCallAudioUrlQuery(id);
   const submitVerdict = useSubmitVerdict();

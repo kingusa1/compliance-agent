@@ -40,9 +40,27 @@ interface Step {
   state: StepState;
 }
 
+// 2026-05-26 — terminal statuses include backend "completed" plus any
+// state that proves the pipeline ran to a final verdict (even when a
+// reviewer is asked to triage manually). Treating
+// ``needs_manual_review`` as still-processing kept the stepper stuck on
+// "Processing your call…" with the score sitting unread in the API
+// response (real-prod case 4fd6818f: status went straight to
+// needs_manual_review because transcript-divergence was below floor;
+// pipeline emitted a score of 13/37 across two segments but the page
+// never rendered them).
+function _isTerminalStatus(status: string | null | undefined): boolean {
+  const s = (status ?? "").toLowerCase();
+  return (
+    s === "completed" ||
+    s === "needs_manual_review" ||
+    s === "committed"
+  );
+}
+
 function deriveSteps(call: Call | undefined, checkpointsCount: number): Step[] {
   const failed = call?.status === "failed";
-  const completed = call?.status === "completed";
+  const completed = _isTerminalStatus(call?.status);
   const hasTranscript = !!call?.transcript;
   const hasMetadata =
     !!call?.detected_supplier || !!call?.agent_name || !!call?.customer_name;
@@ -114,7 +132,7 @@ export function ProcessingStepper({
 }) {
   const steps = deriveSteps(call, checkpointsCount);
   const failed = call?.status === "failed";
-  const completed = call?.status === "completed";
+  const completed = _isTerminalStatus(call?.status);
 
   return (
     <div className="flex flex-col items-stretch gap-4 px-8 py-10">

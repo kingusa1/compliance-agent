@@ -261,7 +261,7 @@ export function useCallDetailQuery(id: string) {
   });
 }
 
-export function useCallWordsQuery(id: string) {
+export function useCallWordsQuery(id: string, callStatus?: string) {
   return useQuery({
     queryKey: reviewerKeys.callWords(id),
     queryFn: () => fetchCallWords(id),
@@ -271,7 +271,14 @@ export function useCallWordsQuery(id: string) {
     staleTime: Infinity,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
-    retry: (count) => count < 1, // word file is 404 until pipeline completes
+    // 2026-05-26 — Words endpoint 404s mid-pipeline (the file is written
+    // at finalize). Single-shot retry stops the query forever, so opening
+    // a call right after upload leaves the transcript blank even after
+    // the pipeline finishes. Safety-net poll while the call is in-flight
+    // mirrors the callDetail / callCheckpoints policy and turns off
+    // automatically once a terminal status arrives.
+    retry: (count) => count < 1,
+    refetchInterval: callStatus && _IN_FLIGHT_STATUSES.has(callStatus.toLowerCase()) ? 3000 : false,
   });
 }
 
