@@ -230,6 +230,50 @@ async def upload_call(
             f"\U0001f501 DEDUP upload sha256={content_hash[:12]} "
             f"existing call_id={existing_by_hash.id} filename={existing_by_hash.filename!r}"
         )
+        # 2026-05-27 D13 — the frontend creates a stub deal up-front via
+        # `/api/deals/stub` and passes the new stub's id as the `deal_id`
+        # form field. When this upload dedups, the new stub is orphaned
+        # (no Call ever links to it) and shows up on /deals as a phantom
+        # `(pending audio upload)` row. Owner reported "3 of 10 uploads
+        # silently dropped" — those 3 weren't dropped, they were dedups
+        # against earlier uploads from prior sessions. Detect the orphan
+        # and delete it inline so /deals stays clean.
+        if deal_id:
+            try:
+                # 2026-05-27 python-reviewer HIGH — replace the two-step
+                # SELECT-then-DELETE with one atomic conditional DELETE.
+                # A concurrent upload for a NON-dedup audio could race the
+                # SELECT/DELETE window, attach its Call to this same stub,
+                # and have the DELETE land after — orphaning a live call.
+                # The atomic DELETE re-evaluates both invariants inside
+                # the WHERE clause so any concurrent Call insert that
+                # commits first makes the predicate false and the stub
+                # is safely preserved.
+                from sqlalchemy import func, exists, not_
+                from app.models import CustomerDeal as _Deal
+                placeholder_names = [
+                    "", "(pending audio upload)", "(no customer)", "untitled",
+                ]
+                deleted = (
+                    db.query(_Deal)
+                    .filter(
+                        _Deal.id == deal_id,
+                        not_(
+                            exists().where(Call.deal_id == _Deal.id)
+                        ),
+                        func.lower(func.trim(func.coalesce(_Deal.customer_name, "")))
+                            .in_(placeholder_names),
+                    )
+                    .delete(synchronize_session=False)
+                )
+                db.commit()
+                if deleted:
+                    log.info(
+                        f"\U0001f9f9 DEDUP_STUB_CLEANUP deleted orphan "
+                        f"deal_id={deal_id} (no calls linked, placeholder name)"
+                    )
+            except Exception as cleanup_e:  # noqa: BLE001 — best-effort
+                log.warning(f"DEDUP stub cleanup failed (non-fatal): {cleanup_e}")
         # Return the existing call as a 200 with a `duplicate=true` flag.
         # The frontend can detect this and navigate the user to /calls/{id}
         # instead of the upload-success state.

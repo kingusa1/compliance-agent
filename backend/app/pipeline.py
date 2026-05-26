@@ -384,10 +384,16 @@ async def process_call(call_id: str, file_path: str, db: Session | None = None, 
         # second-opinion AI agent that audits the primary AI's extractions
         # + verdicts and flags inconsistencies before the human reviewer
         # sees the row.
+        # 2026-05-27 — hoist imports out of the inner closure per
+        # python-reviewer LOW. The module's top-level already imports
+        # `SessionLocal` and `json`; importing `quality_check` here at
+        # function scope (not closure scope) surfaces any future import
+        # break at request time rather than first QC firing.
+        from app.database import SessionLocal as _QSL
+        from app.agent.quality_checker import quality_check as _qc
+        import json as _qcjson
+
         async def _bg_quality_check() -> None:
-            from app.database import SessionLocal as _QSL
-            from app.agent.quality_checker import quality_check as _qc
-            import json as _qcjson
             _qdb = _QSL()
             try:
                 _qcall = _qdb.query(Call).filter_by(id=call_id).first()
@@ -422,12 +428,28 @@ async def process_call(call_id: str, file_path: str, db: Session | None = None, 
                     })
                 except Exception as rt_e:  # noqa: BLE001
                     log.warning(f"QC realtime publish failed (non-fatal): {rt_e}")
+            except asyncio.CancelledError:
+                # uvicorn graceful-shutdown cancels untracked tasks. Log so
+                # the QC drop is observable and re-raise per asyncio idiom.
+                log.warning(
+                    f"\U0001f575️ QUALITY_CHECK_CANCELLED call_id={call_id} "
+                    "(uvicorn shutdown or pipeline tear-down)"
+                )
+                raise
             except Exception as qc_e:  # noqa: BLE001
                 log.warning(f"\U0001f575️ QUALITY_CHECK_FAILED call_id={call_id} err={qc_e!r}")
             finally:
                 _qdb.close()
 
-        asyncio.create_task(_bg_quality_check())
+        # 2026-05-27 python-reviewer MED-2 — store the task + add a done
+        # callback that consumes any exception so the GC doesn't log
+        # "Task exception was never retrieved". CancelledError is
+        # explicitly re-raised inside the coroutine; the callback
+        # surfaces only non-cancel failures (already logged inside).
+        _qc_task = asyncio.create_task(_bg_quality_check())
+        _qc_task.add_done_callback(
+            lambda t: t.exception() if not t.cancelled() else None
+        )
 
         # Tracker-autofill specialist agents (2026-05-10):
         # 1. DateExtractorAgent  — fills CustomerDeal.expected_live_date
@@ -3037,6 +3059,49 @@ def _step_finalize(call_id: str, db: Session) -> dict:
                 )
     except Exception as e:  # noqa: BLE001 — promote is best-effort
         log.warning(f"NAME_PROMOTE_FAILED call_id={call_id} err={e!r}")
+
+    # 2026-05-27 D1/D2 — reverse-direction propagation. The existing
+    # NAME_PROMOTE above only flows Call.customer_name → Deal when the
+    # deal had a placeholder. The OTHER direction (Deal → Call) was
+    # missing: BUSINESS_DETECT writes the full trading-as business string
+    # onto deal.customer_name (e.g. "Mrs Zoe Larkins Trading As Corner
+    # Cuts") while the per-call LLM extractor leaves call.customer_name
+    # as the person ("Zoe Larkins"). Reviewers see two different
+    # "customer" values on the call detail vs the customer / deal pages.
+    #
+    # Rule (owner mandate 2026-05-27): Call.customer_name and
+    # Deal.customer_name converge on the business name when they conflict.
+    # The deal's name is the authoritative one because BUSINESS_DETECT
+    # uses the same evidence as the per-call extractor PLUS the full
+    # transcript-wide business-name search.
+    #
+    # Conservative guards:
+    # 1. Only sync when Call.customer_name is non-placeholder (we don't
+    #    overwrite "Unknown" — that's the per-call extractor's signal
+    #    that it couldn't find a name on this segment).
+    # 2. Only sync when Deal.customer_name is non-placeholder.
+    # 3. Only sync when the two strings differ (case-insensitive).
+    try:
+        if call.deal_id and call.customer_name:
+            from app.deal_meter_merge import _is_placeholder
+            from app.models import CustomerDeal as _Deal2
+            cur_deal2 = db.query(_Deal2).filter_by(id=call.deal_id).first()
+            if (
+                cur_deal2 is not None
+                and not _is_placeholder(cur_deal2.customer_name)
+                and not _is_placeholder(call.customer_name)
+                and (cur_deal2.customer_name or "").strip().lower()
+                    != (call.customer_name or "").strip().lower()
+            ):
+                old_call_name = call.customer_name
+                call.customer_name = cur_deal2.customer_name
+                log.info(
+                    f"✍️ NAME_PROMOTE_REVERSE call_id={call_id} "
+                    f"deal_id={cur_deal2.id} {old_call_name!r} -> "
+                    f"{call.customer_name!r} (deal-name authoritative)"
+                )
+    except Exception as e:  # noqa: BLE001 — promote-reverse is best-effort
+        log.warning(f"NAME_PROMOTE_REVERSE_FAILED call_id={call_id} err={e!r}")
 
     # 2026-05-27 — restored db.commit() after a previous edit accidentally
     # dropped it (python-reviewer CRITICAL on f032114 catch). Without this

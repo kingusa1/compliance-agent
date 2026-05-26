@@ -58,6 +58,7 @@ Columns:
 | 2026-05-26 09:56 | active | python-reviewer | auto-trigger | agents-wave-f032114 | success: 1 CRIT (db.commit removed) + 1 HIGH (same-name suppression deadlock) + 1 MED + 1 LOW + 1 LOW all addressed in f5becf4 | agent a7b7b95c73413ab66 |
 | 2026-05-26 09:56 | active | database-reviewer | auto-trigger | quality-check-migration | success: 0 CRIT/HIGH; 2 MED (ORM type variant, SQLite bare except) deferred as polish; lock impact metadata-only at 7-50k rows | agent aeb25f5b1ad068c9e |
 | 2026-05-26 09:56 | active | code-reviewer | auto-trigger | review-by-name-mutation | success: 1 HIGH (duplicate-name collision) + 1 MED (whitespace name guard) addressed; rollback + TS narrowing + deprecation + SSE wiring all clean | agent ad052b86576a43b54 |
+| 2026-05-26 10:19 | active | python-reviewer | auto-trigger | d13-d1d2-polish | success: 1 HIGH (race condition in dedup_stub_cleanup) + 3 MED (NAME_PROMOTE_REVERSE doc gap, async task GC warning, alembic downgrade bare except) + 2 LOW; HIGH + 2 MED addressed; 58/58 tests green | agent ab914bdcea77b47fd; atomic conditional DELETE pattern |
 
 ---
 
