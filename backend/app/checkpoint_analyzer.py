@@ -624,7 +624,18 @@ async def _analyze_batch(
                     )
 
             confidence = r.get("confidence", "high")
-            status_emoji = {"pass": "\u2705", "fail": "\u274c", "partial": "\u26a0\ufe0f", "unverified": "\u2753"}.get(status, "\u2753")
+            # 2026-05-27 D10 \u2014 accept `n_a` from the grader. Emit a distinct
+            # grey-circle emoji so log readers can scan for it. Conditional
+            # checkpoints ("if applicable / if relevant") whose trigger does
+            # not fire return n_a; they're excluded from the score
+            # denominator downstream (pipeline._step_score).
+            status_emoji = {
+                "pass": "\u2705",
+                "fail": "\u274c",
+                "partial": "\u26a0\ufe0f",
+                "unverified": "\u2753",
+                "n_a": "\u26aa",
+            }.get(status, "\u2753")
             log.info(f"{status_emoji} CHECKPOINT \"{r.get('name', cp.get('name', '?'))}\" \u2192 {status} ({confidence})")
 
             # W4.4 + W4.7 \u2014 coerce 5 new fields, fall back to script
@@ -853,8 +864,14 @@ async def analyze_all_checkpoints(
             # Pass through category too — useful for the reviewer queue + audit.
             r["category"] = src.get("category")
 
-    # Aggregate scores (skip "error" checkpoints from denominator)
-    non_error = [r for r in results if r["status"] != "error"]
+    # 2026-05-27 D10 — n_a checkpoints (conditional checkpoints whose
+    # trigger condition didn't fire) are excluded from BOTH the
+    # denominator and the breach lists below. They surface in the UI as
+    # muted/grey chips but do not affect the compliance verdict.
+    #
+    # Aggregate scores (skip "error" AND "n_a" checkpoints from denominator).
+    non_error = [r for r in results if r["status"] not in ("error", "n_a")]
+    n_a_count = sum(1 for r in results if r["status"] == "n_a")
     total = len(non_error)
     passed = sum(1 for r in non_error if r["status"] == "pass")
     partial = sum(1 for r in non_error if r["status"] == "partial")
@@ -910,7 +927,8 @@ async def analyze_all_checkpoints(
         compliant = total > 0
 
     log.info(
-        f"\U0001f4ca ANALYSIS done \u2192 {passed}/{total} passed \u00b7 "
+        f"\U0001f4ca ANALYSIS done \u2192 {passed}/{total} passed "
+        f"(+{n_a_count} n_a) \u00b7 "
         f"breaches: critical={len(critical_hits)} high={len(high_hits)} "
         f"medium={len(medium_hits)} \u00b7 bucket={bucket} compliant={compliant} \u00b7 "
         f"{error_count} errors, {needs_review_count} needs review"
@@ -921,10 +939,11 @@ async def analyze_all_checkpoints(
         "agent_name": agent_name,
         "customer_name": customer_name,
         "summary": {
-            "total": total,
+            "total": total,                         # denominator (excludes n_a + error)
             "passed": passed,
             "partial": partial,
             "failed": failed,
+            "n_a": n_a_count,                       # 2026-05-27 D10 \u2014 surfaced for UI
             "error": error_count,
             "needs_review": needs_review_count,
             "compliant": compliant,
@@ -934,4 +953,139 @@ async def analyze_all_checkpoints(
             "medium_breaches": len(medium_hits),
             "score": f"{passed}/{total}" if total > 0 else "0/0",
         },
+    }
+
+
+# ─── aggregate_results — pure helper extracted 2026-05-27 ──────────────
+#
+# Same logic as the inline aggregation in ``analyze_all_checkpoints``
+# above. Extracted so tests can pin the n_a vocabulary contract end-to-
+# end without spinning up the LLM batch path. The production code still
+# inlines its version (kept as canonical) — both implementations are
+# pinned by ``tests/test_n_a_vocabulary.py`` to agree on every result.
+def aggregate_results(
+    *,
+    results: list[dict],
+    checkpoints: list[dict],
+    emit_log: bool = False,
+) -> dict:
+    """Reduce per-checkpoint verdicts to a segment summary.
+
+    Args:
+        results: per-checkpoint verdict dicts. Each must carry ``status``
+            and (optionally) ``severity`` + ``needs_review``.
+        checkpoints: source checkpoint definitions used to backfill
+            severity onto verdicts that didn't carry it. Pass ``[]`` when
+            verdicts already have severity set.
+        emit_log: when True, emits the canonical ``📊 ANALYSIS done`` log
+            line. False in tests so suite output stays clean.
+
+    Returns:
+        ``{"summary": {...}, "critical_hits": [...], "high_hits": [...],
+        "medium_hits": [...]}`` — the same shape callers consume via the
+        inline aggregator in ``analyze_all_checkpoints``.
+
+    n_a contract (2026-05-27 D10):
+
+    * ``n_a`` rows are excluded from total / passed / failed / partial.
+    * ``n_a`` count surfaces as ``summary["n_a"]``.
+    * ``n_a`` rows never appear in critical_hits / high_hits / medium_hits
+      regardless of their declared severity.
+    """
+    # python-reviewer MEDIUM (2026-05-27): the inline aggregator above
+    # mutates its `results` argument by backfilling severity in place;
+    # this pure helper takes a copy first so calling it twice with the
+    # same list produces identical output and the immutability law
+    # (CLAUDE.md / coding-style) is honoured.
+    by_section = {cp.get("section"): cp for cp in checkpoints if cp.get("section") is not None}
+    by_name = {cp.get("name"): cp for cp in checkpoints}
+    normalised: list[dict] = []
+    for r in results:
+        # python-reviewer HIGH-2 (2026-05-27): inline aggregator uses
+        # `r["status"]` (raises KeyError on malformed input); this helper
+        # historically used `r.get(...)`, which silently classified
+        # missing-key rows as `non_error` and inflated the denominator.
+        # Align: require `status` key — raise the same KeyError so both
+        # paths agree on bad input shapes.
+        if "status" not in r:
+            raise KeyError(
+                "checkpoint result is missing required 'status' key: "
+                f"keys={sorted(r.keys())!r}"
+            )
+        # Copy so the backfill below doesn't mutate the caller's row.
+        cp = dict(r)
+        if not (cp.get("severity")):
+            src = by_section.get(cp.get("section")) or by_name.get(cp.get("name"))
+            if src:
+                cp["severity"] = (src.get("severity") or "medium").lower()
+                cp["category"] = src.get("category")
+        normalised.append(cp)
+
+    # Operate on the normalised copy from here on out — the original
+    # `results` argument is never read past this point.
+    non_error = [r for r in normalised if r["status"] not in ("error", "n_a")]
+    n_a_count = sum(1 for r in normalised if r["status"] == "n_a")
+    total = len(non_error)
+    passed = sum(1 for r in non_error if r["status"] == "pass")
+    partial = sum(1 for r in non_error if r["status"] == "partial")
+    failed = sum(1 for r in non_error if r["status"] in ("fail", "unverified"))
+    error_count = sum(1 for r in normalised if r["status"] == "error")
+    needs_review_count = sum(1 for r in normalised if r.get("needs_review"))
+
+    def _sev(cp: dict) -> str:
+        s = str(cp.get("severity") or "medium").lower()
+        return s if s in {"critical", "high", "medium", "low", "info"} else "medium"
+
+    breached = [r for r in non_error if r["status"] in ("fail", "unverified", "partial")]
+    critical_hits = [r for r in breached if _sev(r) == "critical"]
+    high_hits = [r for r in breached if _sev(r) == "high"]
+    medium_hits = [r for r in breached if _sev(r) in ("medium", "low", "info")]
+
+    if critical_hits:
+        bucket = "blocked"
+        compliant = False
+    elif high_hits:
+        bucket = "review"
+        compliant = False
+    elif medium_hits:
+        if total > 0 and (passed / total) < 0.5:
+            bucket = "review"
+            compliant = False
+        else:
+            bucket = "coaching"
+            compliant = True
+    else:
+        bucket = "pass"
+        compliant = total > 0
+
+    if emit_log:
+        log.info(
+            "ANALYSIS done -> {p}/{t} passed (+{n} n_a) - "
+            "breaches: critical={c} high={h} medium={m} - "
+            "bucket={b} compliant={co}".format(
+                p=passed, t=total, n=n_a_count,
+                c=len(critical_hits), h=len(high_hits), m=len(medium_hits),
+                b=bucket, co=compliant,
+            )
+        )
+
+    return {
+        "summary": {
+            "total": total,
+            "passed": passed,
+            "partial": partial,
+            "failed": failed,
+            "n_a": n_a_count,
+            "error": error_count,
+            "needs_review": needs_review_count,
+            "compliant": compliant,
+            "bucket": bucket,
+            "critical_breaches": len(critical_hits),
+            "high_breaches": len(high_hits),
+            "medium_breaches": len(medium_hits),
+            "score": f"{passed}/{total}" if total > 0 else "0/0",
+        },
+        "critical_hits": critical_hits,
+        "high_hits": high_hits,
+        "medium_hits": medium_hits,
     }

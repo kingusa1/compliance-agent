@@ -16,7 +16,13 @@ export type DisplayState =
   | "said_wrong"
   | "not_said"
   | "unverified"
-  | "not_scored";
+  | "not_scored"
+  // 2026-05-27 D10 — `n_a` is for "if applicable" / "if relevant" conditional
+  // checkpoints whose trigger condition did not fire. They appear in the
+  // verdict list with a muted grey "N/A" chip and are excluded from the
+  // score denominator on the backend (checkpoint_analyzer.py:868). Distinct
+  // from `not_scored` (synthetic placeholder when the rubric missed a row).
+  | "not_applicable";
 
 export interface CheckpointStateInput {
   status: string;
@@ -34,6 +40,13 @@ export function deriveDisplayState(cp: CheckpointStateInput): DisplayState {
   // pipeline._normalize_checkpoint_results when the analyzer's per-segment
   // slice missed a rule. The reviewer needs to see it as a muted grey
   // placeholder (not "Partial"), so it's its own display state.
+  //
+  // 2026-05-27 D10: ``n_a`` (the analyzer's "conditional did not fire"
+  // verdict) maps to its own display state so the chip reads "N/A" and the
+  // tone matches not_scored (muted grey) — distinct from `not_scored` so
+  // the analyst-report bug ("if applicable" checkpoints marked fail) is
+  // visible from the UI without requiring a separate API change.
+  if (cp.status === "n_a") return "not_applicable";
   if (cp.status === "not_scored") return "not_scored";
   if (cp.needs_review) return "partial";
   if (cp.status === "unverified") return "partial";
@@ -53,6 +66,7 @@ export function displayStateLabel(s: DisplayState): string {
     case "not_said": return "Non-Compliant";
     case "unverified": return "Partial";
     case "not_scored": return "Not Scored";
+    case "not_applicable": return "N/A";
   }
 }
 
@@ -64,5 +78,6 @@ export function displayStateAccent(s: DisplayState): string {
     case "not_said": return "#ef4444";   // red
     case "unverified": return "#f59e0b"; // amber (fallback only)
     case "not_scored": return "#94a3b8"; // slate — muted, not alarming
+    case "not_applicable": return "#64748b"; // slate-500 — slightly darker than not_scored so the two muted states are distinguishable side-by-side
   }
 }

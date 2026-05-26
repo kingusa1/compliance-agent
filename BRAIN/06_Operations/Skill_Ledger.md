@@ -48,6 +48,10 @@ Columns:
 
 | timestamp | session | skill | role | task-id | status | evidence |
 |---|---|---|---|---|---|---|
+| 2026-05-26 08:49 | active | security-reviewer | auto-trigger | auth-trigger-false-positive-2026-05-27 | success: 0 CRIT/HIGH/MED/LOW; confirmed Depends() trigger matched BRAIN prose only, no auth code changed; file-read helpers no traversal risk; pool 30/60 no new DoS vector | agent ac4e00312c5ba2d72; full e745147..HEAD diff reviewed |
+| 2026-05-26 09:27 | active | database-reviewer | auto-trigger | n-a-vocab-migration | success: 0 CRIT/0 HIGH blocking; idempotent IF NOT EXISTS verified; partial index correct; lock impact metadata-only at 10k rows; chain validated single-head | agent afa907598b880348c |
+| 2026-05-26 09:27 | active | python-reviewer | auto-trigger | n-a-vocab-backend | success: 2 HIGH (4 missed callsites, dict access divergence) + 1 MED (mutation) + 1 LOW (qualifier list) all addressed; 58/58 tests green | agent a844b147a641ef035 |
+| 2026-05-26 09:27 | active | code-reviewer | auto-trigger | n-a-vocab-frontend | success: 1 HIGH (n_a counter+filter) addressed in page.tsx and SegmentCards.tsx; 3 MED/LOW noted, no impact on chip rendering; tsc clean on touched files | agent a0403d43371763064 |
 
 ---
 

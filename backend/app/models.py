@@ -318,6 +318,14 @@ class CallCheckpoint(Base):
     segment_id = Column(PGUUID(as_uuid=True), ForeignKey("call_segments.id", ondelete="SET NULL"), nullable=True, index=True)
     rule_text = Column(Text, nullable=False)
     passed = Column(Boolean, nullable=False)
+    # 2026-05-27 D10 fix — "if applicable / if relevant" conditional
+    # checkpoints whose trigger condition does not fire are marked N/A
+    # instead of failed. Excluded from score denominator + rendered as a
+    # muted/grey chip on the frontend. `passed` stays `True` for n_a rows
+    # so legacy readers don't aggregate them as failures; `is_not_applicable`
+    # is the load-bearing signal for new code. Backed by Alembic migration
+    # `2026_05_27_n_a_vocab` (idempotent ADD COLUMN IF NOT EXISTS).
+    is_not_applicable = Column(Boolean, nullable=False, default=False, server_default="false")
     excerpt = Column(Text)
     confidence = Column(String, default="high")  # "high" or "low"
     needs_review = Column(Boolean, default=False)  # True when confidence is "low"

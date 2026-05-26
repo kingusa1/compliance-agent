@@ -110,7 +110,56 @@ export function useReviewCheckpoint() {
         `/api/calls/${encodeURIComponent(callId)}/checkpoint/${index}/review?${qs.toString()}`,
       );
     },
+    // 2026-05-27 — owner-reported "Pass / Override → Fail is so slow".
+    // Optimistic update so the verdict chip flips IMMEDIATELY when the
+    // reviewer clicks; the server confirmation arrives in background.
+    // Backend `abstract_and_store_review` was made fire-and-forget the
+    // same day (routes.py:review_checkpoint_verdict) so server response
+    // is now sub-second, but optimistic update + sub-second server
+    // together feel instant. Rollback on error.
+    onMutate: async ({ callId, index, verdict, notes }) => {
+      const detailKey = reviewerKeys.callDetail(callId);
+      // Cancel any in-flight detail refetch so our optimistic patch
+      // isn't immediately overwritten by stale server data.
+      await qc.cancelQueries({ queryKey: detailKey });
+      const prev = qc.getQueryData<{ checkpoint_results?: string | null } | undefined>(detailKey);
+      // The checkpoint verdicts live in a JSON string on Call.checkpoint_results.
+      // Parse, patch index N, re-serialize.
+      if (prev && typeof prev === "object" && "checkpoint_results" in prev && prev.checkpoint_results) {
+        try {
+          const parsed = JSON.parse(prev.checkpoint_results as string);
+          if (Array.isArray(parsed) && index >= 0 && index < parsed.length) {
+            const next = parsed.slice();
+            next[index] = {
+              ...next[index],
+              reviewer_verdict: verdict,
+              reviewer_notes: notes ?? "",
+              needs_review: false,
+            };
+            qc.setQueryData(detailKey, {
+              ...prev,
+              checkpoint_results: JSON.stringify(next),
+            });
+          }
+        } catch {
+          // Malformed JSON — leave the cache untouched; the server's
+          // response will repaint via onSuccess.
+        }
+      }
+      return { prev };
+    },
+    onError: (err, _args, ctx) => {
+      // Rollback the optimistic patch so the UI matches server reality.
+      if (ctx?.prev !== undefined) {
+        qc.setQueryData(reviewerKeys.callDetail(_args.callId), ctx.prev);
+      }
+      toast.error("Couldn't save checkpoint", { description: _errMessage(err, "Try again.") });
+    },
     onSuccess: (_data, { callId }) => {
+      // Confirm the optimistic patch by refetching detail + dependent
+      // queries. The cache patch already drove the UI; these refetches
+      // sync any derived state (score pill, segment cards) without
+      // making the user wait.
       qc.invalidateQueries({ queryKey: reviewerKeys.callDetail(callId) });
       qc.invalidateQueries({ queryKey: reviewerKeys.callCheckpoints(callId) });
       // SegmentCards on the call-detail page reads from a separate key
@@ -120,9 +169,6 @@ export function useReviewCheckpoint() {
       // showing 63/88 and the filter pills stale. Audit 2026-05-16 P1 #8.
       qc.invalidateQueries({ queryKey: ["call", callId, "segments"] });
       // Toasts on every checkpoint click would be noisy — stay silent on success.
-    },
-    onError: (err) => {
-      toast.error("Couldn’t save checkpoint", { description: _errMessage(err, "Try again.") });
     },
   });
 }
@@ -235,20 +281,21 @@ export function useSubmitVerdict() {
         reasoning: reason,
       }),
     onSuccess: (data, { callId }) => {
+      // 2026-05-27 — split invalidations by visibility. The 3 detail-page
+      // queries refetch immediately (the user is staring at them). The 5
+      // off-page queries (queue/findings/tracker/admin-calls/rejections)
+      // mark stale via `refetchType: "none"` so they refresh lazily on
+      // navigation. Owner-reported "buttons take time" was partly this
+      // chain triggering 8 concurrent refetches that contended with the
+      // visible page's queries.
       qc.invalidateQueries({ queryKey: reviewerKeys.callDetail(callId) });
-      // Verdict submission flips per-CP status on the backend; checkpoints
-      // + segments queries are separate cache keys and would otherwise show
-      // stale pass/partial/fail counts until manual refresh. Audit 2026-05-16
-      // CRITICAL C3.
       qc.invalidateQueries({ queryKey: reviewerKeys.callCheckpoints(callId) });
       qc.invalidateQueries({ queryKey: ["call", callId, "segments"] });
-      qc.invalidateQueries({ queryKey: ["queue"] });
-      qc.invalidateQueries({ queryKey: reviewerKeys.findings() });
-      // Plan §5c: tracker rows mirror call verdicts — invalidate them on
-      // every verdict submit so the /tracker page refreshes without a
-      // manual reload.
-      qc.invalidateQueries({ queryKey: ["admin", "tracker"] });
-      qc.invalidateQueries({ queryKey: ["admin-calls"] });
+      // Off-page — mark stale, do not refetch immediately.
+      qc.invalidateQueries({ queryKey: ["queue"], refetchType: "none" });
+      qc.invalidateQueries({ queryKey: reviewerKeys.findings(), refetchType: "none" });
+      qc.invalidateQueries({ queryKey: ["admin", "tracker"], refetchType: "none" });
+      qc.invalidateQueries({ queryKey: ["admin-calls"], refetchType: "none" });
       // 2026-05-16 audit Bug 7 fix: invalidate ["rejections"] UNCONDITIONALLY.
       // Previously gated on data?.auto_rejection_id being truthy, but a FAIL
       // verdict with no failing CallCheckpoint rows (e.g. reviewer override
@@ -256,7 +303,7 @@ export function useSubmitVerdict() {
       // /rejections page stays stale even though the verdict shipped. Also
       // covers the case where confirmed_by was updated on a pre-existing
       // rejection row (which doesn't return an id but DOES change list data).
-      qc.invalidateQueries({ queryKey: ["rejections"] });
+      qc.invalidateQueries({ queryKey: ["rejections"], refetchType: "none" });
       // W2: surface the new rejection in the toast only when one was created.
       if (data?.auto_rejection_id) {
         toast.success("Verdict committed + rejection created", {

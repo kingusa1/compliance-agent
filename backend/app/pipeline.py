@@ -2361,12 +2361,17 @@ async def _step_analyze_checkpoints(
             )
 
             for cp in v1.checkpoints:
+                # 2026-05-27 D10 — V1 legacy path. `cp` here is a typed
+                # object with `.passed` already booleanised — it does NOT
+                # carry n_a status. Explicit `is_not_applicable=False` so
+                # the contract stays consistent with the V2 paths.
                 db.add(
                     CallCheckpoint(
                         call_id=call_id,
                         segment_id=seg.id,
                         rule_text=cp.rule,
                         passed=cp.passed,
+                        is_not_applicable=False,
                         excerpt=cp.excerpt,
                         confidence="high",
                         needs_review=False,
@@ -2455,13 +2460,21 @@ async def _step_analyze_checkpoints(
         seg.checkpoint_results = json.dumps(verified)
 
         # Insert per-rule CallCheckpoint rows with segment_id linkage.
+        # 2026-05-27 D10 — n_a checkpoints (conditional checkpoints whose
+        # trigger condition didn't fire) set `is_not_applicable=True` AND
+        # `passed=True` so legacy readers of the boolean don't count them
+        # as failures. New readers gate on `is_not_applicable` to exclude
+        # from the score denominator.
         for cp in verified:
+            cp_status = cp["status"]
+            is_n_a = cp_status == "n_a"
             db.add(
                 CallCheckpoint(
                     call_id=call_id,
                     segment_id=seg.id,
                     rule_text=cp["name"],
-                    passed=cp["status"] == "pass",
+                    passed=(cp_status == "pass") or is_n_a,
+                    is_not_applicable=is_n_a,
                     excerpt=cp.get("evidence"),
                     confidence=cp.get("confidence", "high"),
                     needs_review=cp.get("needs_review", False),
@@ -2622,10 +2635,15 @@ async def _legacy_analyze_checkpoints_unused(
                 # CallCheckpoint row. All nullable; the checkpoint analyzer
                 # always populates these keys (None when LLM didn't supply
                 # or the value failed enum validation), so .get() is safe.
+                # 2026-05-27 D10 — n_a checkpoints set is_not_applicable=True
+                # AND passed=True (legacy readers).
+                cp_status = cp["status"]
+                is_n_a = cp_status == "n_a"
                 db.add(CallCheckpoint(
                     call_id=call_id,
                     rule_text=cp["name"],
-                    passed=cp["status"] == "pass",
+                    passed=(cp_status == "pass") or is_n_a,
+                    is_not_applicable=is_n_a,
                     excerpt=cp.get("evidence"),
                     confidence=cp.get("confidence", "high"),
                     needs_review=cp.get("needs_review", False),
@@ -2651,11 +2669,16 @@ async def _legacy_analyze_checkpoints_unused(
     if v1.customer_name and v1.customer_name != "Unknown":
         call.customer_name = v1.customer_name
     call.excerpt = v1.excerpt
+    # 2026-05-27 D10 — V1 legacy path. `cp` here is the parsed v1 object
+    # whose `.passed` is already booleanised; it carries no n_a state.
+    # Explicit `is_not_applicable=False` keeps the contract consistent
+    # with the V2 paths so downstream score math is dialect-agnostic.
     for cp in v1.checkpoints:
         db.add(CallCheckpoint(
             call_id=call_id,
             rule_text=cp.rule,
             passed=cp.passed,
+            is_not_applicable=False,
             excerpt=cp.excerpt,
         ))
     # Persist the verdict on the call row so downstream score/finalize

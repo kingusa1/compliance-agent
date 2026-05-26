@@ -42,7 +42,7 @@ TRANSCRIPT:
 
 For EACH checkpoint return ONLY valid JSON:
 [
-  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail", "confidence": "high" or "low", "evidence": "exact quote from transcript", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
+  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail" or "n_a", "confidence": "high" or "low", "evidence": "exact quote from transcript", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
 ]
 
 Confidence: "high" = certain. "low" = borderline (agent may have covered it indirectly)."""
@@ -70,7 +70,7 @@ TRANSCRIPT:
 
 For EACH checkpoint return ONLY valid JSON:
 [
-  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail", "confidence": "high" or "low", "evidence": "quote BOTH agent statement AND customer response", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
+  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail" or "n_a", "confidence": "high" or "low", "evidence": "quote BOTH agent statement AND customer response", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
 ]"""
 
 
@@ -93,7 +93,7 @@ TRANSCRIPT:
 
 For EACH checkpoint return ONLY valid JSON:
 [
-  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail", "confidence": "high" or "low", "evidence": "exact quote from transcript", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
+  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail" or "n_a", "confidence": "high" or "low", "evidence": "exact quote from transcript", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
 ]"""
 
 
@@ -117,7 +117,7 @@ TRANSCRIPT:
 
 For EACH checkpoint return ONLY valid JSON:
 [
-  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail", "confidence": "high" or "low", "evidence": "quote BOTH agent and customer", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
+  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail" or "n_a", "confidence": "high" or "low", "evidence": "quote BOTH agent and customer", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
 ]"""
 
 
@@ -140,7 +140,7 @@ TRANSCRIPT:
 
 For EACH checkpoint return ONLY valid JSON:
 [
-  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail", "confidence": "high" or "low", "evidence": "exact quote from transcript", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
+  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail" or "n_a", "confidence": "high" or "low", "evidence": "exact quote from transcript", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
 ]"""
 
 
@@ -164,7 +164,7 @@ TRANSCRIPT:
 
 For EACH checkpoint return ONLY valid JSON:
 [
-  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail", "confidence": "high" or "low", "evidence": "quote BOTH agent and customer", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
+  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail" or "n_a", "confidence": "high" or "low", "evidence": "quote BOTH agent and customer", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
 ]"""
 
 
@@ -186,7 +186,7 @@ TRANSCRIPT:
 
 For EACH checkpoint return ONLY valid JSON:
 [
-  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail", "confidence": "high" or "low", "evidence": "exact quote", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
+  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail" or "n_a", "confidence": "high" or "low", "evidence": "exact quote", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
 ]"""
 
 
@@ -209,7 +209,7 @@ TRANSCRIPT:
 
 For EACH checkpoint return ONLY valid JSON:
 [
-  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail", "confidence": "high" or "low", "evidence": "exact quote", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
+  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail" or "n_a", "confidence": "high" or "low", "evidence": "exact quote", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
 ]"""
 
 
@@ -233,7 +233,7 @@ TRANSCRIPT:
 
 For EACH checkpoint return ONLY valid JSON:
 [
-  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail", "confidence": "high" or "low", "evidence": "quote BOTH agent and customer", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
+  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail" or "n_a", "confidence": "high" or "low", "evidence": "quote BOTH agent and customer", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
 ]"""
 
 
@@ -256,7 +256,7 @@ TRANSCRIPT:
 
 For EACH checkpoint return ONLY valid JSON:
 [
-  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail", "confidence": "high" or "low", "evidence": "exact quote", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
+  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail" or "n_a", "confidence": "high" or "low", "evidence": "exact quote", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
 ]"""
 
 
@@ -280,7 +280,7 @@ TRANSCRIPT:
 
 For EACH checkpoint return ONLY valid JSON:
 [
-  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail", "confidence": "high" or "low", "evidence": "quote BOTH agent and customer", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
+  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail" or "n_a", "confidence": "high" or "low", "evidence": "quote BOTH agent and customer", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
 ]"""
 
 
@@ -304,7 +304,7 @@ TRANSCRIPT:
 
 For EACH checkpoint return ONLY valid JSON:
 [
-  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail", "confidence": "high" or "low", "evidence": "exact quote", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
+  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail" or "n_a", "confidence": "high" or "low", "evidence": "exact quote", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
 ]"""
 
 
@@ -329,7 +329,7 @@ TRANSCRIPT:
 
 For EACH checkpoint return ONLY valid JSON:
 [
-  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail", "confidence": "high" or "low", "evidence": "quote BOTH agent and customer", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
+  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail" or "n_a", "confidence": "high" or "low", "evidence": "quote BOTH agent and customer", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
 ]"""
 
 
@@ -347,7 +347,7 @@ TRANSCRIPT:
 
 For EACH checkpoint return ONLY valid JSON:
 [
-  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail", "confidence": "high" or "low", "evidence": "exact quote", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
+  {{"name": "checkpoint name", "status": "pass" or "partial" or "fail" or "n_a", "confidence": "high" or "low", "evidence": "exact quote", "notes": "REQUIRED 1-2 sentence plain-English reasoning for EVERY status. For pass: explain WHY the agent satisfied this checkpoint (what they said and why it covers the requirement). For partial: what was covered vs. what specific piece was missing. For fail: confirm it was NOT FOUND IN TRANSCRIPT and briefly note what was expected."}}
 ]"""
 
 
@@ -403,6 +403,39 @@ For every checkpoint you return:
    evidence text that does not appear in the transcript word-for-word.
 4. If the rule requires both the agent and the customer's response, quote
    both consecutively in the same evidence field.
+
+CONDITIONAL CHECKPOINTS — N/A RULE (2026-05-27, closes the "if applicable"
+phantom-failure pattern):
+
+If the checkpoint NAME contains the phrase "if applicable", "if relevant",
+"if asked", "if requested", "if the customer", "if the call",
+"where applicable", "where required", "when applicable", "when required",
+"subject to", "only if", "on request", "if any", or any other
+conditional qualifier, AND the condition does NOT apply to this call's
+content, return:
+
+    "status": "n_a",
+    "evidence": "CONDITIONAL NOT TRIGGERED",
+    "notes": "<1 sentence explaining which condition needs to fire and why
+              it does not in this transcript>"
+
+Examples of n_a vs fail:
+- "State 100% renewable benefit if applicable" — when the contract being
+  agreed is NOT a renewable tariff, return n_a (the conditional doesn't
+  fire). Return fail only if it IS a renewable tariff and the agent
+  failed to state the benefit.
+- "Disclose ASC and excess capacity charges if applicable" — when there
+  is no ASC/excess capacity component in this contract, return n_a.
+  Return fail only when the contract HAS these charges and the agent
+  did not disclose them.
+- "Authorise contacting current supplier on objections" — when the
+  customer raises no objections and the LOA does not require this
+  authorisation, return n_a.
+
+N/A is NOT the same as fail. N/A checkpoints are excluded from the score
+denominator — they neither help nor hurt the compliance rate. Always
+prefer fail over n_a when there is genuine evidence of a missed
+obligation. Use n_a only when the conditional precondition is absent.
 
 Violating this contract invalidates the entire response for that checkpoint.
 

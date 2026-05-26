@@ -132,6 +132,10 @@ export function useCallEvents(scope: string | null | undefined, enabled = true):
         "score_ready",
         "finalized",
         "failed",
+        // 2026-05-27 — per-checkpoint reviewer verdict overrides emit this
+        // event from routes.review_checkpoint_verdict. Lets the call detail
+        // page repaint other tabs/sessions live when a teammate overrides.
+        "verdict_changed",
       ] as const;
       for (const evt of named) {
         es.addEventListener(evt, handle as EventListener);

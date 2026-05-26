@@ -25,28 +25,64 @@ _emb_client = None
 
 
 def _emb_client_get():
-    """Lazy OpenAI client. Imported inside the function so the `openai` SDK
-    is optional at import time — tests that monkeypatch `embed_text` directly
-    never construct a real client."""
+    """Lazy OpenAI-compatible client for embeddings.
+
+    2026-05-27 — the production system uses OpenRouter end-to-end (no
+    direct OpenAI account). The prior client construction with bare
+    ``api_key=settings.openai_api_key`` logged `embedding failed: Missing
+    credentials` on every verdict-change feedback path because
+    ``OPENAI_API_KEY`` is empty in prod. Switch the client to use
+    OpenRouter's OpenAI-compatible endpoint when ``OPENROUTER_API_KEY``
+    is set, falling back to direct OpenAI only when an explicit
+    ``OPENAI_API_KEY`` is present.
+
+    Tests that monkeypatch ``embed_text`` directly never reach this
+    function. Tests that DO want a real client can set either env var.
+    """
     global _emb_client
     if _emb_client is None:
         from openai import OpenAI  # imported lazily
-        _emb_client = OpenAI(api_key=settings.openai_api_key)
+        # Prefer explicit OpenAI direct when key is set; otherwise fall
+        # back to OpenRouter's openai-compatible endpoint.
+        openai_key = getattr(settings, "openai_api_key", None) or None
+        openrouter_key = getattr(settings, "openrouter_api_key", None) or None
+        if openai_key:
+            _emb_client = OpenAI(api_key=openai_key, timeout=10.0)
+        elif openrouter_key:
+            _emb_client = OpenAI(
+                api_key=openrouter_key,
+                base_url="https://openrouter.ai/api/v1",
+                timeout=10.0,
+            )
+        else:
+            # Neither key set — leave client unset so `embed_text` short-
+            # circuits to None instead of constructing a credential-less
+            # client that would log "Missing credentials" on every call.
+            return None
     return _emb_client
 
 
 def embed_text(text: str) -> list[float] | None:
     """Return a 1536-dim embedding for `text` via text-embedding-3-small.
 
-    Returns None for empty/whitespace input or if the OpenAI call fails — the
-    caller must tolerate None (the learning row is still written with
-    embedding=NULL so future backfills can retry).
+    Returns None for empty/whitespace input, missing credentials, or any
+    SDK / network error — the caller must tolerate None (the learning row
+    is still written with embedding=NULL so a future backfill can retry).
+
+    2026-05-27 — short-circuits to None when neither OPENAI_API_KEY nor
+    OPENROUTER_API_KEY is set, instead of letting the OpenAI SDK raise
+    its noisy "Missing credentials" error. Owner-reported.
     """
     if not text or not text.strip():
         return None
+    client = _emb_client_get()
+    if client is None:
+        return None
     try:
-        r = _emb_client_get().embeddings.create(
-            model="text-embedding-3-small",
+        # text-embedding-3-small is supported by OpenRouter (mirrored from
+        # OpenAI) and by OpenAI direct. Same model id either way.
+        r = client.embeddings.create(
+            model="openai/text-embedding-3-small",
             input=text[:8000],
             timeout=10.0,
         )

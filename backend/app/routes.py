@@ -962,24 +962,62 @@ async def review_checkpoint_verdict(
     log.info(f"📝 REVIEW checkpoint #{cp_index} → verdict={verdict}, new score={call.score}")
     db.commit()
 
-    # Trigger anonymized feedback logging — agent's verdict was whatever it had
-    # before the reviewer changed it. If human == agent, feedback.py no-ops.
+    # 2026-05-27 — publish realtime SSE so other tabs / the tracker /
+    # the queue can refresh without polling. Fire-and-forget; never block
+    # the response on the SSE fan-out.
     try:
-        cp = results[cp_index]
-        agent_status = cp.get("status", "fail")
-        agent_simple = "pass" if agent_status == "pass" else "fail"
-        if agent_simple != verdict:
-            await abstract_and_store_review(
-                db=db,
-                supplier=call.detected_supplier or "Unknown",
-                checkpoint_name=cp.get("name", f"Checkpoint {cp_index}"),
-                transcript_excerpt=cp.get("evidence", "")[:2000],
-                agent_verdict=agent_simple,
-                human_verdict=verdict,
-                reviewer_notes=notes,
-            )
-    except Exception as e:
-        log.warning(f"📚 feedback processing failed (non-fatal): {e}")
+        from app import realtime as _rt
+        _rt.publish(call_id, "verdict_changed", {
+            "cp_index": cp_index,
+            "verdict": verdict,
+            "score": call.score,
+            "compliant": call.compliant,
+            "needs_review_remaining": needs_review_remaining,
+        })
+    except Exception as rt_e:  # noqa: BLE001
+        log.warning(f"realtime publish failed (non-fatal): {rt_e}")
+
+    # 2026-05-27 — feedback abstraction is now FIRE-AND-FORGET. The prior
+    # implementation `await abstract_and_store_review(...)` blocked the
+    # response by 5-15 s on a Gemini Flash + OpenAI embeddings round-trip
+    # (the embedding leg was also crashing every call with `Missing
+    # credentials` since the system runs on OpenRouter, not direct OpenAI).
+    # Owner-reported "Pass / Override → Fail buttons are so slow" was this
+    # await; the abstraction is not load-bearing for the verdict — it's an
+    # async learning row that can be backfilled later if it fails.
+    cp = results[cp_index]
+    agent_status = cp.get("status", "fail")
+    agent_simple = "pass" if agent_status == "pass" else "fail"
+    if agent_simple != verdict:
+        # Bind locals BEFORE the closure so the background task doesn't
+        # observe `cp_index` / `results` mutating across requests.
+        _supplier = call.detected_supplier or "Unknown"
+        _cp_name = cp.get("name", f"Checkpoint {cp_index}")
+        _excerpt = (cp.get("evidence", "") or "")[:2000]
+        _notes = notes
+
+        async def _bg_feedback() -> None:
+            # Open a fresh session so we don't reuse the request session
+            # after the response has returned (psycopg2 would error).
+            from app.database import SessionLocal as _SL
+            _db = _SL()
+            try:
+                await abstract_and_store_review(
+                    db=_db,
+                    supplier=_supplier,
+                    checkpoint_name=_cp_name,
+                    transcript_excerpt=_excerpt,
+                    agent_verdict=agent_simple,
+                    human_verdict=verdict,
+                    reviewer_notes=_notes,
+                )
+            except Exception as bg_e:  # noqa: BLE001
+                log.warning(f"📚 feedback processing failed (non-fatal): {bg_e}")
+            finally:
+                _db.close()
+
+        import asyncio as _asyncio
+        _asyncio.create_task(_bg_feedback())
 
     return {
         "status": "ok",
@@ -1314,10 +1352,16 @@ async def stream_call_processing(call_id: str):
                     log.info(f"{status_emoji} CHECKPOINT {i+1}/{len(v1_cps)} \"{cp['rule']}\" \u2192 {status}")
                     yield _sse("checkpoint_done", result)
 
+                    # 2026-05-27 D10 — n_a checkpoints (conditional checkpoints
+                    # whose trigger condition didn't fire) set
+                    # is_not_applicable=True AND passed=True so legacy readers
+                    # don't aggregate them as failures.
+                    _cp_is_n_a = status == "n_a"
                     db.add(CallCheckpoint(
                         call_id=call_id,
                         rule_text=cp["rule"],
-                        passed=status == "pass",
+                        passed=(status == "pass") or _cp_is_n_a,
+                        is_not_applicable=_cp_is_n_a,
                         excerpt=cp.get("excerpt"),
                     ))
 
@@ -1385,10 +1429,18 @@ async def stream_call_processing(call_id: str):
                 # W4.4 + W4.7 — also persist the AI-suggested category /
                 # remediation / line citation so the rejections auto-create
                 # path can prefer the AI's bucket over the keyword heuristic.
+                # 2026-05-27 D10 — n_a checkpoints set is_not_applicable=True
+                # AND passed=True so legacy boolean readers don't aggregate
+                # them as failures (python-reviewer HIGH-1 finding — this
+                # streaming V2 path is the active one and was previously
+                # persisting n_a as `passed=False`, silently corrupting data
+                # every time a conditional checkpoint fired).
+                _result_is_n_a = result["status"] == "n_a"
                 db.add(CallCheckpoint(
                     call_id=call_id,
                     rule_text=result["name"],
-                    passed=result["status"] == "pass",
+                    passed=(result["status"] == "pass") or _result_is_n_a,
+                    is_not_applicable=_result_is_n_a,
                     excerpt=result.get("evidence"),
                     line_number=result.get("script_line_number"),
                     ai_category=result.get("suggested_category"),

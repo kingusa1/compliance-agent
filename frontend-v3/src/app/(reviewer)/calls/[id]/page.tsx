@@ -1589,7 +1589,12 @@ export default function CallDetailPage({
                       if (s === "pass") acc.passed++;
                       else if (s === "partial") acc.partial++;
                       else if (s === "fail") acc.fail++;
-                      else if (s === "" || s === "na" || s === "skipped" || s === "unscored" || s === "not_scored") acc.na++;
+                      // 2026-05-27 D10 — `n_a` (with underscore) is the
+                      // backend's canonical "conditional did not fire"
+                      // status; rolled into the N/A pill alongside the
+                      // legacy unscored variants so a reviewer sees one
+                      // unified count of "rows that don't affect the score".
+                      else if (s === "" || s === "na" || s === "n_a" || s === "skipped" || s === "unscored" || s === "not_scored") acc.na++;
                       // Unknown statuses (error / pending / future enums) are
                       // intentionally NOT counted — they should surface as a
                       // missing-row total instead of silently inflating N/A.
