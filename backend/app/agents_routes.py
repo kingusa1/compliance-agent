@@ -26,6 +26,7 @@ from app._clock import utcnow
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 from sqlalchemy import func, inspect, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
@@ -226,7 +227,16 @@ def agent_drilldown(
         .filter(Call.agent_name == agent_name, Call.created_at >= cutoff_30)
         .one()
     )
-    pass_rate_30d = (rate_row.ok / rate_row.total) if rate_row.total else None
+    # 2026-05-28 P0 — explicit float() casts so a Decimal/Numeric column
+    # mapping (some psycopg2 dialect versions return COUNT(*) as Decimal)
+    # can't bubble a non-JSON-serializable type into the payload.
+    # `jsonable_encoder` below also catches this, but the explicit cast
+    # documents intent and removes dialect-dependence.
+    pass_rate_30d = (
+        (float(rate_row.ok) / float(rate_row.total))
+        if rate_row.total
+        else None
+    )
 
     # Open directives count (pending|in_progress).
     open_dir_count = (
@@ -579,7 +589,7 @@ def agent_drilldown(
             best_call_id = max(scored, key=_ratio).get("id")
             worst_call_id = min(scored, key=_ratio).get("id")
 
-    return {
+    payload = {
         "agent_name": agent_name,
         "critical_count_7d": critical_count_7d,
         "pass_rate_30d": pass_rate_30d,
@@ -601,6 +611,22 @@ def agent_drilldown(
         "best_call_id": best_call_id,
         "worst_call_id": worst_call_id,
     }
+    # 2026-05-28 P0 — defensive Row→dict coercion before FastAPI's
+    # response_model serializer runs. Earlier prod logs showed this route
+    # emitting `PydanticSerializationError: Unable to serialize unknown
+    # type: <class 'sqlalchemy.engine.row.Row'>`. The function builds many
+    # nested lists/dicts via SQLAlchemy `db.execute(...).fetchall()` and
+    # walks each Row with attribute access; if any new field forgets to
+    # extract a scalar value, a Row bubbles into the payload and crashes
+    # the response.
+    #
+    # `jsonable_encoder` walks the payload recursively. With the global
+    # `ENCODERS_BY_TYPE[Row] = dict(r._mapping)` registration in main.py,
+    # any Row encountered here is converted to a plain dict before the
+    # TypeAdapter sees it — Pydantic only ever observes JSON-safe values.
+    # Cost: one pre-order traversal of the response shape, on a route
+    # that already does 8+ DB round-trips.
+    return jsonable_encoder(payload)
 
 
 class AgentRetrainingPatch(BaseModel):

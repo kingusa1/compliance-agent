@@ -48,6 +48,9 @@ Columns:
 
 | timestamp | session | skill | role | task-id | status | evidence |
 |---|---|---|---|---|---|---|
+| 2026-05-26 12:02 | active | python-reviewer | auto-trigger | row-safety-net-main-py | success | agent aca6fbb5: 1 CRIT (added ResponseValidationError handler) + 2 HIGH + 3 MED addressed in follow-up edit |
+| 2026-05-26 12:05 | active | code-reviewer | auto-trigger | reviewer-ts-bundle-hook | success | agent ad6f96e3: 1 HIGH (bundle invalidation in 7 mutation sites — slated for follow-up commit) + 3 MED type tightenings + 3 LOW |
+| 2026-05-26 12:13 | active | python-reviewer | auto-trigger | agent-drilldown-row-fix | success | agent af08612c: 1 CRIT (line 230 float casts added) + 1 HIGH + 2 MED — jsonable_encoder wrap + explicit float casts shipped |
 
 ---
 

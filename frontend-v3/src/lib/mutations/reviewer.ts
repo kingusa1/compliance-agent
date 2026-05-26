@@ -21,6 +21,28 @@ import { reviewerKeys, type ChatMessage } from "@/lib/queries/reviewer";
 
 // ── Helpers ───────────────────────────────────────────────────────
 
+/**
+ * Invalidate every per-call cache slice in one call.
+ *
+ * TanStack Query matches by array prefix, so `["call", callId]` invalidates
+ * `["call", callId, "detail"]`, `["call", callId, "checkpoints"]`,
+ * `["call", callId, "words"]`, `["call", callId, "segments"]`,
+ * `["call", callId, "audio-url"]`, and the new
+ * `["call", callId, "bundle"]` key in one pass.
+ *
+ * Introduced 2026-05-28 PHASE 1b to keep the bundle key in sync with the
+ * older per-resource keys without enumerating each slice at every mutation
+ * site (otherwise adding a new slice means hunting through 7 mutation
+ * hooks). Mutations that want to mark the call stale but NOT trigger
+ * an immediate refetch should pass `{ refetchType: "none" }`.
+ */
+function _invalidateCallSlices(
+  qc: ReturnType<typeof useQueryClient>,
+  callId: string,
+): void {
+  qc.invalidateQueries({ queryKey: ["call", callId] });
+}
+
 function _errMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
     // Try to surface the backend's "detail" string if present.
@@ -61,7 +83,9 @@ export function useClaimCall() {
       postJson<ClaimResponse>(`/api/calls/${encodeURIComponent(callId)}/claim`),
     onSuccess: (_data, { callId, silent }) => {
       qc.invalidateQueries({ queryKey: ["queue"] });
-      qc.invalidateQueries({ queryKey: reviewerKeys.callDetail(callId) });
+      // Prefix-invalidate every per-call slice (detail / words / checkpoints
+      // / segments / audio-url / bundle). 2026-05-28 PHASE 1b.
+      _invalidateCallSlices(qc, callId);
       if (!silent) {
         toast.success("Call claimed", { description: "30-min review lock acquired." });
       }
@@ -132,10 +156,14 @@ export function useReviewCheckpoint() {
     // together feel instant. Rollback on error.
     onMutate: async ({ callId, index, verdict, notes, name }) => {
       const detailKey = reviewerKeys.callDetail(callId);
-      // Cancel any in-flight detail refetch so our optimistic patch
-      // isn't immediately overwritten by stale server data.
-      await qc.cancelQueries({ queryKey: detailKey });
+      const bundleKey = reviewerKeys.callBundle(callId);
+      // Cancel any in-flight detail OR bundle refetch so our optimistic
+      // patch isn't immediately overwritten by stale server data. The
+      // call-detail page now reads from the bundle key; older
+      // single-resource hooks still read from the detail key.
+      await qc.cancelQueries({ queryKey: ["call", callId] });
       const prev = qc.getQueryData<{ checkpoint_results?: string | null } | undefined>(detailKey);
+      const prevBundle = qc.getQueryData<{ call?: { checkpoint_results?: string | null } } | undefined>(bundleKey);
       // The checkpoint verdicts live in a JSON string on Call.checkpoint_results.
       // Parse, resolve target by NAME (preferred, order-independent) or
       // fall back to int index, patch, re-serialize.
@@ -184,10 +212,29 @@ export function useReviewCheckpoint() {
                 reviewer_notes: notes ?? "",
                 needs_review: false,
               };
+              const nextCheckpointResults = JSON.stringify(next);
               qc.setQueryData(detailKey, {
                 ...prev,
-                checkpoint_results: JSON.stringify(next),
+                checkpoint_results: nextCheckpointResults,
               });
+              // 2026-05-28 PHASE 1b — also patch the bundle's nested
+              // `call.checkpoint_results` slice so the call-detail page
+              // (which now reads from the bundle) sees the optimistic
+              // verdict flip instantly. Without this the chip would
+              // visually revert until the post-success refetch lands.
+              if (
+                prevBundle && typeof prevBundle === "object" &&
+                "call" in prevBundle && prevBundle.call &&
+                typeof prevBundle.call === "object"
+              ) {
+                qc.setQueryData(bundleKey, {
+                  ...prevBundle,
+                  call: {
+                    ...prevBundle.call,
+                    checkpoint_results: nextCheckpointResults,
+                  },
+                });
+              }
             }
           }
         } catch {
@@ -195,28 +242,25 @@ export function useReviewCheckpoint() {
           // response will repaint via onSuccess.
         }
       }
-      return { prev };
+      return { prev, prevBundle };
     },
     onError: (err, _args, ctx) => {
       // Rollback the optimistic patch so the UI matches server reality.
       if (ctx?.prev !== undefined) {
         qc.setQueryData(reviewerKeys.callDetail(_args.callId), ctx.prev);
       }
+      if (ctx?.prevBundle !== undefined) {
+        qc.setQueryData(reviewerKeys.callBundle(_args.callId), ctx.prevBundle);
+      }
       toast.error("Couldn't save checkpoint", { description: _errMessage(err, "Try again.") });
     },
     onSuccess: (_data, { callId }) => {
-      // Confirm the optimistic patch by refetching detail + dependent
-      // queries. The cache patch already drove the UI; these refetches
-      // sync any derived state (score pill, segment cards) without
-      // making the user wait.
-      qc.invalidateQueries({ queryKey: reviewerKeys.callDetail(callId) });
-      qc.invalidateQueries({ queryKey: reviewerKeys.callCheckpoints(callId) });
-      // SegmentCards on the call-detail page reads from a separate key
-      // (`["call", id, "segments"]` — see calls/[id]/page.tsx). Without
-      // this invalidation, overriding a single CP updated the top-bar
-      // score (63/88 → 62/88) but left the per-segment cards still
-      // showing 63/88 and the filter pills stale. Audit 2026-05-16 P1 #8.
-      qc.invalidateQueries({ queryKey: ["call", callId, "segments"] });
+      // 2026-05-28 PHASE 1b — single prefix invalidation covers detail +
+      // checkpoints + words + segments + audio-url + bundle. The cache
+      // patch (onMutate) already drove the UI for the immediate slices;
+      // this refetch syncs any derived state (score pill, segment cards,
+      // bundle audio_url re-sign) without making the user wait.
+      _invalidateCallSlices(qc, callId);
       // Toasts on every checkpoint click would be noisy — stay silent on success.
     },
   });
@@ -238,8 +282,8 @@ export function useRetryCheckpoint() {
     mutationFn: ({ callId, index }: RetryCheckpointArgs) =>
       postJson(`/api/calls/${encodeURIComponent(callId)}/checkpoint/${index}/retry`),
     onSuccess: (_data, { callId }) => {
-      qc.invalidateQueries({ queryKey: reviewerKeys.callDetail(callId) });
-      qc.invalidateQueries({ queryKey: reviewerKeys.callCheckpoints(callId) });
+      // Prefix-invalidate every per-call slice (2026-05-28 PHASE 1b).
+      _invalidateCallSlices(qc, callId);
       toast.success("Checkpoint re-analyzed");
     },
     onError: (err) => {
@@ -275,15 +319,13 @@ export function useEditWord(callId: string) {
         { word_index, old_text, new_text, checkpoint_id: checkpoint_id ?? null },
         { revision },
       ),
-    onSuccess: (data) => {
-      // Invalidate detail + words so karaoke re-syncs with the patched word
-      // stream. Skip toast on every keystroke commit — the inline tooltip
-      // already shows the edit succeeded.
-      qc.invalidateQueries({ queryKey: reviewerKeys.callWords(callId) });
-      qc.invalidateQueries({ queryKey: reviewerKeys.callDetail(callId) });
-      if (data?.verdict_changed) {
-        qc.invalidateQueries({ queryKey: reviewerKeys.callCheckpoints(callId) });
-      }
+    onSuccess: () => {
+      // Prefix-invalidate every per-call slice (2026-05-28 PHASE 1b) so
+      // karaoke re-syncs with the patched word stream + the bundle's
+      // nested call.transcript/word_data slices repaint together. Skip
+      // toast on every keystroke commit — the inline tooltip already
+      // shows the edit succeeded.
+      _invalidateCallSlices(qc, callId);
     },
     onError: (err) => {
       // 409 (concurrent write) is handled by the caller via onConflict —
@@ -330,16 +372,17 @@ export function useSubmitVerdict() {
         reasoning: reason,
       }),
     onSuccess: (data, { callId }) => {
-      // 2026-05-27 — split invalidations by visibility. The 3 detail-page
-      // queries refetch immediately (the user is staring at them). The 5
-      // off-page queries (queue/findings/tracker/admin-calls/rejections)
-      // mark stale via `refetchType: "none"` so they refresh lazily on
-      // navigation. Owner-reported "buttons take time" was partly this
-      // chain triggering 8 concurrent refetches that contended with the
-      // visible page's queries.
-      qc.invalidateQueries({ queryKey: reviewerKeys.callDetail(callId) });
-      qc.invalidateQueries({ queryKey: reviewerKeys.callCheckpoints(callId) });
-      qc.invalidateQueries({ queryKey: ["call", callId, "segments"] });
+      // 2026-05-27 — split invalidations by visibility. The on-page
+      // per-call slices refetch immediately (the user is staring at
+      // them). The 5 off-page queries (queue/findings/tracker/admin-
+      // calls/rejections) mark stale via `refetchType: "none"` so they
+      // refresh lazily on navigation. Owner-reported "buttons take
+      // time" was partly this chain triggering 8 concurrent refetches
+      // that contended with the visible page's queries.
+      //
+      // 2026-05-28 PHASE 1b — single prefix invalidation covers detail
+      // + checkpoints + words + segments + audio-url + bundle.
+      _invalidateCallSlices(qc, callId);
       // Off-page — mark stale, do not refetch immediately.
       qc.invalidateQueries({ queryKey: ["queue"], refetchType: "none" });
       qc.invalidateQueries({ queryKey: reviewerKeys.findings(), refetchType: "none" });
@@ -457,7 +500,9 @@ export function useAddFlag() {
     mutationFn: ({ callId, ...body }: AddFlagArgs) =>
       postJson(`/api/calls/${encodeURIComponent(callId)}/flags`, body),
     onSuccess: (_data, { callId }) => {
-      qc.invalidateQueries({ queryKey: reviewerKeys.callFlags(callId) });
+      // Prefix-invalidate every per-call slice (2026-05-28 PHASE 1b) —
+      // adding a flag can change derived state on the bundle's call slice.
+      _invalidateCallSlices(qc, callId);
       qc.invalidateQueries({ queryKey: reviewerKeys.findings() });
       toast.success("Flag added");
     },
