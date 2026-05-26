@@ -46,10 +46,21 @@ Design notes:
     Constraint violations, syntax errors, real deadlocks etc.
     propagate unchanged — they're bugs retry can't fix.
 
-  * **How many retries**: exactly 1 by default. Supavisor disconnects
-    are almost always single-blip; if the second attempt also fails
-    the network/pooler is genuinely unhealthy and the caller should
-    surface the error rather than spin.
+  * **How many retries**: up to 2 retries (3 attempts total) by default
+    after the 2026-05-26 D9 bump. Supavisor disconnects are almost
+    always single-blip; the extra retry was added for statement-timeout
+    contention (sibling pipelines releasing locks on a contested deal
+    row). Disconnects also benefit from the extra retry budget at no
+    cost — two retries are still conservative and safe given the
+    single-blip pattern. If the third attempt fails the network/pooler
+    is genuinely unhealthy and the caller should surface the error.
+
+  * **Jitter**: backoff is exponential with full jitter
+    (``random.uniform(0, base * 2^(attempt-1))``) so that 3+ pipelines
+    racing for the same contested row don't all retry in lockstep and
+    cascade-fail the same way. Without jitter the AWS "thundering
+    herd" pattern applies — three workers back off for the exact same
+    duration and re-collide on the lock.
 
   * **What we do between attempts**: hard-invalidate the session
     (`session.close()`) so the next attempt opens a fresh psycopg2
@@ -99,6 +110,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import random
 import time
 from typing import Callable, TypeVar
 
@@ -120,21 +132,39 @@ _DEFAULT_MAX_ATTEMPTS = 3
 _DEFAULT_BASE_DELAY_S = 0.25
 
 
+# Exact Postgres wire message for ``statement_timeout`` (SQLSTATE 57014).
+# Kept as a single precise string rather than the broader ``"querycanceled"``
+# substring — the broader match would also accept ``pg_cancel_backend()``
+# user-cancellation (SQLSTATE 57014 with message
+# ``"canceling statement due to user request"``) which is NOT retryable
+# (an admin asked us to stop).
 _STATEMENT_TIMEOUT_SIGNATURES = (
     "canceling statement due to statement timeout",
-    "querycanceled",
 )
 
 
 def _is_statement_timeout(exc: BaseException) -> bool:
     """True iff ``exc`` is a Postgres ``statement_timeout`` cancellation.
 
-    These surface as `psycopg2.errors.QueryCanceled` (subclass of
-    ``OperationalError``) under SQLAlchemy. The wrapped exception's
-    string carries the "canceling statement due to statement timeout"
-    marker that distinguishes the contended-lock case from real DB
-    failures (deadlock, query syntax, missing column).
+    Two paths covered:
+
+    * Raw ``psycopg2.errors.QueryCanceled`` raised before SQLAlchemy
+      wraps it (e.g. cursor.execute outside an SA-instrumented
+      connection, or a future refactor that strips the wrapper).
+      Matched by isinstance against the psycopg2 class so we don't rely
+      on the message string survival.
+    * SQLAlchemy-wrapped ``OperationalError`` / ``DBAPIError`` whose
+      `str()` carries the exact Postgres marker
+      ``"canceling statement due to statement timeout"``. Distinguishes
+      the contended-lock case from real DB failures (deadlock, syntax,
+      missing column) and from user-initiated cancellations.
     """
+    try:
+        import psycopg2.errors as _pg_errors
+        if isinstance(exc, _pg_errors.QueryCanceled):
+            return True
+    except ImportError:  # pragma: no cover — psycopg2 always present in prod
+        pass
     if not isinstance(exc, (OperationalError, DBAPIError)):
         return False
     msg = str(exc).lower()
@@ -170,21 +200,36 @@ def _record_metric(outcome: str) -> None:
         pass
 
 
+def _jittered_delay(base_delay_s: float, attempt: int) -> float:
+    """Full-jitter exponential backoff: uniform draw in
+    ``[0, base * 2^(attempt-1)]``. Decorrelates concurrent retriers so
+    3+ workers contending for the same row don't lockstep-collide on
+    every backoff window.
+    """
+    ceiling = base_delay_s * (2 ** (attempt - 1))
+    return random.uniform(0, ceiling)
+
+
 def db_retry_on_disconnect(
     *,
     max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
     base_delay_s: float = _DEFAULT_BASE_DELAY_S,
 ) -> Callable[[Callable[..., T]], Callable[..., T]]:
-    """Decorator: retry the wrapped function ONCE on a transient
-    psycopg2 / SQLAlchemy disconnect.
+    """Decorator: retry the wrapped function up to twice (3 attempts
+    total) on a transient psycopg2 / SQLAlchemy disconnect OR a
+    Postgres ``statement_timeout``.
 
     The wrapped function must own its own DB session lifecycle
     (open + close inside). On the retry, the function is re-invoked
     from scratch — its session is fresh, its work is re-done.
 
-    Non-transient exceptions propagate unchanged on the FIRST attempt
-    (no retry). Transient exceptions on the FINAL attempt re-raise so
-    the caller can decide whether to swallow / alert.
+    Non-retryable exceptions (real bugs: constraint violation, syntax
+    error, deadlock, user cancellation) propagate unchanged on the
+    FIRST attempt (no retry). Retryable exceptions on the FINAL
+    attempt re-raise so the caller can decide whether to swallow /
+    alert.
+
+    Backoff is exponential with full jitter — see ``_jittered_delay``.
     """
 
     def deco(fn: Callable[..., T]) -> Callable[..., T]:
@@ -209,7 +254,7 @@ def db_retry_on_disconnect(
                             fn_name, attempt, str(e)[:200],
                         )
                         raise
-                    delay = base_delay_s * (2 ** (attempt - 1))
+                    delay = _jittered_delay(base_delay_s, attempt)
                     log.info(
                         "db_retry transient_disconnect fn=%s attempt=%d "
                         "delay_s=%.2f err=%s",
@@ -290,7 +335,7 @@ async def db_retry_on_disconnect_async(
                     attempt, str(e)[:200],
                 )
                 raise
-            delay = base_delay_s * (2 ** (attempt - 1))
+            delay = _jittered_delay(base_delay_s, attempt)
             log.info(
                 "db_retry_async transient_disconnect attempt=%d "
                 "delay_s=%.2f err=%s",

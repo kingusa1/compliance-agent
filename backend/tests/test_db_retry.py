@@ -79,13 +79,23 @@ class TestIsStatementTimeout:
         "msg",
         [
             "canceling statement due to statement timeout",
-            "QueryCanceled",
-            "QueryCanceled: canceling statement due to statement timeout",
+            "(psycopg2.errors.QueryCanceled) canceling statement due to statement timeout",
         ],
     )
     def test_statement_timeout_signatures(self, msg: str) -> None:
         e = OperationalError(statement="UPDATE calls SET x=1", params={}, orig=psycopg2.OperationalError(msg))
         assert _is_statement_timeout(e) is True
+
+    def test_user_cancel_not_classified_as_timeout(self) -> None:
+        """User-initiated `pg_cancel_backend()` carries the same SQLSTATE
+        as statement_timeout (57014) but a different wire message — and
+        must NOT be retried (an admin asked us to stop). Confirms the
+        2026-05-26 reviewer C1 fix: drop the broad `"querycanceled"`
+        signature in favour of the precise wire message."""
+        e = OperationalError(statement="SELECT 1", params={}, orig=psycopg2.OperationalError(
+            "canceling statement due to user request"
+        ))
+        assert _is_statement_timeout(e) is False
 
     def test_disconnect_message_is_not_statement_timeout(self) -> None:
         """Disconnects and timeouts must not be confused — the retry
@@ -156,6 +166,173 @@ class TestStatementTimeoutRetry:
         with pytest.raises(OperationalError):
             fn()
         assert calls["n"] == 3
+
+    def test_direct_psycopg2_querycanceled_recognised(self) -> None:
+        """Defence-in-depth: raw ``psycopg2.errors.QueryCanceled`` (not
+        wrapped by SQLAlchemy) must still be classified as a statement
+        timeout. Bare-cursor callsites and future refactors that strip
+        the wrapper would otherwise silently bypass the retry."""
+        import psycopg2.errors
+        # Sentinel construction varies across psycopg2 versions; the
+        # canonical path is `pg_cursor.execute` raising the class with
+        # an SQLSTATE-bound message. We mimic that without a live DB
+        # by instantiating with the wire-message string.
+        e = psycopg2.errors.QueryCanceled("canceling statement due to statement timeout")
+        assert _is_statement_timeout(e) is True
+
+
+class TestTraceStepRetry:
+    """In-step retry path inside ``pipeline._trace_step``. Separate from
+    the decorator path because the step retry uses ``asyncio.sleep`` not
+    ``time.sleep``, publishes a ``step_retry`` SSE event on each retry,
+    and lives inside the pipeline_step_log lifecycle. Mocks
+    `_persist_step_*`, `_mark_step_started`, and `realtime.publish` to
+    isolate the retry logic from the persistence/SSE plumbing."""
+
+    @pytest.mark.asyncio
+    async def test_step_retry_recovers_after_statement_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Step fn raises statement_timeout once, succeeds on attempt 2.
+        Verifies: function called twice; ``step_retry`` published once;
+        ``step_ok`` published once; ``step_err`` NOT published."""
+        from app import pipeline
+
+        published: list[tuple[str, str]] = []
+        monkeypatch.setattr(pipeline, "_random",
+                            type("R", (), {"uniform": staticmethod(lambda a, b: 0.0)})())
+        monkeypatch.setattr(
+            pipeline.realtime, "publish",
+            lambda call_id, etype, payload: published.append((call_id, etype)),
+        )
+        monkeypatch.setattr(
+            "app.workflows.process_call._persist_step_running",
+            lambda *a, **kw: "row-1",
+        )
+        monkeypatch.setattr(
+            "app.workflows.process_call._persist_step_done",
+            lambda *a, **kw: None,
+        )
+        monkeypatch.setattr(
+            "app.workflows.process_call._mark_step_started",
+            lambda *a, **kw: None,
+        )
+
+        attempts = {"n": 0}
+
+        def fn() -> str:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise OperationalError(
+                    statement="UPDATE customer_deals SET customer_name=:c",
+                    params={"c": "X"},
+                    orig=psycopg2.OperationalError(
+                        "canceling statement due to statement timeout"
+                    ),
+                )
+            return "ok"
+
+        result = await pipeline._trace_step("call-1", "detect_metadata", fn)
+        assert result == "ok"
+        assert attempts["n"] == 2
+        kinds = [e[1] for e in published]
+        assert kinds.count("step_retry") == 1
+        assert kinds.count("step_ok") == 1
+        assert "step_err" not in kinds
+
+    @pytest.mark.asyncio
+    async def test_step_retry_exhausts_publishes_step_err(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Step fn raises statement_timeout on ALL 3 attempts. Verifies:
+        function called 3 times; ``step_retry`` published twice (between
+        the 3 attempts); ``step_err`` published once at the outer catch;
+        exception propagates."""
+        from app import pipeline
+
+        published: list[tuple[str, str]] = []
+        monkeypatch.setattr(pipeline, "_random",
+                            type("R", (), {"uniform": staticmethod(lambda a, b: 0.0)})())
+        monkeypatch.setattr(
+            pipeline.realtime, "publish",
+            lambda call_id, etype, payload: published.append((call_id, etype)),
+        )
+        monkeypatch.setattr(
+            "app.workflows.process_call._persist_step_running",
+            lambda *a, **kw: "row-1",
+        )
+        monkeypatch.setattr(
+            "app.workflows.process_call._persist_step_done",
+            lambda *a, **kw: None,
+        )
+        monkeypatch.setattr(
+            "app.workflows.process_call._mark_step_started",
+            lambda *a, **kw: None,
+        )
+
+        attempts = {"n": 0}
+
+        def fn() -> str:
+            attempts["n"] += 1
+            raise OperationalError(
+                statement="UPDATE customer_deals SET customer_name=:c",
+                params={"c": "X"},
+                orig=psycopg2.OperationalError(
+                    "canceling statement due to statement timeout"
+                ),
+            )
+
+        with pytest.raises(OperationalError):
+            await pipeline._trace_step("call-2", "detect_metadata", fn)
+        assert attempts["n"] == 3  # initial + 2 retries
+        kinds = [e[1] for e in published]
+        assert kinds.count("step_retry") == 2
+        assert kinds.count("step_err") == 1
+        assert "step_ok" not in kinds
+
+    @pytest.mark.asyncio
+    async def test_step_non_retryable_exception_propagates_immediately(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Step fn raises a real bug (constraint violation). The retry
+        path must NOT fire — exception propagates on first attempt."""
+        from app import pipeline
+
+        published: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            pipeline.realtime, "publish",
+            lambda call_id, etype, payload: published.append((call_id, etype)),
+        )
+        monkeypatch.setattr(
+            "app.workflows.process_call._persist_step_running",
+            lambda *a, **kw: "row-1",
+        )
+        monkeypatch.setattr(
+            "app.workflows.process_call._persist_step_done",
+            lambda *a, **kw: None,
+        )
+        monkeypatch.setattr(
+            "app.workflows.process_call._mark_step_started",
+            lambda *a, **kw: None,
+        )
+
+        attempts = {"n": 0}
+
+        def fn() -> str:
+            attempts["n"] += 1
+            raise OperationalError(
+                statement="INSERT INTO calls (id) VALUES (:i)",
+                params={"i": "dup"},
+                orig=psycopg2.OperationalError(
+                    "duplicate key value violates unique constraint"
+                ),
+            )
+
+        with pytest.raises(OperationalError):
+            await pipeline._trace_step("call-3", "detect_metadata", fn)
+        assert attempts["n"] == 1  # NO retry
+        assert "step_retry" not in [e[1] for e in published]
+        assert "step_err" in [e[1] for e in published]
 
 
 # ─── Sync decorator ─────────────────────────────────────────────────────────
@@ -390,11 +567,20 @@ class TestPoolConfig:
         )
 
     def test_recycle_under_supavisor_kill_window(self) -> None:
+        """2026-05-26 perf wave bumped pool_recycle from 240 s → 1800 s
+        deliberately because TCP keepalives (``tcp_user_timeout=10000``)
+        now detect dead connections mid-query, so the pool_recycle
+        window's sole job is to flush long-idle connections during quiet
+        periods. Anything ≤ 1800 s satisfies that contract; anything
+        higher risks Supavisor's idle-kill window if keepalives ever
+        get disabled. Re-baselined assertion lives here so future
+        drift gets caught — but the bound is now 1800 not 600.
+        """
         pool = db_module.engine.pool
         recycle = getattr(pool, "_recycle", 300)
-        assert recycle <= 600, (
-            f"pool_recycle={recycle}s exceeds Supavisor's idle-kill window. "
-            "Connections sitting longer than ~5min get killed mid-query."
+        assert recycle <= 1800, (
+            f"pool_recycle={recycle}s exceeds the post-2026-05-26 keepalive-paired ceiling (1800s). "
+            "Bump TCP keepalives in connect_args before raising further."
         )
 
     def test_pre_ping_enabled(self) -> None:

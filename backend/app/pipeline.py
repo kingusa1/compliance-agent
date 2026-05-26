@@ -23,8 +23,14 @@ import asyncio
 import inspect  # used by `_trace_step` to detect awaitables — hoisted from inline
 import json
 import os
+import random as _random  # full-jitter backoff in _trace_step; hoisted so tests can monkeypatch
 import re
 import tempfile
+from typing import Any, Callable
+
+# Hoisted for monkeypatching in tests (the in-step retry path publishes
+# step_retry / step_ok / step_err via this module).
+from app import realtime
 import time
 from datetime import datetime
 from app._clock import utcnow
@@ -89,7 +95,13 @@ _STEP_RETRY_MAX_ATTEMPTS = 3
 _STEP_RETRY_BASE_DELAY_S = 0.5
 
 
-async def _trace_step(call_id: str, step_name: str, fn, *args, **kwargs):
+async def _trace_step(
+    call_id: str,
+    step_name: str,
+    fn: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
     """Wrap a _step_* call to write a pipeline_step_log row at start +
     finish, mirroring what app.workflows.process_call._logged_step does
     for the Inngest path. Lets /observability render the live waterfall +
@@ -110,8 +122,8 @@ async def _trace_step(call_id: str, step_name: str, fn, *args, **kwargs):
     held an exclusive lock); the 15 s ``statement_timeout`` fired and
     one of every batch of 3 calls landed at ``status="failed"``. The
     in-step retry gives the sibling time to release its lock — three
-    attempts at 0.5 s, 1.0 s, 2.0 s backoff cover the contention window
-    we observed in logs (~1.5 s peak).
+    attempts total with full-jitter exponential backoff so concurrent
+    pipelines don't lockstep-collide.
     """
     import time as _time
     from app.workflows.process_call import (
@@ -119,7 +131,6 @@ async def _trace_step(call_id: str, step_name: str, fn, *args, **kwargs):
         _persist_step_done,
         _mark_step_started,
     )
-    from app import realtime
     from app.db_retry import _is_statement_timeout
 
     started = _time.time()
@@ -157,8 +168,7 @@ async def _trace_step(call_id: str, step_name: str, fn, *args, **kwargs):
         # (json.loads of 50KB) is ≈150ms per finalize — measurable
         # but no longer the dominant lag source after the upstream
         # backpressure fix.
-        last_qc: BaseException | None = None
-        result = None
+        result: Any = None
         for attempt in range(1, _STEP_RETRY_MAX_ATTEMPTS + 1):
             try:
                 raw = fn(*args, **kwargs)
@@ -175,8 +185,10 @@ async def _trace_step(call_id: str, step_name: str, fn, *args, **kwargs):
                             call_id, step_name, attempt,
                         )
                     raise
-                last_qc = e
-                delay = _STEP_RETRY_BASE_DELAY_S * (2 ** (attempt - 1))
+                # Full-jitter exponential backoff so 3+ concurrent
+                # pipelines don't lockstep-collide on the contested row.
+                ceiling = _STEP_RETRY_BASE_DELAY_S * (2 ** (attempt - 1))
+                delay = _random.uniform(0, ceiling)
                 log.warning(
                     "STEP_RETRY transient_lock call_id=%s step=%s attempt=%d "
                     "delay_s=%.2f err=%s",
@@ -195,9 +207,8 @@ async def _trace_step(call_id: str, step_name: str, fn, *args, **kwargs):
                     },
                 )
                 await asyncio.sleep(delay)
-        else:  # pragma: no cover — loop exits via break or raise
-            if last_qc is not None:
-                raise last_qc
+        # Loop exits via ``break`` (success) or ``raise`` (exhaustion
+        # / non-retryable). No ``else`` clause needed.
         elapsed_ms = int((_time.time() - started) * 1000)
         _persist_step_done(row_id, step_name, "ok", result, None, elapsed_ms)
         realtime.publish(

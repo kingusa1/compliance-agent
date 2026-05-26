@@ -124,6 +124,7 @@ export function useCallEvents(scope: string | null | undefined, enabled = true):
         "step_started",
         "step_ok",
         "step_err",
+        "step_retry",
         "transcribe_done",
         "detect_metadata_done",
         "segments_detected",
