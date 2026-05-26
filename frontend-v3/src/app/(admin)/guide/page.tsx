@@ -114,8 +114,9 @@ const PAGE_DESCRIPTIONS: { href: string; label: string; icon: typeof Inbox; tagl
     href: "/agents",
     label: "Agents",
     icon: BarChart3,
-    tagline: "Sales agents performance leaderboard.",
-    usedFor: "Compliance rate per agent over rolling 30 days. Drill in to see their calls + recent flags.",
+    tagline: "Quality-reviewer dashboard per agent.",
+    usedFor:
+      "Compliance rate per agent over rolling 30 days. Drill in for the 6-KPI hero (Total calls / Pass rate / Avg score / Critical flags / Open directives / QC blocks) + 4 breakdown panels (8-week pass-rate sparkline, severity stacked bars, top-failed checkpoints, supplier+call-type mix) + best/worst quick-jumps. Filter is alias-aware — opening the page for an agent rendered as 'Bradley' picks up every raw call row that canonicalises to that name ('Bradley Clayton', 'Brad', etc.).",
   },
   {
     href: "/scripts",
