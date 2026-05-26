@@ -377,6 +377,58 @@ async def process_call(call_id: str, file_path: str, db: Session | None = None, 
 
         await _trace_step(call_id, "finalize", _finalize_step_dispatcher)
 
+        # 2026-05-27 D-QC — QualityCheckerAgent fires as a background task
+        # so a slow/erroring auditor never blocks the orchestrator. Opens
+        # its own SessionLocal because the outer session is closed by the
+        # time the task runs. Owner mandate: every record needs a
+        # second-opinion AI agent that audits the primary AI's extractions
+        # + verdicts and flags inconsistencies before the human reviewer
+        # sees the row.
+        async def _bg_quality_check() -> None:
+            from app.database import SessionLocal as _QSL
+            from app.agent.quality_checker import quality_check as _qc
+            import json as _qcjson
+            _qdb = _QSL()
+            try:
+                _qcall = _qdb.query(Call).filter_by(id=call_id).first()
+                if not _qcall:
+                    return
+                cp_results: list[dict] = []
+                try:
+                    if _qcall.checkpoint_results:
+                        parsed = _qcjson.loads(_qcall.checkpoint_results)
+                        if isinstance(parsed, list):
+                            cp_results = [r for r in parsed if isinstance(r, dict)]
+                except Exception:
+                    cp_results = []
+                envelope = await _qc(
+                    transcript=_qcall.transcript or "",
+                    agent_name=_qcall.agent_name,
+                    customer_name=_qcall.customer_name,
+                    detected_supplier=_qcall.detected_supplier,
+                    call_type=_qcall.call_type,
+                    compliance_status=_qcall.compliance_status,
+                    bucket=getattr(_qcall, "bucket", None),
+                    checkpoint_results=cp_results,
+                )
+                _qcall.quality_check = _qcjson.dumps(envelope)
+                _qdb.commit()
+                try:
+                    from app import realtime as _rt
+                    _rt.publish(call_id, "quality_check_done", {
+                        "verdict": envelope.get("verdict"),
+                        "score": envelope.get("score"),
+                        "issue_count": len(envelope.get("issues") or []),
+                    })
+                except Exception as rt_e:  # noqa: BLE001
+                    log.warning(f"QC realtime publish failed (non-fatal): {rt_e}")
+            except Exception as qc_e:  # noqa: BLE001
+                log.warning(f"\U0001f575️ QUALITY_CHECK_FAILED call_id={call_id} err={qc_e!r}")
+            finally:
+                _qdb.close()
+
+        asyncio.create_task(_bg_quality_check())
+
         # Tracker-autofill specialist agents (2026-05-10):
         # 1. DateExtractorAgent  — fills CustomerDeal.expected_live_date
         # 2. RejectionAdvisorAgent — fills Rejection.category + fix_required
@@ -2986,7 +3038,6 @@ def _step_finalize(call_id: str, db: Session) -> dict:
     except Exception as e:  # noqa: BLE001 — promote is best-effort
         log.warning(f"NAME_PROMOTE_FAILED call_id={call_id} err={e!r}")
 
-    db.commit()
     log.info(f"\U0001f4be SAVED call_id={call_id}")
     return {
         "compliance_status": call.compliance_status,

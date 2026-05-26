@@ -208,6 +208,14 @@ class Call(Base):
     script_id = Column(String)
     script_version_id = Column(String, ForeignKey("script_versions.id"))
     checkpoint_results = Column(Text)  # JSON array
+    # 2026-05-27 D-QC — QualityCheckerAgent envelope. Set by
+    # `pipeline.process_call` after L3_LIFECYCLE. JSON shape per
+    # `app/agent/quality_checker.py`:
+    #   { verdict, issues[], score, summary, model, checked_at, elapsed_ms }
+    # NULL until the QC pass has run. Backed by Alembic migration
+    # `2026_05_27_quality_check` (JSONB on PG with a partial index on
+    # ->>'verdict'; TEXT on SQLite).
+    quality_check = Column(Text, nullable=True)
     score = Column(String)  # e.g. "5/7"
     detected_supplier = Column(String)
     rule_id = Column(String, default="THIRD_PARTY_DISCLOSURE")

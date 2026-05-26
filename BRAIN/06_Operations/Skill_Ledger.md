@@ -52,6 +52,9 @@ Columns:
 | 2026-05-26 09:27 | active | database-reviewer | auto-trigger | n-a-vocab-migration | success: 0 CRIT/0 HIGH blocking; idempotent IF NOT EXISTS verified; partial index correct; lock impact metadata-only at 10k rows; chain validated single-head | agent afa907598b880348c |
 | 2026-05-26 09:27 | active | python-reviewer | auto-trigger | n-a-vocab-backend | success: 2 HIGH (4 missed callsites, dict access divergence) + 1 MED (mutation) + 1 LOW (qualifier list) all addressed; 58/58 tests green | agent a844b147a641ef035 |
 | 2026-05-26 09:27 | active | code-reviewer | auto-trigger | n-a-vocab-frontend | success: 1 HIGH (n_a counter+filter) addressed in page.tsx and SegmentCards.tsx; 3 MED/LOW noted, no impact on chip rendering; tsc clean on touched files | agent a0403d43371763064 |
+| 2026-05-26 09:46 | active | executor | primary | transfer-aware-detection-jack-giles | success: added _AGENT_TRANSFER_CUE regex + transfer_targets suppression + LLM prompt section explaining lead_gen opener-vs-closer + concrete Jack/Bradley example | transcript 97d052a8 captured agent='Bradley' but real opener is 'Jack Giles' per regex + LLM ground-truth |
+| 2026-05-26 09:46 | active | executor | primary | pass-button-name-lookup | success: backend route accepts ?name=X query param; frontend mutation + optimistic update both resolve by name first, fall back to int index | cpCards reorders script-defined CPs vs verdicts; position N mismatched call.checkpoint_results[N] |
+| 2026-05-26 09:46 | active | executor | primary | quality-checker-agent | success: new agent/quality_checker.py + 2026_05_27_quality_check migration + Call.quality_check column + bg task in orchestrator + verdict_changed+quality_check_done SSE events | owner mandate 2026-05-27: every record gets second-opinion AI agent |
 
 ---
 

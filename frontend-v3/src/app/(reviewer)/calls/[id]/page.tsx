@@ -1677,9 +1677,21 @@ export default function CallDetailPage({
                       activeCheckpointKey,
                       totalSections: cpCards.length,
                       onReviewVerdict: async (origIndex, verdict, notes) => {
+                        // 2026-05-27 — also send the checkpoint NAME so the
+                        // backend can look up the verdict by name instead
+                        // of by position. cpCards may reorder script-defined
+                        // CPs vs verdicts, so the index passed here can
+                        // point to a different verdict than what the user
+                        // sees. Backend (routes.review_checkpoint_verdict)
+                        // resolves name → index when present and falls back
+                        // to `origIndex` only for legacy clients.
+                        const card = cpCards[origIndex];
+                        const cpName =
+                          card?.verdict?.name ?? card?.script?.name ?? undefined;
                         await reviewCheckpoint.mutateAsync({
                           callId: id,
                           index: origIndex,
+                          name: cpName,
                           verdict,
                           notes,
                         });

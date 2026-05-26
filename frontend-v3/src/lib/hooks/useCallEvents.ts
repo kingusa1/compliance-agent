@@ -136,6 +136,10 @@ export function useCallEvents(scope: string | null | undefined, enabled = true):
         // event from routes.review_checkpoint_verdict. Lets the call detail
         // page repaint other tabs/sessions live when a teammate overrides.
         "verdict_changed",
+        // 2026-05-27 D-QC — QualityCheckerAgent posts its envelope after
+        // pipeline finalize. Page picks it up to render the QC banner /
+        // issues panel without a refresh.
+        "quality_check_done",
       ] as const;
       for (const evt of named) {
         es.addEventListener(evt, handle as EventListener);

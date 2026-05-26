@@ -95,7 +95,15 @@ export function useReleaseCall() {
 
 export type CheckpointReviewArgs = {
   callId: string;
-  index: number; // cp_index from /script-checkpoints
+  index: number; // cp_index from /script-checkpoints (back-compat fallback)
+  /** 2026-05-27 — owner-reported "Pass button doesn't work for some
+   *  checkpoints". `cpCards` reorders script-defined CPs vs verdicts so
+   *  the position N at the UI no longer matches `call.checkpoint_results[N]`.
+   *  Backend now resolves by NAME first when this field is present (route
+   *  query param `?name=...`); the int `index` remains as a back-compat
+   *  fallback. Always set this when caller knows the CP name (which is
+   *  always — both the script def and the verdict carry `.name`). */
+  name?: string;
   verdict: "pass" | "fail";
   notes?: string;
 };
@@ -103,9 +111,10 @@ export type CheckpointReviewArgs = {
 export function useReviewCheckpoint() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ callId, index, verdict, notes }: CheckpointReviewArgs) => {
+    mutationFn: ({ callId, index, verdict, notes, name }: CheckpointReviewArgs) => {
       const qs = new URLSearchParams({ verdict });
       if (notes) qs.set("notes", notes);
+      if (name) qs.set("name", name);
       return putJson(
         `/api/calls/${encodeURIComponent(callId)}/checkpoint/${index}/review?${qs.toString()}`,
       );
@@ -117,29 +126,45 @@ export function useReviewCheckpoint() {
     // same day (routes.py:review_checkpoint_verdict) so server response
     // is now sub-second, but optimistic update + sub-second server
     // together feel instant. Rollback on error.
-    onMutate: async ({ callId, index, verdict, notes }) => {
+    onMutate: async ({ callId, index, verdict, notes, name }) => {
       const detailKey = reviewerKeys.callDetail(callId);
       // Cancel any in-flight detail refetch so our optimistic patch
       // isn't immediately overwritten by stale server data.
       await qc.cancelQueries({ queryKey: detailKey });
       const prev = qc.getQueryData<{ checkpoint_results?: string | null } | undefined>(detailKey);
       // The checkpoint verdicts live in a JSON string on Call.checkpoint_results.
-      // Parse, patch index N, re-serialize.
+      // Parse, resolve target by NAME (preferred, order-independent) or
+      // fall back to int index, patch, re-serialize.
       if (prev && typeof prev === "object" && "checkpoint_results" in prev && prev.checkpoint_results) {
         try {
           const parsed = JSON.parse(prev.checkpoint_results as string);
-          if (Array.isArray(parsed) && index >= 0 && index < parsed.length) {
-            const next = parsed.slice();
-            next[index] = {
-              ...next[index],
-              reviewer_verdict: verdict,
-              reviewer_notes: notes ?? "",
-              needs_review: false,
-            };
-            qc.setQueryData(detailKey, {
-              ...prev,
-              checkpoint_results: JSON.stringify(next),
-            });
+          if (Array.isArray(parsed)) {
+            let resolvedIndex = -1;
+            if (name) {
+              const target = name.trim().toLowerCase();
+              resolvedIndex = parsed.findIndex(
+                (r: unknown) =>
+                  typeof r === "object" && r !== null &&
+                  typeof (r as { name?: unknown }).name === "string" &&
+                  ((r as { name: string }).name).trim().toLowerCase() === target,
+              );
+            }
+            if (resolvedIndex < 0 && index >= 0 && index < parsed.length) {
+              resolvedIndex = index;
+            }
+            if (resolvedIndex >= 0 && resolvedIndex < parsed.length) {
+              const next = parsed.slice();
+              next[resolvedIndex] = {
+                ...next[resolvedIndex],
+                reviewer_verdict: verdict,
+                reviewer_notes: notes ?? "",
+                needs_review: false,
+              };
+              qc.setQueryData(detailKey, {
+                ...prev,
+                checkpoint_results: JSON.stringify(next),
+              });
+            }
           }
         } catch {
           // Malformed JSON — leave the cache untouched; the server's

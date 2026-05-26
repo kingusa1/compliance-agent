@@ -897,12 +897,27 @@ async def review_checkpoint_verdict(
     cp_index: int,
     verdict: str,
     notes: str = "",
+    name: str | None = None,
     db: Session = Depends(get_db),
     _reviewer=Depends(current_reviewer),
 ):
     """Human reviewer confirms or overrides a checkpoint verdict.
 
-    Query params: verdict=pass|fail, notes=optional
+    Query params: verdict=pass|fail, notes=optional, name=optional.
+
+    2026-05-27 — owner-reported "Pass button doesn't work for some
+    checkpoints". Root cause: the frontend ``cpCards`` array unions
+    script-checkpoints (in script order) with per-call verdicts (in
+    pipeline order). When the two orders disagree, the UI's position N
+    refers to a DIFFERENT verdict than ``call.checkpoint_results[N]``,
+    so the override silently lands on the wrong row (or — when N >
+    results.length — raises 400 and the user sees the chip flip then
+    revert).
+
+    Fix: accept an optional ``name`` query param. When set, the route
+    matches the verdict by ``results[i]["name"]`` first; the int
+    ``cp_index`` is the back-compat fallback for any older client. Name
+    match wins because it is order-independent.
     """
     call = db.query(Call).filter_by(id=call_id).first()
     if not call:
@@ -914,8 +929,24 @@ async def review_checkpoint_verdict(
         results = json.loads(call.checkpoint_results)
     except json.JSONDecodeError:
         raise HTTPException(400, "Call.checkpoint_results is not valid JSON")
-    if cp_index < 0 or cp_index >= len(results):
-        raise HTTPException(400, f"Invalid checkpoint index {cp_index}")
+    # Resolve the actual index: prefer name match (order-independent),
+    # fall back to the int passed in the URL.
+    resolved_index: int = cp_index
+    if name:
+        norm_target = name.strip().lower()
+        for i, r in enumerate(results):
+            if isinstance(r, dict) and (r.get("name") or "").strip().lower() == norm_target:
+                resolved_index = i
+                break
+    if resolved_index < 0 or resolved_index >= len(results):
+        raise HTTPException(
+            400,
+            f"Invalid checkpoint index {resolved_index} (name={name!r}, "
+            f"results_len={len(results)})",
+        )
+    # Use resolved_index for the rest of the function; rebind cp_index so
+    # downstream log lines + the SSE payload reflect the resolved value.
+    cp_index = resolved_index
 
     if verdict not in ("pass", "fail"):
         raise HTTPException(400, "verdict must be 'pass' or 'fail'")

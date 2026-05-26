@@ -254,9 +254,35 @@ EXTRACT:
      • "I'm X from …" / "I am X"
      • "you're through to X" / "you're speaking with X"
      • "X here from …" / "X speaking from …"
+     • "yeah that's me X" / "yes, this is X here"
    The agent is the one who reads compliance lines:
    "calls are recorded for monitoring", "third party intermediary",
    "act on your behalf", "your supplier".
+
+   TRANSFER / HAND-OFF RULE (2026-05-27 — closes Jack-Giles-vs-Bradley):
+   Lead-generation calls often end with the opening agent transferring the
+   customer to a closer. The CURRENT call's agent is the SELF-INTRODUCING
+   speaker (the OPENER), NOT the colleague they name in the hand-off.
+   When you see phrases like:
+     • "I'm gonna get you through to X"
+     • "I'll transfer you to X"
+     • "I'm passing you over to X"
+     • "X is my pricing manager / colleague / closer / specialist"
+     • "let me put you through to X"
+     • "X will take it from here"
+     • "bear with me while I bring X on"
+   the name X is a TRANSFER TARGET, NOT this call's agent. The agent is
+   the speaker who SAYS that sentence — find THEIR self-introduction
+   earlier in the transcript (it usually appears in the first 60 seconds).
+   If the transcript ends mid-transfer (call cut off before the closer
+   speaks), the agent is still the opener — do NOT switch to the closer
+   just because their name appears near the end.
+
+   Example (canonical Jack→Bradley lead-gen pattern):
+     [00:08] Agent: "yeah that's me jack giles how can i help"
+     [00:47] Agent: "i'm gonna get you through to bradley now, he's my pricing manager"
+   Correct extraction: agent="Jack Giles". Bradley is the transfer target,
+   NOT this call's agent.
 
 2. CUSTOMER name — the person who OWNS or RUNS the business. Found
    either via the AGENT asking for confirmation OR the CUSTOMER
@@ -784,6 +810,52 @@ _AGENT_TRAILING_TRIGGER = re.compile(
     re.IGNORECASE,
 )
 
+
+# 2026-05-27 — Transfer / hand-off suppressor (Jack→Bradley fix).
+#
+# Lead-generation agents close their portion of the call by naming the
+# colleague they're transferring the customer to. The regex pre-pass on
+# self-intro phrases was occasionally capturing this hand-off target as
+# the agent (e.g. "i'm gonna get you through to bradley now" → regex
+# matched "through to" as a self-intro trigger and stamped agent="Bradley"
+# even though the speaker's actual name was "Jack Giles" 40 s earlier).
+#
+# This regex matches phrases that introduce a TRANSFER TARGET. Any name
+# captured within ~50 chars of a transfer cue is suppressed from the agent
+# candidate set. The original self-intro phrase earlier in the transcript
+# still wins.
+_AGENT_TRANSFER_CUE = re.compile(
+    r"\b(?:"
+    r"get(?:ting)?\s+you\s+through\s+to"
+    r"|put(?:ting)?\s+you\s+through\s+to"
+    r"|transfer(?:ring)?\s+you\s+to"
+    r"|pass(?:ing)?\s+you\s+(?:over\s+)?to"
+    r"|hand(?:ing)?\s+you\s+(?:over\s+)?to"
+    r"|let\s+me\s+(?:get|bring|put)\s+(?:you\s+through\s+to\s+)?"
+    r"|gonna\s+(?:get|put|pass|transfer)\s+you\s+(?:through\s+to|over\s+to|to)"
+    r"|i\'?ll\s+(?:get|put|pass|transfer)\s+you\s+(?:through\s+to|over\s+to|to)"
+    r")\s+([A-Za-z][A-Za-z\-']{1,25})(?:\s+([A-Za-z][A-Za-z\-']{1,25}))?",
+    re.IGNORECASE,
+)
+
+
+def _extract_transfer_target_names(transcript: str) -> set[str]:
+    """Return the set of hand-off target names mentioned in the transcript.
+
+    Scans the WHOLE transcript (not just the head) because transfers
+    typically happen at the end of a lead-gen call. The returned set is
+    used by ``_extract_agent_name_regex`` to suppress hand-off targets
+    from the agent-candidate pool. Names are lower-cased + first-name-only
+    so a match like "Bradley" suppresses both "Bradley" and "Bradley
+    Clayton" candidates.
+    """
+    targets: set[str] = set()
+    for m in _AGENT_TRANSFER_CUE.finditer(transcript or ""):
+        first = (m.group(1) or "").strip("'\"-,.;: ").lower()
+        if first and 2 <= len(first) <= 25 and first not in _NAME_STOPWORDS:
+            targets.add(first)
+    return targets
+
 # Words that look like name candidates by shape but aren't real names.
 # These appear right after self-intro triggers in mis-transcribed calls
 # ("my name's calling you from", "this is regarding\u2026") and need filtering
@@ -971,6 +1043,14 @@ def _extract_agent_name_regex(transcript: str) -> str | None:
     surname when the second captured token is also name-shaped.
     """
     head = transcript[:1500].replace("\n", " ")
+    # 2026-05-27 TRANSFER SUPPRESSION (Jack→Bradley fix). Lead-gen calls
+    # often end with "I'm gonna get you through to Bradley". Without
+    # suppression the regex sometimes picked the hand-off target instead of
+    # the opener. We compute the set of transfer-target first names from the
+    # WHOLE transcript first, then reject any candidate whose first name is
+    # in that set — the opener's self-intro happens before the transfer
+    # mention, so the first non-suppressed match wins.
+    transfer_targets = _extract_transfer_target_names(transcript or "")
     # Try the strict triggers first, then the gated "it's X here/from/…" pattern.
     for regex in (_AGENT_INTRO_TRIGGERS, _IT_IS_AGENT_INTRO):
         for m in regex.finditer(head):
@@ -986,6 +1066,11 @@ def _extract_agent_name_regex(transcript: str) -> str | None:
             # "[PERSON_NAME]" — the brackets keep \w-class out so this is
             # defence-in-depth in case the regex grammar drifts.
             if _PII_TOKEN_RE.fullmatch(first or "") or _PII_TOKEN_RE.fullmatch(second or ""):
+                continue
+            # 2026-05-27 — reject hand-off targets. The opener said
+            # "I'm gonna get you through to Bradley"; Bradley is the
+            # closer on the next call, not this one's agent.
+            if first.lower() in transfer_targets:
                 continue
             # Accept the surname only when it looks like a name (not a stopword,
             # alphabetic, plausible length).
