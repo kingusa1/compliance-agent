@@ -17,6 +17,7 @@ so AssemblyAI POSTs the completion notification instead of us polling every
 import asyncio
 import time
 
+import anyio
 import httpx
 
 from app.config import settings
@@ -25,6 +26,19 @@ from app.logger import log
 
 
 ASSEMBLYAI_BASE = "https://api.assemblyai.com/v2"
+
+
+def _read_file_bytes(file_path: str) -> bytes:
+    """Synchronous file read isolated for `anyio.to_thread.run_sync` off-loading.
+
+    Defined module-level (not nested) so the threadpool worker pickles the
+    callable cheaply and the function is unit-testable in isolation. Raises
+    `OSError` / `FileNotFoundError` on missing path; callers let the error
+    propagate so the pipeline fails loudly rather than silently transcribe
+    empty bytes.
+    """
+    with open(file_path, "rb") as f:
+        return f.read()
 
 # L9 PII redaction policy set — UK context. SSN deliberately excluded;
 # `redact_pii_audio` is FALSE so reviewers still hear raw audio.
@@ -83,8 +97,16 @@ async def transcribe_audio_assemblyai(file_path: str, supplier_hint: str | None 
     async with httpx.AsyncClient(timeout=timeout) as client:
         # Step 1: Upload audio
         log.info("🎙️ ASSEMBLYAI uploading audio...")
-        with open(file_path, "rb") as f:
-            audio_bytes = f.read()
+        # 2026-05-27 LAG FIX: the prior implementation did `with open() as f:
+        # f.read()` on the event loop. For 1-5MB MP3 × N concurrent pipelines
+        # this saturates the loop — the 2026-05-26 PM logs captured
+        # `loop_lag_canary lag=13393ms` during a 4-way Clifton burst (4 × 4.5MB
+        # files reading concurrently). Route through `anyio.to_thread.run_sync`
+        # so the file read consumes the 200-token AnyIO limiter set in
+        # `main.py` (not the default 8-12 thread asyncio executor, which would
+        # let 40 concurrent uploads land simultaneously and re-create the
+        # contention this fix addresses). See 2026-05-27 python-reviewer HIGH-1.
+        audio_bytes = await anyio.to_thread.run_sync(_read_file_bytes, file_path)
         log.info(f"🎙️ ASSEMBLYAI uploading {len(audio_bytes)} bytes...")
         upload_resp = await client.post(
             f"{ASSEMBLYAI_BASE}/upload",

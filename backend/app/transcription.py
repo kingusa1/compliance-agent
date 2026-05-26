@@ -1,8 +1,10 @@
+import asyncio
 import base64
 import json
 import os
 import re
 
+import anyio
 import httpx
 from deepgram import DeepgramClient, DeepgramClientOptions, PrerecordedOptions
 
@@ -168,11 +170,24 @@ async def _call_deepgram(client: DeepgramClient, source: dict, options: Prerecor
     return await client.listen.asyncrest.v("1").transcribe_file(source, options)
 
 
+def _read_file_bytes(file_path: str) -> bytes:
+    """Synchronous file read isolated for `asyncio.to_thread` off-loading.
+
+    2026-05-27 LAG FIX: the prior transcribers ran `f.read()` directly on
+    the event loop. For 1-5MB MP3 × N concurrent pipelines this starved
+    the loop (captured `loop_lag_canary lag=13393ms` in 2026-05-26 PM logs).
+    Module-level helper so the threadpool worker pickles cheaply and the
+    function is unit-testable in isolation.
+    """
+    with open(file_path, "rb") as f:
+        return f.read()
+
+
 async def transcribe_audio(file_path: str) -> str:
     client = _get_deepgram_client()
 
-    with open(file_path, "rb") as audio:
-        source = {"buffer": audio.read()}
+    audio_bytes = await anyio.to_thread.run_sync(_read_file_bytes, file_path)
+    source = {"buffer": audio_bytes}
 
     options = PrerecordedOptions(
         model="nova-3",
@@ -224,8 +239,8 @@ async def transcribe_audio_full(file_path: str) -> dict:
     """
     client = _get_deepgram_client()
 
-    with open(file_path, "rb") as audio:
-        source = {"buffer": audio.read()}
+    audio_bytes = await anyio.to_thread.run_sync(_read_file_bytes, file_path)
+    source = {"buffer": audio_bytes}
 
     options = PrerecordedOptions(
         model="nova-3",
@@ -304,10 +319,20 @@ Rules:
 - If you can't make out a word, write [inaudible]"""
 
 
+def _read_and_b64(file_path: str) -> str:
+    """Synchronous read + base64 encode isolated for `asyncio.to_thread`.
+
+    base64 of a 4MB MP3 is CPU-bound and synchronous — combined with the
+    read, it's a ~50ms-per-MB blocking window on the loop. Off-load both
+    together so the threadpool worker absorbs the cost.
+    """
+    with open(file_path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+
+
 async def transcribe_audio_gemini(file_path: str) -> str:
     """Transcribe audio using Gemini 2.5 Flash via OpenRouter (higher accuracy)."""
-    with open(file_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode()
+    b64 = await anyio.to_thread.run_sync(_read_and_b64, file_path)
 
     ext = os.path.splitext(file_path)[1].lstrip(".")
     fmt = ext if ext in ("mp3", "wav", "m4a", "ogg", "flac") else "mp3"

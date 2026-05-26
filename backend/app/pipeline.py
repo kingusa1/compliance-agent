@@ -131,7 +131,7 @@ async def _trace_step(
         _persist_step_done,
         _mark_step_started,
     )
-    from app.db_retry import _is_statement_timeout
+    from app.db_retry import _is_retryable, _is_statement_timeout
 
     started = _time.time()
     # 2026-05-25 — wire `last_step_started_at` + `last_step_name` on the Call
@@ -175,24 +175,39 @@ async def _trace_step(
                 result = await raw if inspect.isawaitable(raw) else raw
                 break
             except Exception as e:  # noqa: BLE001 — broad catch is intentional
-                if not _is_statement_timeout(e) or attempt >= _STEP_RETRY_MAX_ATTEMPTS:
+                # 2026-05-27 D9 widening: retry on either statement_timeout
+                # OR a transient disconnect (`_is_retryable` = both). Prior
+                # implementation retried only on statement_timeout, so a
+                # mid-step Supavisor disconnect propagated to step_err and
+                # the call ended at status=failed even though the same
+                # backoff strategy would have recovered it.
+                if not _is_retryable(e) or attempt >= _STEP_RETRY_MAX_ATTEMPTS:
                     # Non-retryable, or we've exhausted attempts. Re-raise
                     # to the outer except so step_err is emitted.
-                    if attempt > 1 and _is_statement_timeout(e):
+                    if attempt > 1 and _is_retryable(e):
                         log.warning(
                             "STEP_RETRY exhausted call_id=%s step=%s attempts=%d "
-                            "err=statement_timeout",
-                            call_id, step_name, attempt,
+                            "err_type=%s",
+                            call_id, step_name, attempt, type(e).__name__,
                         )
                     raise
                 # Full-jitter exponential backoff so 3+ concurrent
                 # pipelines don't lockstep-collide on the contested row.
                 ceiling = _STEP_RETRY_BASE_DELAY_S * (2 ** (attempt - 1))
                 delay = _random.uniform(0, ceiling)
+                # `reason` reflects the actual error class so the SSE
+                # subscriber + Railway log search can distinguish lock
+                # contention (`QueryCanceled`) from a Supavisor blip
+                # (`OperationalError` / `DisconnectionError`).
+                reason = (
+                    "statement_timeout"
+                    if _is_statement_timeout(e)
+                    else type(e).__name__
+                )
                 log.warning(
-                    "STEP_RETRY transient_lock call_id=%s step=%s attempt=%d "
-                    "delay_s=%.2f err=%s",
-                    call_id, step_name, attempt, delay, str(e)[:200],
+                    "STEP_RETRY transient call_id=%s step=%s attempt=%d "
+                    "delay_s=%.2f reason=%s err=%s",
+                    call_id, step_name, attempt, delay, reason, str(e)[:200],
                 )
                 # Publish a non-fatal SSE event so the UI can render a
                 # "retrying lock contention" hint instead of going silent.
@@ -203,7 +218,7 @@ async def _trace_step(
                         "step": step_name,
                         "attempt": attempt,
                         "delay_ms": int(delay * 1000),
-                        "reason": "statement_timeout",
+                        "reason": reason,
                     },
                 )
                 await asyncio.sleep(delay)
@@ -1249,6 +1264,10 @@ async def _step_detect_metadata(
     Writes everything back to the Call row and commits. No useful return —
     next step reads from Call.
     """
+    # Hoisted here (was twice-inline at the supplier-peel re-raise gates)
+    # per 2026-05-27 python-reviewer MED finding.
+    from app.db_retry import _is_retryable
+
     call = db.query(Call).filter_by(id=call_id).first()
     if not call:
         raise RuntimeError(f"detect_metadata: call {call_id} not found")
@@ -1561,10 +1580,36 @@ async def _step_detect_metadata(
                     # SAVEPOINT rollback — the outer transaction stays
                     # clean and the pipeline continues past this block.
                     sp.rollback()
+                    # 2026-05-27 D9 widening: the prior implementation swallowed
+                    # `psycopg2.errors.QueryCanceled` here, so the `_trace_step`
+                    # retry wrapper at the step boundary never saw the contention
+                    # and the supplier-peel silently no-op'd. Under bulk-upload
+                    # concurrency on a shared deal, the SELECT ... FOR UPDATE on
+                    # line 1501 is the exact lock-wait that hits
+                    # `statement_timeout` (15s). Re-raise retryable disconnects /
+                    # timeouts so the step body is re-run with fresh jittered
+                    # backoff — supplier detect + the peel are both idempotent.
+                    if _is_retryable(sp_e):
+                        log.warning(
+                            f"⚠️ SUPPLIER_PEEL_RETRYABLE call_id={call_id} "
+                            f"err_type={type(sp_e).__name__} — re-raising "
+                            f"for _trace_step retry: {str(sp_e)[:200]}"
+                        )
+                        raise
                     log.warning(
                         f"supplier backfill / mismatch-split rolled back: {sp_e}"
                     )
         except Exception as e:
+            # 2026-05-27 D9 widening: same re-raise gate — preserve the outer
+            # try/except's "skipped" log for genuine bugs, but let retryables
+            # propagate to _trace_step.
+            if _is_retryable(e):
+                log.warning(
+                    f"⚠️ SUPPLIER_PEEL_OUTER_RETRYABLE call_id={call_id} "
+                    f"err_type={type(e).__name__} — re-raising for "
+                    f"_trace_step retry: {str(e)[:200]}"
+                )
+                raise
             log.warning(f"supplier backfill / mismatch-split skipped: {e}")
 
         # L3: when the call has a known call_type, prefer Script rows
