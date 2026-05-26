@@ -1888,34 +1888,25 @@ _V1_TPI_FALLBACK_CHECKPOINTS = [
 ]
 
 
-@router.get("/api/calls/{call_id}/script-checkpoints")
-def get_call_script_checkpoints(
-    call_id: str,
-    db: Session = Depends(get_db),
-    _user: dict = Depends(current_reviewer),
-):
-    """Return the script's checkpoint definitions matched to this call so the
-    UI can show Expected vs Actual ('what the agent should have said').
+def _compute_script_checkpoints_payload(call_id: str, call: "Call", db: Session) -> dict:
+    """Build the canonical {checkpoints, script_name, supplier, mode}
+    payload the call-detail page's CheckpointCard expects.
 
-    2026-05-14 — returns the UNION across all CallSegment scripts so per-segment
-    checkpoints from different rubrics (88-rule pre_sales pack + supplier
-    verbal script + LOA script) all carry their ``required`` text. Without
-    this, segments graded against a rubric different from ``call.script_id``
-    rendered as "Script text unavailable" in the checkpoint cards because
-    name-match against the single call-level script returned nothing.
+    Shared by the legacy single-resource endpoint
+    `/api/calls/{call_id}/script-checkpoints` AND the composite bundle
+    endpoint `/api/calls/{call_id}/bundle` so both surfaces return the
+    IDENTICAL shape — including the `required` text on every checkpoint
+    (the card renders `script?.required` and falls back to "Script text
+    unavailable" when missing; the bundle previously read from
+    CallSegment.script_checkpoints which stored a subset without
+    `required`, surfacing the empty-state to every reviewer — owner-
+    reported 2026-05-28).
 
-    When a script has empty ``checkpoints`` (seed-only metadata), the
-    pipeline falls through to the V1 third-party-disclosure analyzer — so
-    those V1 rules are appended too. Duplicate ``name`` entries are
-    dedupe'd (segment scripts win over the call-level script).
+    Builds an ordered set of script_ids (segment scripts first, then
+    the call-level script), fetches each Script row, unions their
+    checkpoint defs, dedupes by name. Falls back to V1 if no script
+    resolves OR every resolved script has empty checkpoints.
     """
-    call = db.query(Call).filter_by(id=call_id).first()
-    if not call:
-        raise HTTPException(404, "Call not found")
-
-    # Build the ordered set of script_ids to fetch: every segment's
-    # script_id first (so per-segment rubrics win), then the call-level
-    # script_id as a safety net. Falsy / duplicate ids are skipped.
     script_ids: list[str] = []
     seen_ids: set[str] = set()
     for seg in list(getattr(call, "segments", []) or []):
@@ -1928,7 +1919,6 @@ def get_call_script_checkpoints(
         seen_ids.add(str(call.script_id))
 
     if not script_ids:
-        # No segments resolved + no call-level script → V1 fallback only.
         return {"call_id": call_id, "checkpoints": _V1_TPI_FALLBACK_CHECKPOINTS}
 
     rows = (
@@ -1959,7 +1949,6 @@ def get_call_script_checkpoints(
             merged_names.add(name_key)
 
     if not merged:
-        # Every script had empty checkpoints → V1 fallback.
         return {
             "call_id": call_id,
             "script_name": (primary.script_name if primary else None),
@@ -1975,6 +1964,37 @@ def get_call_script_checkpoints(
         "mode": (primary.mode if primary else None),
         "checkpoints": merged,
     }
+
+
+@router.get("/api/calls/{call_id}/script-checkpoints")
+def get_call_script_checkpoints(
+    call_id: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_reviewer),
+):
+    """Return the script's checkpoint definitions matched to this call so the
+    UI can show Expected vs Actual ('what the agent should have said').
+
+    2026-05-14 — returns the UNION across all CallSegment scripts so per-segment
+    checkpoints from different rubrics (88-rule pre_sales pack + supplier
+    verbal script + LOA script) all carry their ``required`` text. Without
+    this, segments graded against a rubric different from ``call.script_id``
+    rendered as "Script text unavailable" in the checkpoint cards because
+    name-match against the single call-level script returned nothing.
+
+    When a script has empty ``checkpoints`` (seed-only metadata), the
+    pipeline falls through to the V1 third-party-disclosure analyzer — so
+    those V1 rules are appended too. Duplicate ``name`` entries are
+    dedupe'd (segment scripts win over the call-level script).
+
+    2026-05-28 — body extracted into _compute_script_checkpoints_payload
+    so the composite /api/calls/{id}/bundle endpoint returns the
+    identical shape (was previously reading a thinner per-segment cache).
+    """
+    call = db.query(Call).filter_by(id=call_id).first()
+    if not call:
+        raise HTTPException(404, "Call not found")
+    return _compute_script_checkpoints_payload(call_id, call, db)
 
 
 def _resolve_segment_rubric(seg, script_obj) -> dict:
@@ -2270,26 +2290,24 @@ def get_call_bundle(
         except (TypeError, ValueError):
             words = []
 
-    # Script checkpoints — UNION across every segment's rubric. Cheap
-    # iteration over the already-loaded segment list.
-    script_checkpoints: list[dict] = []
-    seen_names: set[str] = set()
-    for s in seg_rows:
-        try:
-            rubric_cps = (
-                __import__("json").loads(s.script_checkpoints)
-                if getattr(s, "script_checkpoints", None) else []
-            )
-        except (TypeError, ValueError):
-            rubric_cps = []
-        for cp in rubric_cps if isinstance(rubric_cps, list) else []:
-            if not isinstance(cp, dict):
-                continue
-            name = (cp.get("name") or "").strip()
-            if not name or name.lower() in seen_names:
-                continue
-            seen_names.add(name.lower())
-            script_checkpoints.append(cp)
+    # Script checkpoints — 2026-05-28 P0 owner-reported "Script text
+    # unavailable" on every checkpoint card. Bundle previously read from
+    # CallSegment.script_checkpoints (a per-segment cache of grade-time
+    # checkpoint slices, which stores `{name, status, evidence, ...}`
+    # but NOT the `required` script text the card renders). Now delegates
+    # to the same helper the legacy /api/calls/{id}/script-checkpoints
+    # uses → identical shape from both surfaces, `required` always
+    # present when a Script row exists. One extra round-trip to fetch
+    # the Script rows, but that's exactly what the legacy frontend was
+    # already paying — no net regression. Returns just the `checkpoints`
+    # list at the same JSON key so the CallBundleResponse TS type and
+    # the page's existing consumer keep working without code change.
+    try:
+        sc_payload = _compute_script_checkpoints_payload(call_id, call, db)
+        script_checkpoints = sc_payload.get("checkpoints", []) or []
+    except Exception as e:  # noqa: BLE001 — script lookup must never 500 the bundle
+        log.warning(f"bundle script_checkpoints lookup failed: {e}")
+        script_checkpoints = []
 
     return {
         "call": detail.model_dump(mode="json"),
