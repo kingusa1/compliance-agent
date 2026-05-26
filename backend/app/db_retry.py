@@ -1,30 +1,50 @@
-"""Enterprise-grade DB retry decorator for transient Supavisor disconnects.
+"""Enterprise-grade DB retry decorator for transient Supavisor disconnects
+and statement-timeout contention under bulk-upload concurrency.
 
-Production reality (2026-05-25 live logs): Supabase Supavisor occasionally
-closes long-lived connections mid-query (`SSL connection has been closed
-unexpectedly`, `server closed the connection unexpectedly`,
-`server didn't return client encoding`). `pool_pre_ping` catches stale
-connections at checkout but a connection killed *during* a query needs
-explicit retry.
+Production reality (2026-05-25 / 2026-05-26 live logs): two distinct
+classes of transient DB failure recover via retry.
+
+1. **Supavisor disconnects.** Supabase Supavisor occasionally closes
+   long-lived connections mid-query (`SSL connection has been closed
+   unexpectedly`, `server closed the connection unexpectedly`,
+   `server didn't return client encoding`). `pool_pre_ping` catches
+   stale connections at checkout but a connection killed *during* a
+   query needs explicit retry.
+
+2. **Statement-timeout under bulk concurrency (2026-05-26 D9).** When
+   3+ pipelines mutate sibling rows on the same deal stub (per-call
+   STUB_RENAME `UPDATE customer_deals SET customer_name=` competes
+   with the per-call `UPDATE calls SET filename, script_id`), Postgres
+   row-locks queue and the 15 s `statement_timeout` fires —
+   `psycopg2.errors.QueryCanceled: canceling statement due to
+   statement timeout`. The pipeline step crashes and the call's
+   ``status`` is left at `failed`. Retrying with brief backoff lets
+   the sibling pipeline release its lock so this one's UPDATE
+   proceeds.
 
 Without retry, the user sees a 503 (the FastAPI handler returns
 `Retry-After: 1` for HTTP requests, and the frontend's TanStack Query
 auto-retries — so HTTP paths recover gracefully). Background tasks
 (`idle_release_loop`, post-finalize tracker-autofill agents like
 `date_extractor`, `quality_agent`) do NOT have a frontend safety net;
-they silently skip the iteration and the work never runs.
+they silently skip the iteration and the work never runs. Pipeline
+steps don't have a safety net either — a single QueryCanceled aborts
+the whole call.
 
-This decorator closes that gap. Use on any function that opens its own
+This decorator closes both gaps. Use on any function that opens its own
 `SessionLocal` and runs a quick read/write — typically background loop
-bodies and post-pipeline agents.
+bodies, post-pipeline agents, and the pipeline's mutation-heavy steps.
 
 Design notes:
 
-  * **What we retry**: only `OperationalError` / `DBAPIError` /
-    `DisconnectionError` whose message matches a known transient
-    disconnect signature (`_DISCONNECT_SIGNATURES` in `database.py`).
-    Constraint violations, syntax errors, deadlocks etc. propagate
-    unchanged — they're real bugs that retry can't fix.
+  * **What we retry**:
+    - `OperationalError` / `DBAPIError` / `DisconnectionError` whose
+      message matches a known transient disconnect signature
+      (`_DISCONNECT_SIGNATURES` in `database.py`).
+    - `psycopg2.errors.QueryCanceled` with the `statement timeout`
+      signature — the lock-contention case from D9.
+    Constraint violations, syntax errors, real deadlocks etc.
+    propagate unchanged — they're bugs retry can't fix.
 
   * **How many retries**: exactly 1 by default. Supavisor disconnects
     are almost always single-blip; if the second attempt also fails
@@ -90,11 +110,35 @@ log = logging.getLogger("compliance.db_retry")
 
 T = TypeVar("T")
 
-# Bounded exponential backoff. Two attempts total (1 original + 1 retry)
-# with 250ms between them — enough for Supavisor to surface a fresh
-# connection, short enough that the user-visible delay is invisible.
-_DEFAULT_MAX_ATTEMPTS = 2
+# Bounded exponential backoff. Three attempts total (1 original + 2
+# retries) with 250 ms / 500 ms between them. The 2026-05-26 D9
+# investigation showed sibling pipelines releasing their lock within
+# ~1 s on contended deal-stub mutations, so two retries cover the
+# overwhelming majority of cases. Beyond that the network/pool/contention
+# is genuinely unhealthy and the caller should surface the error.
+_DEFAULT_MAX_ATTEMPTS = 3
 _DEFAULT_BASE_DELAY_S = 0.25
+
+
+_STATEMENT_TIMEOUT_SIGNATURES = (
+    "canceling statement due to statement timeout",
+    "querycanceled",
+)
+
+
+def _is_statement_timeout(exc: BaseException) -> bool:
+    """True iff ``exc`` is a Postgres ``statement_timeout`` cancellation.
+
+    These surface as `psycopg2.errors.QueryCanceled` (subclass of
+    ``OperationalError``) under SQLAlchemy. The wrapped exception's
+    string carries the "canceling statement due to statement timeout"
+    marker that distinguishes the contended-lock case from real DB
+    failures (deadlock, query syntax, missing column).
+    """
+    if not isinstance(exc, (OperationalError, DBAPIError)):
+        return False
+    msg = str(exc).lower()
+    return any(sig in msg for sig in _STATEMENT_TIMEOUT_SIGNATURES)
 
 
 def _is_transient_disconnect(exc: BaseException) -> bool:
@@ -106,6 +150,12 @@ def _is_transient_disconnect(exc: BaseException) -> bool:
         return False
     msg = str(exc).lower()
     return any(sig in msg for sig in _DISCONNECT_SIGNATURES)
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Either a disconnect or a statement-timeout. Centralised so call
+    sites don't have to remember both predicates."""
+    return _is_transient_disconnect(exc) or _is_statement_timeout(exc)
 
 
 def _record_metric(outcome: str) -> None:
@@ -147,7 +197,7 @@ def db_retry_on_disconnect(
                 try:
                     return fn(*args, **kwargs)
                 except Exception as e:  # noqa: BLE001 — broad catch is intentional
-                    if not _is_transient_disconnect(e):
+                    if not _is_retryable(e):
                         raise
                     last_exc = e
                     if attempt >= max_attempts:
@@ -230,7 +280,7 @@ async def db_retry_on_disconnect_async(
                 return await result  # type: ignore[return-value]
             return result  # type: ignore[return-value]
         except Exception as e:  # noqa: BLE001
-            if not _is_transient_disconnect(e):
+            if not _is_retryable(e):
                 raise
             last_exc = e
             if attempt >= max_attempts:

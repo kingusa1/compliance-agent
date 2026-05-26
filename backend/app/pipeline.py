@@ -85,6 +85,10 @@ _STEP_DONE_EVENTS = {
 }
 
 
+_STEP_RETRY_MAX_ATTEMPTS = 3
+_STEP_RETRY_BASE_DELAY_S = 0.5
+
+
 async def _trace_step(call_id: str, step_name: str, fn, *args, **kwargs):
     """Wrap a _step_* call to write a pipeline_step_log row at start +
     finish, mirroring what app.workflows.process_call._logged_step does
@@ -97,6 +101,17 @@ async def _trace_step(call_id: str, step_name: str, fn, *args, **kwargs):
     on /api/calls/events (+ /api/calls/{id}/events) get push notifications
     at every step boundary. Frontend uses these to invalidate React Query
     keys instead of polling.
+
+    2026-05-26 (D9 fix) — wraps the step body in a bounded retry on
+    ``psycopg2.errors.QueryCanceled`` (statement_timeout). Real prod
+    incident: 3 sibling pipelines mutating the same deal-stub row
+    serialised each other's UPDATE on the call row (FK validation
+    acquires a shared lock on the parent deal; sibling STUB_RENAME
+    held an exclusive lock); the 15 s ``statement_timeout`` fired and
+    one of every batch of 3 calls landed at ``status="failed"``. The
+    in-step retry gives the sibling time to release its lock — three
+    attempts at 0.5 s, 1.0 s, 2.0 s backoff cover the contention window
+    we observed in logs (~1.5 s peak).
     """
     import time as _time
     from app.workflows.process_call import (
@@ -105,6 +120,7 @@ async def _trace_step(call_id: str, step_name: str, fn, *args, **kwargs):
         _mark_step_started,
     )
     from app import realtime
+    from app.db_retry import _is_statement_timeout
 
     started = _time.time()
     # 2026-05-25 — wire `last_step_started_at` + `last_step_name` on the Call
@@ -141,8 +157,47 @@ async def _trace_step(call_id: str, step_name: str, fn, *args, **kwargs):
         # (json.loads of 50KB) is ≈150ms per finalize — measurable
         # but no longer the dominant lag source after the upstream
         # backpressure fix.
-        raw = fn(*args, **kwargs)
-        result = await raw if inspect.isawaitable(raw) else raw
+        last_qc: BaseException | None = None
+        result = None
+        for attempt in range(1, _STEP_RETRY_MAX_ATTEMPTS + 1):
+            try:
+                raw = fn(*args, **kwargs)
+                result = await raw if inspect.isawaitable(raw) else raw
+                break
+            except Exception as e:  # noqa: BLE001 — broad catch is intentional
+                if not _is_statement_timeout(e) or attempt >= _STEP_RETRY_MAX_ATTEMPTS:
+                    # Non-retryable, or we've exhausted attempts. Re-raise
+                    # to the outer except so step_err is emitted.
+                    if attempt > 1 and _is_statement_timeout(e):
+                        log.warning(
+                            "STEP_RETRY exhausted call_id=%s step=%s attempts=%d "
+                            "err=statement_timeout",
+                            call_id, step_name, attempt,
+                        )
+                    raise
+                last_qc = e
+                delay = _STEP_RETRY_BASE_DELAY_S * (2 ** (attempt - 1))
+                log.warning(
+                    "STEP_RETRY transient_lock call_id=%s step=%s attempt=%d "
+                    "delay_s=%.2f err=%s",
+                    call_id, step_name, attempt, delay, str(e)[:200],
+                )
+                # Publish a non-fatal SSE event so the UI can render a
+                # "retrying lock contention" hint instead of going silent.
+                realtime.publish(
+                    call_id,
+                    "step_retry",
+                    {
+                        "step": step_name,
+                        "attempt": attempt,
+                        "delay_ms": int(delay * 1000),
+                        "reason": "statement_timeout",
+                    },
+                )
+                await asyncio.sleep(delay)
+        else:  # pragma: no cover — loop exits via break or raise
+            if last_qc is not None:
+                raise last_qc
         elapsed_ms = int((_time.time() - started) * 1000)
         _persist_step_done(row_id, step_name, "ok", result, None, elapsed_ms)
         realtime.publish(

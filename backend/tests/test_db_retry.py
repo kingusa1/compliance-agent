@@ -23,6 +23,8 @@ from sqlalchemy.exc import DisconnectionError, OperationalError
 
 from app import database as db_module
 from app.db_retry import (
+    _is_retryable,
+    _is_statement_timeout,
     _is_transient_disconnect,
     db_retry_on_disconnect,
     db_retry_on_disconnect_async,
@@ -67,6 +69,93 @@ class TestIsTransientDisconnect:
 
     def test_random_value_error_not_transient(self) -> None:
         assert _is_transient_disconnect(ValueError("boom")) is False
+
+
+# ─── _is_statement_timeout classifier (D9 fix, 2026-05-26) ──────────────────
+
+
+class TestIsStatementTimeout:
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "canceling statement due to statement timeout",
+            "QueryCanceled",
+            "QueryCanceled: canceling statement due to statement timeout",
+        ],
+    )
+    def test_statement_timeout_signatures(self, msg: str) -> None:
+        e = OperationalError(statement="UPDATE calls SET x=1", params={}, orig=psycopg2.OperationalError(msg))
+        assert _is_statement_timeout(e) is True
+
+    def test_disconnect_message_is_not_statement_timeout(self) -> None:
+        """Disconnects and timeouts must not be confused — the retry
+        policy differs (timeout retries longer to clear lock contention)."""
+        e = OperationalError(statement="SELECT 1", params={}, orig=psycopg2.OperationalError(
+            "SSL connection has been closed unexpectedly"
+        ))
+        assert _is_statement_timeout(e) is False
+
+    def test_value_error_not_statement_timeout(self) -> None:
+        assert _is_statement_timeout(ValueError("boom")) is False
+
+    def test_is_retryable_covers_both_classes(self) -> None:
+        disc = OperationalError(statement="SELECT 1", params={}, orig=psycopg2.OperationalError(
+            "server closed the connection unexpectedly"
+        ))
+        tout = OperationalError(statement="UPDATE x SET y=1", params={}, orig=psycopg2.OperationalError(
+            "canceling statement due to statement timeout"
+        ))
+        bug = OperationalError(statement="SELECT 1", params={}, orig=psycopg2.OperationalError(
+            "duplicate key value violates unique constraint"
+        ))
+        assert _is_retryable(disc) is True
+        assert _is_retryable(tout) is True
+        assert _is_retryable(bug) is False
+
+
+class TestStatementTimeoutRetry:
+    """Real-prod incident (2026-05-26 D9): 3 concurrent pipelines mutating
+    the same deal-stub row serialised each other's UPDATE on the call row;
+    one of every 3 calls hit ``statement_timeout`` and landed at
+    ``status=failed``. The retry path turns that into a recoverable
+    transient by giving the sibling time to release the lock."""
+
+    def test_statement_timeout_retries_and_recovers(self) -> None:
+        calls = {"n": 0}
+
+        @db_retry_on_disconnect(base_delay_s=0.0)
+        def fn() -> str:
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise OperationalError(
+                    statement="UPDATE calls SET filename=:f WHERE id=:i",
+                    params={"f": "x.mp3", "i": "abc"},
+                    orig=psycopg2.OperationalError(
+                        "canceling statement due to statement timeout"
+                    ),
+                )
+            return "recovered"
+
+        assert fn() == "recovered"
+        assert calls["n"] == 3  # initial + 2 retries
+
+    def test_statement_timeout_exhausts_after_max_attempts(self) -> None:
+        calls = {"n": 0}
+
+        @db_retry_on_disconnect(max_attempts=3, base_delay_s=0.0)
+        def fn() -> str:
+            calls["n"] += 1
+            raise OperationalError(
+                statement="UPDATE calls SET filename=:f",
+                params={"f": "x.mp3"},
+                orig=psycopg2.OperationalError(
+                    "canceling statement due to statement timeout"
+                ),
+            )
+
+        with pytest.raises(OperationalError):
+            fn()
+        assert calls["n"] == 3
 
 
 # ─── Sync decorator ─────────────────────────────────────────────────────────
