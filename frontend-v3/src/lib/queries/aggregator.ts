@@ -191,6 +191,19 @@ export type AgentRecentCall = {
   duration_seconds: number | null;
 };
 
+export type AgentWeeklyTrendPoint = {
+  week_start: string | null;
+  week_end: string | null;
+  total: number;
+  ok: number;
+  pass_rate: number | null;
+};
+
+export type AgentTopFailedCheckpoint = {
+  name: string;
+  count: number;
+};
+
 export type AgentDrilldown = {
   agent_name: string;
   critical_count_7d: number;
@@ -201,6 +214,24 @@ export type AgentDrilldown = {
   retraining_reason: string | null;
   dead_rejections: AgentDeadRejection[];
   recent_calls?: AgentRecentCall[]; // optional for old API responses
+  // 2026-05-27 — Quality-reviewer enrichment (owner mandate: "all the
+  // information that the quality person will need"). All fields optional
+  // for back-compat with older API responses.
+  total_calls_lifetime?: number;
+  avg_score_30d?: number | null;
+  severity_breakdown_30d?: {
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+  };
+  top_failed_checkpoints_30d?: AgentTopFailedCheckpoint[];
+  supplier_mix_30d?: Record<string, number>;
+  call_type_mix_30d?: Record<string, number>;
+  qc_block_count_30d?: number;
+  weekly_trend?: AgentWeeklyTrendPoint[];
+  best_call_id?: string | null;
+  worst_call_id?: string | null;
 };
 
 export function getAgentsListQuery() {

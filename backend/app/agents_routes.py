@@ -358,6 +358,227 @@ def agent_drilldown(
         for r in recent_call_rows
     ]
 
+    # ── 2026-05-27 — Quality-reviewer enrichment ─────────────────────
+    #
+    # Owner mandate: "make the agent page much more better and attractive
+    # and have all the information that the quality person will need to
+    # take a decision". Add: total_calls lifetime, avg_score_30d,
+    # severity_breakdown (last 30d), top_failed_checkpoints (last 30d),
+    # supplier_mix (last 30d), call_type_mix (last 30d), qc_flag_count
+    # (QualityCheckerAgent verdict=block last 30d), weekly_trend (8-week
+    # pass-rate sparkline series), best_call_id + worst_call_id (best vs
+    # worst score in the recent calls window).
+    #
+    # All gracefully degrade to defaults on schema mismatches so the
+    # endpoint never 500s on older DBs.
+
+    total_calls_lifetime = (
+        db.query(func.count(Call.id))
+        .filter(Call.agent_name == agent_name)
+        .scalar()
+        or 0
+    )
+
+    # Avg score over the last 30d. Parse "X/Y" → ratio in Python to keep
+    # the SQL dialect-portable.
+    avg_score_30d: float | None = None
+    score_rows = (
+        db.query(Call.score)
+        .filter(
+            Call.agent_name == agent_name,
+            Call.created_at >= cutoff_30,
+            Call.score.isnot(None),
+        )
+        .all()
+    )
+    ratios: list[float] = []
+    for (s,) in score_rows:
+        try:
+            num, den = (s or "").split("/", 1)
+            denf = float(den)
+            if denf > 0:
+                ratios.append(float(num) / denf)
+        except (ValueError, AttributeError):
+            continue
+    if ratios:
+        avg_score_30d = round(sum(ratios) / len(ratios), 3)
+
+    # Severity breakdown (last 30d). `flags` table may be missing on
+    # older DBs — fall through to a checkpoint-results parse on Call.
+    severity_breakdown: dict[str, int] = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    try:
+        sev_rows = db.execute(
+            text(
+                """
+                SELECT f.severity, COUNT(*) AS n
+                  FROM flags f
+                  JOIN calls c ON c.id = f.call_id
+                 WHERE c.agent_name = :agent
+                   AND f.created_at >= :cutoff
+                 GROUP BY f.severity
+                """
+            ),
+            {"agent": agent_name, "cutoff": cutoff_30},
+        ).fetchall()
+        for r in sev_rows:
+            key = (r.severity or "medium").lower()
+            if key in severity_breakdown:
+                severity_breakdown[key] = int(r.n)
+    except (OperationalError, ProgrammingError):
+        pass
+
+    # Top failed checkpoints (last 30d). Parses each call's
+    # checkpoint_results JSON in Python — cheap for ~100 calls/agent;
+    # surface the 5 most-frequent failed `name` strings.
+    top_failed_checkpoints: list[dict[str, Any]] = []
+    try:
+        from collections import Counter
+        cp_rows = (
+            db.query(Call.checkpoint_results)
+            .filter(
+                Call.agent_name == agent_name,
+                Call.created_at >= cutoff_30,
+                Call.checkpoint_results.isnot(None),
+            )
+            .all()
+        )
+        counter: Counter[str] = Counter()
+        for (raw,) in cp_rows:
+            try:
+                arr = __import__("json").loads(raw or "[]")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(arr, list):
+                continue
+            for cp in arr:
+                if not isinstance(cp, dict):
+                    continue
+                # Effective verdict: reviewer override wins, else AI status.
+                eff = cp.get("reviewer_verdict") or cp.get("status")
+                if eff in ("fail", "unverified", "partial"):
+                    nm = (cp.get("name") or "").strip()
+                    if nm:
+                        counter[nm] += 1
+        top_failed_checkpoints = [
+            {"name": n, "count": c} for n, c in counter.most_common(5)
+        ]
+    except Exception as e:  # noqa: BLE001 — never block the response
+        log.warning(f"top_failed_checkpoints failed (non-fatal): {e}")
+
+    # Supplier mix + call_type mix (last 30d) — single GROUP BY each.
+    supplier_mix: dict[str, int] = {}
+    call_type_mix: dict[str, int] = {}
+    try:
+        for r in db.execute(
+            text(
+                """
+                SELECT COALESCE(detected_supplier, 'Unknown') AS s, COUNT(*) AS n
+                  FROM calls
+                 WHERE agent_name = :agent AND created_at >= :cutoff
+                 GROUP BY s
+                """
+            ),
+            {"agent": agent_name, "cutoff": cutoff_30},
+        ).fetchall():
+            supplier_mix[r.s] = int(r.n)
+        for r in db.execute(
+            text(
+                """
+                SELECT COALESCE(call_type, 'unset') AS t, COUNT(*) AS n
+                  FROM calls
+                 WHERE agent_name = :agent AND created_at >= :cutoff
+                 GROUP BY t
+                """
+            ),
+            {"agent": agent_name, "cutoff": cutoff_30},
+        ).fetchall():
+            call_type_mix[r.t] = int(r.n)
+    except (OperationalError, ProgrammingError):
+        pass
+
+    # QualityCheckerAgent verdict=block count (last 30d). Column may be
+    # NULL on older calls — narrow predicate keeps the scan partial-
+    # indexed via ix_calls_quality_check_verdict.
+    qc_block_count_30d = 0
+    try:
+        row = db.execute(
+            text(
+                """
+                SELECT COUNT(*) AS n
+                  FROM calls
+                 WHERE agent_name = :agent
+                   AND created_at >= :cutoff
+                   AND (quality_check->>'verdict') = 'block'
+                """
+            ),
+            {"agent": agent_name, "cutoff": cutoff_30},
+        ).fetchone()
+        qc_block_count_30d = int(row.n) if row else 0
+    except (OperationalError, ProgrammingError):
+        qc_block_count_30d = 0
+
+    # 8-week pass-rate sparkline: one entry per week, oldest first.
+    weekly_trend: list[dict[str, Any]] = []
+    try:
+        rows_week = db.execute(
+            text(
+                """
+                WITH weeks AS (
+                  SELECT generate_series(0, 7) AS i
+                )
+                SELECT
+                  (NOW() AT TIME ZONE 'utc')::date - (w.i * 7) AS week_end,
+                  (NOW() AT TIME ZONE 'utc')::date - ((w.i + 1) * 7) AS week_start,
+                  (
+                    SELECT COUNT(*)::int FROM calls c
+                     WHERE c.agent_name = :agent
+                       AND c.created_at >= (NOW() AT TIME ZONE 'utc')::date - ((w.i + 1) * 7)
+                       AND c.created_at <  (NOW() AT TIME ZONE 'utc')::date - (w.i * 7)
+                  ) AS total,
+                  (
+                    SELECT COUNT(*)::int FROM calls c
+                     WHERE c.agent_name = :agent
+                       AND c.compliant IS TRUE
+                       AND c.created_at >= (NOW() AT TIME ZONE 'utc')::date - ((w.i + 1) * 7)
+                       AND c.created_at <  (NOW() AT TIME ZONE 'utc')::date - (w.i * 7)
+                  ) AS ok
+                FROM weeks w
+                ORDER BY w.i DESC
+                """
+            ),
+            {"agent": agent_name},
+        ).fetchall()
+        weekly_trend = [
+            {
+                "week_start": r.week_start.isoformat() if r.week_start else None,
+                "week_end": r.week_end.isoformat() if r.week_end else None,
+                "total": int(r.total),
+                "ok": int(r.ok),
+                "pass_rate": (float(r.ok) / float(r.total)) if r.total else None,
+            }
+            for r in rows_week
+        ]
+    except (OperationalError, ProgrammingError):
+        weekly_trend = []
+
+    # Best + worst recent calls — picked from the already-loaded
+    # recent_calls list so this costs zero extra DB time.
+    best_call_id: str | None = None
+    worst_call_id: str | None = None
+    if recent_calls:
+        def _ratio(c: dict) -> float:
+            s = (c.get("score") or "")
+            try:
+                num, den = s.split("/", 1)
+                d = float(den)
+                return float(num) / d if d > 0 else -1.0
+            except (ValueError, AttributeError):
+                return -1.0
+        scored = [c for c in recent_calls if _ratio(c) >= 0]
+        if scored:
+            best_call_id = max(scored, key=_ratio).get("id")
+            worst_call_id = min(scored, key=_ratio).get("id")
+
     return {
         "agent_name": agent_name,
         "critical_count_7d": critical_count_7d,
@@ -368,6 +589,17 @@ def agent_drilldown(
         "retraining_reason": retraining_reason,
         "dead_rejections": dead_rejections,
         "recent_calls": recent_calls,
+        # 2026-05-27 enrichment for the quality-reviewer page redesign.
+        "total_calls_lifetime": int(total_calls_lifetime),
+        "avg_score_30d": avg_score_30d,
+        "severity_breakdown_30d": severity_breakdown,
+        "top_failed_checkpoints_30d": top_failed_checkpoints,
+        "supplier_mix_30d": supplier_mix,
+        "call_type_mix_30d": call_type_mix,
+        "qc_block_count_30d": qc_block_count_30d,
+        "weekly_trend": weekly_trend,
+        "best_call_id": best_call_id,
+        "worst_call_id": worst_call_id,
     }
 
 

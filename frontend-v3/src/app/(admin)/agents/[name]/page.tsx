@@ -141,27 +141,57 @@ export default function AgentDrilldownPage({
         </label>
       </div>
 
-      {/* Hero stats */}
+      {/* Hero stats — 6 KPI cards (2026-05-27 quality-reviewer redesign) */}
       <div
         style={{
           padding: 24,
           borderBottom: "1px solid var(--border-subtle)",
-          display: "flex",
+          display: "grid",
+          gridTemplateColumns: "repeat(6, 1fr)",
           gap: 12,
         }}
       >
         {[
           {
-            label: "Total flagged",
-            value: data?.critical_count_7d ?? 0,
-            sub: "last 7 days",
-            tone: "var(--red)",
+            label: "Total calls",
+            value: data?.total_calls_lifetime ?? 0,
+            sub: "lifetime",
+            tone: "var(--text-primary)",
           },
           {
             label: "Pass rate",
             value: passRatePct != null ? `${passRatePct}%` : "—",
             sub: "30d window",
-            tone: "var(--amber)",
+            tone:
+              passRatePct == null
+                ? "var(--text-muted)"
+                : passRatePct >= 80
+                  ? "var(--emerald)"
+                  : passRatePct >= 50
+                    ? "var(--amber)"
+                    : "var(--red)",
+          },
+          {
+            label: "Avg score",
+            value:
+              data?.avg_score_30d != null
+                ? `${Math.round(data.avg_score_30d * 100)}%`
+                : "—",
+            sub: "30d avg",
+            tone:
+              data?.avg_score_30d == null
+                ? "var(--text-muted)"
+                : data.avg_score_30d >= 0.8
+                  ? "var(--emerald)"
+                  : data.avg_score_30d >= 0.5
+                    ? "var(--amber)"
+                    : "var(--red)",
+          },
+          {
+            label: "Critical flags",
+            value: data?.critical_count_7d ?? 0,
+            sub: "last 7 days",
+            tone: "var(--red)",
           },
           {
             label: "Open directives",
@@ -170,13 +200,11 @@ export default function AgentDrilldownPage({
             tone: "var(--amber)",
           },
           {
-            label: "Failed at risk",
-            value:
-              failedAtRiskGbp != null
-                ? `£${(failedAtRiskGbp / 1000).toFixed(0)}k`
-                : "—",
-            sub: "across deals",
-            tone: "var(--red)",
+            label: "QC blocks",
+            value: data?.qc_block_count_30d ?? 0,
+            sub: "auditor 30d",
+            tone:
+              (data?.qc_block_count_30d ?? 0) > 0 ? "var(--red)" : "var(--text-primary)",
           },
         ].map((s) => (
           <div
@@ -217,6 +245,85 @@ export default function AgentDrilldownPage({
           </div>
         ))}
       </div>
+
+      {/* Quality-reviewer breakdown panels (2026-05-27).
+          One row of 4 dense cards: weekly trend, severity, top-failed, mix.
+          Hidden when data is loading; degrades gracefully on missing fields. */}
+      {data && (
+        <div
+          style={{
+            padding: "16px 24px",
+            borderBottom: "1px solid var(--border-subtle)",
+            display: "grid",
+            gridTemplateColumns: "1.2fr 1fr 1.4fr 1fr",
+            gap: 12,
+          }}
+        >
+          <BreakdownCard title="Pass rate trend · 8w">
+            <WeeklySparkline trend={data.weekly_trend ?? []} />
+          </BreakdownCard>
+          <BreakdownCard title="Breach severity · 30d">
+            <SeverityBars sev={data.severity_breakdown_30d ?? null} />
+          </BreakdownCard>
+          <BreakdownCard title="Top failed checkpoints · 30d">
+            <TopFailedList items={data.top_failed_checkpoints_30d ?? []} />
+          </BreakdownCard>
+          <BreakdownCard title="Mix · 30d">
+            <MixBars
+              supplierMix={data.supplier_mix_30d ?? {}}
+              callTypeMix={data.call_type_mix_30d ?? {}}
+            />
+          </BreakdownCard>
+        </div>
+      )}
+
+      {/* Best / worst call quick-jumps */}
+      {data && (data.best_call_id || data.worst_call_id) && (
+        <div
+          style={{
+            padding: "10px 24px",
+            borderBottom: "1px solid var(--border-subtle)",
+            display: "flex",
+            gap: 12,
+            fontSize: 12,
+            color: "var(--text-muted)",
+          }}
+        >
+          {data.best_call_id && (
+            <Link
+              href={`/calls/${data.best_call_id}`}
+              style={{
+                color: "var(--emerald)",
+                textDecoration: "none",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              ★ Best recent call → {data.best_call_id.slice(0, 8)}
+            </Link>
+          )}
+          {data.worst_call_id && (
+            <Link
+              href={`/calls/${data.worst_call_id}`}
+              style={{
+                color: "var(--red)",
+                textDecoration: "none",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              ⚠ Worst recent call → {data.worst_call_id.slice(0, 8)}
+            </Link>
+          )}
+          {data.retraining_assigned && data.retraining_reason && (
+            <div style={{ marginLeft: "auto", color: "var(--amber)" }}>
+              Coaching: {data.retraining_reason.slice(0, 80)}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Tabs */}
       <div
@@ -426,6 +533,277 @@ function EmptyRow({ text }: { text: string }) {
   return (
     <div style={{ padding: 32, fontSize: 13, color: "var(--text-muted)", textAlign: "center" }}>
       {text}
+    </div>
+  );
+}
+
+// ── Breakdown panels (2026-05-27 quality-reviewer redesign) ──────────
+
+function BreakdownCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        background: "var(--bg-elev2)",
+        border: "1px solid var(--border-subtle)",
+        borderRadius: 8,
+        padding: 14,
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+        minHeight: 120,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 11,
+          color: "var(--text-faint)",
+          textTransform: "uppercase",
+          letterSpacing: "0.06em",
+        }}
+      >
+        {title}
+      </div>
+      <div style={{ flex: 1 }}>{children}</div>
+    </div>
+  );
+}
+
+import type { AgentWeeklyTrendPoint, AgentTopFailedCheckpoint } from "@/lib/queries/aggregator";
+
+function WeeklySparkline({ trend }: { trend: AgentWeeklyTrendPoint[] }) {
+  // Inline SVG line+dots — no chart lib. Empty trend → muted hint.
+  const pts = trend.filter((p) => p.total > 0);
+  if (pts.length === 0) {
+    return (
+      <div style={{ fontSize: 12, color: "var(--text-faint)" }}>
+        No calls in the last 8 weeks.
+      </div>
+    );
+  }
+  const W = 220;
+  const H = 70;
+  const padX = 6;
+  const padY = 8;
+  // X coords map to the original 8-week buckets (even when some are empty)
+  const N = Math.max(trend.length, 8);
+  const stepX = N > 1 ? (W - 2 * padX) / (N - 1) : 0;
+  const polyPoints = trend
+    .map((p, i) => {
+      const r = p.pass_rate;
+      if (r == null) return null;
+      const x = padX + i * stepX;
+      const y = padY + (1 - r) * (H - 2 * padY);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .filter(Boolean)
+    .join(" ");
+  const latest = pts[pts.length - 1];
+  const latestPct = latest && latest.pass_rate != null ? Math.round(latest.pass_rate * 100) : null;
+  return (
+    <div>
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
+        {/* baseline 50% guide */}
+        <line
+          x1={padX}
+          y1={padY + 0.5 * (H - 2 * padY)}
+          x2={W - padX}
+          y2={padY + 0.5 * (H - 2 * padY)}
+          stroke="var(--border-subtle)"
+          strokeDasharray="2 3"
+        />
+        <polyline
+          points={polyPoints}
+          fill="none"
+          stroke="var(--emerald)"
+          strokeWidth="2"
+        />
+        {trend.map((p, i) => {
+          if (p.pass_rate == null) return null;
+          const x = padX + i * stepX;
+          const y = padY + (1 - p.pass_rate) * (H - 2 * padY);
+          return (
+            <circle
+              key={i}
+              cx={x}
+              cy={y}
+              r={2.5}
+              fill={
+                p.pass_rate >= 0.8
+                  ? "var(--emerald)"
+                  : p.pass_rate >= 0.5
+                    ? "var(--amber)"
+                    : "var(--red)"
+              }
+            />
+          );
+        })}
+      </svg>
+      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+        Latest week: {latestPct != null ? `${latestPct}% pass` : "no data"} · {pts.length} of {trend.length} weeks active
+      </div>
+    </div>
+  );
+}
+
+function SeverityBars({ sev }: { sev: { critical: number; high: number; medium: number; low: number } | null }) {
+  if (!sev) {
+    return <div style={{ fontSize: 12, color: "var(--text-faint)" }}>No data.</div>;
+  }
+  const rows: { label: string; n: number; tone: string }[] = [
+    { label: "Critical", n: sev.critical, tone: "var(--red)" },
+    { label: "High", n: sev.high, tone: "#f97316" },
+    { label: "Medium", n: sev.medium, tone: "var(--amber)" },
+    { label: "Low", n: sev.low, tone: "var(--text-muted)" },
+  ];
+  const max = Math.max(1, ...rows.map((r) => r.n));
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {rows.map((r) => (
+        <div
+          key={r.label}
+          style={{ display: "grid", gridTemplateColumns: "60px 1fr 28px", gap: 6, alignItems: "center" }}
+        >
+          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{r.label}</div>
+          <div style={{ height: 8, background: "var(--bg-elev1)", borderRadius: 4, overflow: "hidden" }}>
+            <div
+              style={{
+                width: `${(r.n / max) * 100}%`,
+                height: "100%",
+                background: r.tone,
+                transition: "width 200ms",
+              }}
+            />
+          </div>
+          <div
+            style={{
+              fontSize: 12,
+              fontVariantNumeric: "tabular-nums",
+              color: "var(--text-primary)",
+              textAlign: "right",
+            }}
+          >
+            {r.n}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TopFailedList({ items }: { items: AgentTopFailedCheckpoint[] }) {
+  if (items.length === 0) {
+    return <div style={{ fontSize: 12, color: "var(--text-faint)" }}>None — clean record.</div>;
+  }
+  const max = Math.max(1, ...items.map((i) => i.count));
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {items.map((it) => (
+        <div
+          key={it.name}
+          style={{ display: "grid", gridTemplateColumns: "1fr 60px 28px", gap: 6, alignItems: "center" }}
+        >
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--text-primary)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={it.name}
+          >
+            {it.name}
+          </div>
+          <div style={{ height: 6, background: "var(--bg-elev1)", borderRadius: 3, overflow: "hidden" }}>
+            <div
+              style={{
+                width: `${(it.count / max) * 100}%`,
+                height: "100%",
+                background: "var(--red)",
+                transition: "width 200ms",
+              }}
+            />
+          </div>
+          <div
+            style={{
+              fontSize: 12,
+              fontVariantNumeric: "tabular-nums",
+              color: "var(--text-muted)",
+              textAlign: "right",
+            }}
+          >
+            {it.count}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MixBars({
+  supplierMix,
+  callTypeMix,
+}: {
+  supplierMix: Record<string, number>;
+  callTypeMix: Record<string, number>;
+}) {
+  const supEntries = Object.entries(supplierMix);
+  const ctEntries = Object.entries(callTypeMix);
+  if (supEntries.length === 0 && ctEntries.length === 0) {
+    return <div style={{ fontSize: 12, color: "var(--text-faint)" }}>No 30-day calls.</div>;
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <MixStackedBar label="Supplier" entries={supEntries} />
+      <MixStackedBar label="Call type" entries={ctEntries} />
+    </div>
+  );
+}
+
+function MixStackedBar({ label, entries }: { label: string; entries: [string, number][] }) {
+  const total = entries.reduce((s, [, n]) => s + n, 0);
+  const palette = ["#22c55e", "#f59e0b", "#ef4444", "#3b82f6", "#a855f7", "#64748b"];
+  return (
+    <div>
+      <div style={{ fontSize: 10, color: "var(--text-faint)", marginBottom: 4 }}>{label}</div>
+      <div style={{ display: "flex", height: 10, borderRadius: 3, overflow: "hidden", background: "var(--bg-elev1)" }}>
+        {total > 0
+          ? entries.map(([k, n], i) => (
+              <div
+                key={k}
+                title={`${k}: ${n}`}
+                style={{
+                  width: `${(n / total) * 100}%`,
+                  background: palette[i % palette.length],
+                }}
+              />
+            ))
+          : null}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
+        {entries.slice(0, 4).map(([k, n], i) => (
+          <div
+            key={k}
+            style={{
+              fontSize: 10,
+              color: "var(--text-muted)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+            }}
+          >
+            <span
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: 2,
+                background: palette[i % palette.length],
+              }}
+            />
+            {k} · {n}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
