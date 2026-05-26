@@ -115,7 +115,11 @@ SECRET_REGEX = re.compile(
 )
 
 EXPECTED_GIT_NAME = "kingusa1"
-EXPECTED_GIT_EMAIL = "IT@bbmgroup.io"
+# Owner mandate 2026-05-28: "push with kingusa1 not it@bbmgroup please".
+# Switched to the GitHub no-reply alias so the commit author/committer
+# on every Watt compliance-agent push is plainly kingusa1, not the
+# bbmgroup mailing address.
+EXPECTED_GIT_EMAIL = "kingusa1@users.noreply.github.com"
 
 # Checks whose FAIL severity is NOT waivable via --waive.
 NON_WAIVABLE_CHECKS = frozenset({"secret-scan", "git-identity", "alembic", "doctrine-integrity"})
