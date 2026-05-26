@@ -49,6 +49,41 @@ CONFIDENCE_FLOOR = 0.55
 # how the verdict was reached.
 ComplianceSource = Literal["bucket_aggregator", "auto"]
 
+# Worst-bucket-wins precedence across per-segment ``CallSegment.bucket``
+# values. Mirror of ``pipeline._BUCKET_RANK`` — kept local so importing
+# pipeline.py from compliance.py doesn't create a circular dependency.
+# A new bucket value added in pipeline.py MUST be mirrored here.
+_BUCKET_RANK = {"pass": 0, "coaching": 1, "review": 2, "blocked": 3}
+
+# Bucket → call-level compliance_status. Mirror of the mapping inside
+# ``pipeline._step_score``.
+_BUCKET_TO_STATUS = {
+    "pass": "compliant",
+    "coaching": "compliant",
+    "review": "pending",
+    "blocked": "non_compliant",
+}
+
+
+def _aggregate_segments_status(buckets: list[str | None]) -> str:
+    """Compute the call-level ``compliance_status`` from a list of segment
+    buckets via worst-bucket-wins. Returns ``"pending"`` if the list is
+    empty or contains only unknown bucket values."""
+    worst_rank = -1
+    worst = "pass"
+    for b in buckets:
+        if not b:
+            continue
+        rank = _BUCKET_RANK.get(b)
+        if rank is None:
+            continue
+        if rank > worst_rank:
+            worst_rank = rank
+            worst = b
+    if worst_rank < 0:
+        return "pending"
+    return _BUCKET_TO_STATUS.get(worst, "pending")
+
 log = logging.getLogger("compliance")
 
 
@@ -130,26 +165,32 @@ def derive_compliance(call: Call, db: Session, *, commit: bool = True) -> str:
     the single-call contract used by ``pipeline._step_finalize``.
     """
     # ── Segments path (modern pipeline) ─────────────────────────────────
-    # If _step_score already aggregated per-segment buckets into a
-    # call-level status, that decision is authoritative. We MUST NOT
-    # re-run the V1 flat-list rules — they ignore severity tiers and
-    # would either demote coaching → non_compliant (any medium partial
-    # triggers Rule 2) or revert blocked → pending (any needs_review
-    # checkpoint triggers Rule 1). ``Call.compliance_status`` is NOT NULL
-    # with server_default ``"pending"``, so any segment-bearing call has
-    # a valid status here.
-    seg_count = db.query(CallSegment).filter_by(call_id=call.id).count()
+    # Aggregate the call-level status from per-segment buckets using
+    # worst-bucket-wins. This RECOMPUTES rather than trusts
+    # ``call.compliance_status`` because pre-2026-05-26 the legacy V1
+    # rules would overwrite the bucket-aggregator's correct status with
+    # the wrong value — so existing rows in prod carry stale fields the
+    # backfill endpoint exists to repair. The V1 flat-list rules below
+    # are intentionally bypassed: they ignore severity tiers and would
+    # either demote coaching → non_compliant (any medium partial trips
+    # Rule 2) or revert blocked → pending (any needs_review checkpoint
+    # trips Rule 1).
+    seg_rows = (
+        db.query(CallSegment.bucket).filter_by(call_id=call.id).all()
+    )
+    seg_count = len(seg_rows)
     if seg_count > 0:
-        current = (call.compliance_status or "pending").strip() or "pending"
-        # Write back so the ORM object and the DB row converge — protects
-        # the backfill endpoint's idempotency: before/after comparison
-        # there would otherwise pass on a stale field even though the row
-        # never got UPDATEd.
-        call.compliance_status = current
+        derived = _aggregate_segments_status([row[0] for row in seg_rows])
+        # Write back so the ORM object and the DB row converge.
+        call.compliance_status = derived
+        # Keep call.compliant in lockstep with the strict "all clean"
+        # contract (only worst_bucket == "pass" qualifies). Coaching
+        # calls still show on the Awaiting-review tab because compliant
+        # stays False even though compliance_status is "compliant".
+        all_pass = all((row[0] or "") == "pass" for row in seg_rows)
+        call.compliant = all_pass
         failing: list[str] | None = None
-        if current == "non_compliant":
-            # Surface the failing rule names for the audit row so the
-            # decision log stays useful even on the segments path.
+        if derived == "non_compliant":
             try:
                 cps = json.loads(call.checkpoint_results or "[]") or []
             except (TypeError, ValueError):
@@ -161,15 +202,15 @@ def derive_compliance(call: Call, db: Session, *, commit: bool = True) -> str:
             ] or None
         # No audit row for "pending" — matches V1 semantics (no row
         # written when human input is still required).
-        if current != "pending":
-            _write_decision_row(call, db, current, failing, source="bucket_aggregator")
+        if derived != "pending":
+            _write_decision_row(call, db, derived, failing, source="bucket_aggregator")
         if commit:
             db.commit()
         log.info(
             "derive_compliance: segments_path call_id=%s segments=%d status=%s",
-            call.id, seg_count, current,
+            call.id, seg_count, derived,
         )
-        return current
+        return derived
 
     # ── V1 fallback path ─────────────────────────────────────────────────
     try:

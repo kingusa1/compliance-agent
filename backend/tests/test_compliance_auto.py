@@ -246,6 +246,68 @@ def test_segments_path_preserves_pending_with_no_decision_row(test_db):
     assert test_db.query(ComplianceDecision).filter_by(call_id="c_seg_pending").count() == 0
 
 
+def test_segments_path_recomputes_from_buckets_ignoring_stale_status(test_db):
+    """Regression for the prod 2026-05-26 backfill: pre-fix
+    derive_compliance had stamped call.compliance_status with the wrong
+    value via V1 rules, so on the first repair pass we MUST recompute
+    from CallSegment.bucket rather than trust the existing field.
+
+    Setup mirrors prod call 4c62d964: 3 segments [pre_sales=blocked,
+    verbal=coaching, loa=review]. The corrupt status on the Call row is
+    "pending" (set by the old V1 path). The repaired derive_compliance
+    must recompute worst_bucket=blocked → "non_compliant" and write it
+    over the stale "pending".
+    """
+    c = Call(
+        id="c_recompute", filename="x.mp3", file_path="cr/x.mp3",
+        transcript="...", duration_seconds=570,
+        compliance_status="pending",  # ← corrupt value from old V1 path
+        compliant=False,
+        score="69/125",
+        checkpoint_results=json.dumps([
+            {"id": "cp_1", "status": "fail", "confidence": "high",
+             "severity": "critical"},
+        ]),
+    )
+    test_db.add(c)
+    test_db.flush()
+    _add_segment(test_db, "c_recompute", 0, "pre_sales", "blocked", "48/88")
+    _add_segment(test_db, "c_recompute", 1, "verbal", "coaching", "21/26")
+    _add_segment(test_db, "c_recompute", 2, "loa", "review", "0/11")
+    test_db.commit()
+
+    result = derive_compliance(c, test_db)
+    # Recomputed from buckets, not preserved from the corrupt field.
+    assert result == "non_compliant"
+    assert c.compliance_status == "non_compliant"
+    assert c.compliant is False  # only worst_bucket="pass" flips this True
+    cd = test_db.query(ComplianceDecision).filter_by(call_id="c_recompute").one()
+    assert cd.status == "non_compliant"
+
+
+def test_segments_path_coaching_only_yields_compliant_with_compliant_false(test_db):
+    """A coaching-only call (worst_bucket="coaching") sets
+    compliance_status="compliant" (UI pill shows green) but
+    call.compliant=False (strict /tracker Compliant tab excludes it
+    so reviewers can still triage the medium issues)."""
+    c = Call(
+        id="c_coach_only", filename="x.mp3", file_path="cc/x.mp3",
+        transcript="...", duration_seconds=120,
+        compliance_status="non_compliant",  # ← corrupt: pre-fix demoted
+        compliant=False,
+        score="21/26",
+    )
+    test_db.add(c)
+    test_db.flush()
+    _add_segment(test_db, "c_coach_only", 0, "verbal", "coaching", "21/26")
+    test_db.commit()
+
+    result = derive_compliance(c, test_db)
+    assert result == "compliant"
+    assert c.compliance_status == "compliant"
+    assert c.compliant is False  # strict: coaching ≠ clean pass
+
+
 def test_rerun_keeps_single_is_current_decision(test_db):
     """Re-running derive_compliance on the same call must leave exactly
     one ComplianceDecision row with ``is_current=True``. Prior rows get
