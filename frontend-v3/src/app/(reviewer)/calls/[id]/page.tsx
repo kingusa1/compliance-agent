@@ -1094,7 +1094,13 @@ export default function CallDetailPage({
         >
           ✎ Edit metadata
         </button>
-        <ReanalyzeButton callId={id} />
+        <ReanalyzeButton
+          callId={id}
+          hasTranscript={Boolean(
+            (c?.transcript && c.transcript.length > 0) ||
+              (wordsQuery.data?.words && wordsQuery.data.words.length > 0),
+          )}
+        />
         <div style={{ flex: 1 }} />
         <div
           style={{
