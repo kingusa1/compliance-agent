@@ -57,6 +57,24 @@ def _format_timestamp(seconds: float) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
+_NORMALIZE_PUNCT_RE = re.compile(r"[^a-z0-9'\s]+")
+_SELF_INTRO_RE = re.compile(
+    # Matches broker-side self-introductions:
+    #   "it's <name> at <company>", "it is <name> from <company>",
+    #   "this is <name> from/with/at <company>",
+    #   "hi/hello, this is/i'm <name>"
+    # These phrases are uttered by the broker, never by the customer
+    # who's receiving the call. Strongest single signal in the corpus.
+    r"\b("
+    r"it'?s\s+\w+\s+(?:at|from|with)\s+\w+"
+    r"|this\s+is\s+\w+\s+(?:from|with|at)\s+\w+"
+    r"|(?:hi|hello)\s*[,.]?\s*(?:this\s+is|i'?m)\s+\w+"
+    r"|calling\s+(?:from|on\s+behalf|about)\s+"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
 def _detect_agent_speaker(words: list[dict]) -> str:
     """Heuristic-pick which speaker key (Deepgram int or AssemblyAI letter)
     is the broker / agent.
@@ -65,23 +83,33 @@ def _detect_agent_speaker(words: list[dict]) -> str:
     the one who picks up first ("hello?") — Deepgram assigns speaker 0 to
     whoever speaks first, not to the caller.
 
-    Strategy: build a per-speaker word bag and score each speaker on
-    broker-side phrasing. The speaker whose text most strongly resembles
-    sales / disclosure language is the agent. Pure regex / counts so this
-    runs offline (no extra LLM call on the hot path).
+    Strategy: build a per-speaker normalized word bag and score each
+    speaker on broker-side phrasing PLUS self-introduction patterns. The
+    speaker whose text most strongly resembles sales / disclosure language
+    is the agent. Pure regex / counts so this runs offline (no extra LLM
+    call on the hot path).
 
-    2026-05-18 generalisation: the original signature returned ``int`` because
-    Deepgram emits numeric speaker ids. AssemblyAI emits letters ("A", "B"),
-    and the diarization selector now writes AAI's word list to
-    ``call.word_data`` when AAI wins. Coercing "A" via ``int()`` raised
-    ``ValueError``, the except branch fell to 0, every word landed on speaker
-    0, and the transcript player rendered the whole call as one AGENT turn.
-    Speaker keys are now strings throughout; callers compare via ``str(spk)``.
+    2026-05-18 generalisation: speaker keys are stringified so Deepgram
+    int ids ("0"/"1") and AssemblyAI letters ("A"/"B") flow through the
+    same comparison path.
+
+    2026-05-27 wave-16 (Elzicle/Peli misattribution fix):
+      1. NORMALIZE punctuation in the per-speaker text bag — diarizers
+         tokenize "E.ON" / "we're" / "p/kwh" as separate tokens and the
+         joined text becomes "e . on" / "we re" / "p kwh", which the
+         original substring signals could not match.
+      2. ADD self-introduction regex (`it's <name> at <company>`,
+         `this is <name> from <company>`, etc.) weighted +5 in the score.
+         This is the textbook broker phrase the customer never uses.
+      3. ADD talk-time TIEBREAK when scores are within 1 of each other.
+         Brokers carry the call ~3:1 in our corpus, so a tied keyword
+         score reliably resolves to whoever speaks more.
     """
     if not words:
         return "0"
 
-    bags: dict[str, list[str]] = {}
+    bags: dict[str, str] = {}
+    counts: dict[str, int] = {}  # talk-time tiebreak (word count per speaker)
     for w in words:
         raw = w.get("speaker")
         if raw is None or raw == "":
@@ -89,40 +117,99 @@ def _detect_agent_speaker(words: list[dict]) -> str:
         spk = str(raw)
         if spk in {"UNK", "unknown"}:
             continue
-        bags.setdefault(spk, []).append(
-            str(w.get("word") or w.get("text") or "").lower()
-        )
+        # Normalize: lowercase + collapse punctuation to spaces. Apostrophes
+        # are preserved so "it's"/"we're"/"i'll" survive the normalization.
+        token = str(w.get("word") or w.get("text") or "").lower()
+        token = _NORMALIZE_PUNCT_RE.sub(" ", token).strip()
+        if token:
+            bags[spk] = bags.get(spk, "") + " " + token
+            counts[spk] = counts.get(spk, 0) + 1
 
     if len(bags) < 2:
         return next(iter(bags), "0")
 
+    # Signal phrases, normalized (no punctuation that would be stripped
+    # by `_NORMALIZE_PUNCT_RE`). Spaces around short signals like " loa "
+    # prevent substring matches inside common words ("load", "loan").
+    # Bare "watt"/"eon" REMOVED 2026-05-27 wave-16 v2 (code-reviewer
+    # HIGH) — they substring-matched "kilowatt", "wattage", "someone",
+    # "anyone". The space-bounded "watt utilities"/"e on" forms remain
+    # and cover the broker case.
     agent_signals = (
-        # Self-introductions and broker-side framing.
+        # Self-introductions and broker-side framing (regex captures the
+        # full pattern with +5 weight; these single-phrase substrings are
+        # additional partial matches).
         "my name is", "i'm calling from", "calling from", "third party",
         # Energy broker domain language — only the broker says these.
         "your electricity supply", "your gas supply", "your energy supply",
         "your current contract", "your current supplier",
-        "renewal", "best price", "cheapest price", "quote you",
-        "i'll transfer", "transfer your call", "pricing manager",
-        "decision maker", "letter of authority", "loa",
-        "standing charge", "kwh", "p/kwh", "tariff", "fixed for",
+        "renewal", "renewal window", "best price", "cheapest price",
+        "quote you", "i'll transfer", "transfer your call",
+        "pricing manager", "decision maker", "letter of authority",
+        " loa ",  # space-bounded — bare "loa" matched "load", "loan"
+        "standing charge", "kwh", "p kwh", "tariff", "fixed for",
+        "lock in", "lock you in",
         "are you the decision", "are you the business owner",
         "we work with", "we're a broker", "broker", "intermediary",
-        # Suppliers — only the broker name-drops these.
-        "british gas", "scottish power", "edf", "eon", "e.on", "npower",
+        # Suppliers — only the broker name-drops these. Diarizers split
+        # "E.ON" → ['E', 'ON'], joined+normalised to "e on" which is
+        # what we match here.
+        "british gas", "scottish power", "edf", "e on", "npower",
         "pozitive", "bgl", "british gas lite",
+        # 2026-05-27 wave-16 — Watt Utilities, the broker on the Elzicle
+        # call. Bare "watt" was removed (kilowatt/wattage substring
+        # hits); "watt utilities" + " at watt " catch the broker phrase.
+        "watt utilities", " at watt ", " from watt ",
     )
 
     scores: dict[str, int] = {}
-    for spk, tokens in bags.items():
-        text = " ".join(tokens)
-        scores[spk] = sum(1 for s in agent_signals if s in text)
+    keyword_hits: dict[str, int] = {}  # tracks non-self-intro signal count
+    for spk, text in bags.items():
+        # Pad text with spaces so leading/trailing space-bounded signals
+        # (" loa ", " at watt ", " from watt ") can match at boundaries.
+        padded = " " + text + " "
+        kw_score = sum(1 for s in agent_signals if s in padded)
+        keyword_hits[spk] = kw_score
+        scores[spk] = kw_score
+        # 2026-05-27 wave-16 v2 (python+code-reviewer HIGH) — COMPOSITE
+        # signal protection. The self-intro regex matches innocuous
+        # customer phrases like "it's cold at home" or "it's fine with
+        # that". Only grant the +5 weight when the speaker ALSO scored
+        # on at least one regular keyword from `agent_signals`. This
+        # eliminates the false-positive vector while preserving the
+        # signal lift for genuine broker self-intros (which always
+        # co-occur with at least one renewal/contract/supplier keyword).
+        if _SELF_INTRO_RE.search(text) and kw_score >= 1:
+            scores[spk] += 5
 
-    best = max(scores, key=scores.get)
+    sorted_by_score = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    best = sorted_by_score[0][0]
+
     if scores[best] == 0:
-        # No signal — fall back to "speaker who talks more is the agent"
-        # (brokers carry the call ~3:1 in our corpus).
-        best = max(bags, key=lambda k: len(bags[k]))
+        # No signal at all — fall back to "speaker who talks more is the
+        # agent" (brokers carry the call ~3:1 in our corpus). Walk all
+        # speakers; max(counts, key=counts.get) is safe because counts
+        # was populated alongside bags.
+        return max(counts, key=lambda k: counts.get(k, 0))
+
+    # 2026-05-27 wave-16 v2 (python-reviewer HIGH) — tiebreak restricted
+    # to non-zero-scoring speakers tied within 1 of the top score. The
+    # prior version called max(counts) globally, which on 3+ speaker
+    # calls could pick the lowest scorer just because they had the most
+    # talk-time (e.g. a third party who didn't say broker-side phrases).
+    #
+    # Refinement: the tied set must REQUIRE a non-zero score AND a
+    # margin of ≤1. Otherwise a 1-vs-0 gap incorrectly trips the
+    # tiebreak (which would then return the loud zero-scorer just for
+    # talking the most). The kilowatt regression test catches this.
+    top = sorted_by_score[0][1]
+    tied = [
+        spk for spk, sc in sorted_by_score
+        if sc > 0 and (top - sc) <= 1
+    ]
+    if len(tied) >= 2:
+        return max(tied, key=lambda k: counts.get(k, 0))
+
     return best
 
 
