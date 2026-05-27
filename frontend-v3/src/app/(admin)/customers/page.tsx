@@ -66,12 +66,32 @@ function worstActionTone(action: string | null): PillTone {
   }
 }
 
+// Wave-29 — backend regex on /api/customers ?action= is
+// ^(PASS|REVIEW|REJECT|TRIAGE)$. Match exactly so the request never 422s.
+type CustomerActionFilter = "" | "PASS" | "REVIEW" | "REJECT" | "TRIAGE";
+const CUSTOMER_ACTION_OPTIONS: { value: CustomerActionFilter; label: string }[] = [
+  { value: "", label: "All actions" },
+  { value: "PASS", label: "Pass" },
+  { value: "REVIEW", label: "Review" },
+  { value: "REJECT", label: "Reject" },
+  { value: "TRIAGE", label: "Triage" },
+];
+
 export default function CustomersListPage() {
   const router = useRouter();
   const { get, set, setMany } = useUrlState();
   const [search, setSearch] = useState(() => get("q"));
   const debouncedSearch = useDebouncedValue(search, 300);
   const offset = Math.max(0, parseInt(get("offset") || "0", 10) || 0);
+  const supplier = get("supplier") || "";
+  // Defensive: validate ?action= against the regex backend enforces.
+  // A hand-edited URL like ?action=foo would otherwise hit the API and
+  // get a 422 + empty list. code-reviewer 2026-05-27 nit.
+  const _rawAction = get("action") || "";
+  const action: CustomerActionFilter =
+    CUSTOMER_ACTION_OPTIONS.some((o) => o.value === _rawAction)
+      ? (_rawAction as CustomerActionFilter)
+      : "";
   const [addOpen, setAddOpen] = useState(false);
 
   // Mirror the debounced search into the URL ?q= and reset offset to 0
@@ -86,10 +106,25 @@ export default function CustomersListPage() {
 
   const customers = useAdminCustomersQuery({
     q: debouncedSearch || undefined,
+    supplier: supplier || undefined,
+    action: action || undefined,
     limit: PAGE_LIMIT,
     offset,
   });
   const rows = customers.data?.customers ?? [];
+
+  // Wave-29 — supplier options derived from the current page's rows.
+  // Always preserves the currently-selected supplier even if filter zeroed.
+  const supplierOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of rows) {
+      for (const s of c.suppliers ?? []) {
+        if (s) set.add(s);
+      }
+    }
+    if (supplier) set.add(supplier);
+    return Array.from(set).sort();
+  }, [rows, supplier]);
 
   const total = customers.data?.total ?? rows.length;
 
@@ -159,14 +194,41 @@ export default function CustomersListPage() {
             }}
           />
         </div>
-        {/* 2026-05-16 audit fix — the previous Supplier + Worst action
-            "FilterDropdown" widgets rendered with a cursor:pointer and
-            ChevronDown but had no onClick / onChange wiring. They were
-            dead. Filtering by supplier / action already happens through
-            the search box (server uses ILIKE on customer + agent + supplier);
-            real dropdowns can be re-introduced once the backend exposes
-            multi-select aggregates. Until then we remove the fake controls
-            so reviewers don't click expecting them to work. */}
+        {/* Wave-29 (2026-05-27) — Supplier + Worst-action filters wired
+            to server params (backend already accepts ?supplier= and
+            ?action=). Replaces the dead "FilterDropdown" stubs that
+            the 2026-05-16 audit removed. */}
+        <label className="flex items-center gap-2 text-[12px] text-[var(--text-muted)]">
+          <span className="uppercase tracking-wide text-[10px] text-[var(--text-faint)]">Supplier</span>
+          <select
+            value={supplier}
+            onChange={(e) => setMany({ supplier: e.target.value || null, offset: null })}
+            aria-label="Supplier filter"
+            data-testid="customers-supplier-filter"
+            className="h-8 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elev1)] px-2 text-[12px] text-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-blue)]"
+          >
+            <option value="">All</option>
+            {supplierOptions.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex items-center gap-2 text-[12px] text-[var(--text-muted)]">
+          <span className="uppercase tracking-wide text-[10px] text-[var(--text-faint)]">Action</span>
+          <select
+            value={action}
+            onChange={(e) => setMany({ action: e.target.value || null, offset: null })}
+            aria-label="Worst-action filter"
+            data-testid="customers-action-filter"
+            className="h-8 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elev1)] px-2 text-[12px] text-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-blue)]"
+          >
+            {CUSTOMER_ACTION_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+        </label>
+
         <div style={{ flex: 1 }} />
         <button
           type="button"

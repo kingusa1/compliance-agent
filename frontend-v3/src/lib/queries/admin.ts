@@ -196,7 +196,9 @@ export function fetchAdminCalls(params: { limit?: number; offset?: number } = {}
   return apiFetch<AdminCallsResponse>(`/api/calls${tail}`);
 }
 
-export function fetchAdminCustomers(params: { q?: string; limit?: number; offset?: number } = {}): Promise<CustomerListResponse> {
+export function fetchAdminCustomers(
+  params: { q?: string; supplier?: string; action?: string; limit?: number; offset?: number } = {},
+): Promise<CustomerListResponse> {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
@@ -246,7 +248,9 @@ export function useAdminCallsQuery(params: { limit?: number; offset?: number } =
   });
 }
 
-export function useAdminCustomersQuery(params: { q?: string; limit?: number; offset?: number } = {}) {
+export function useAdminCustomersQuery(
+  params: { q?: string; supplier?: string; action?: string; limit?: number; offset?: number } = {},
+) {
   return useQuery({
     queryKey: adminKeys.customers(params),
     queryFn: () => fetchAdminCustomers(params),
