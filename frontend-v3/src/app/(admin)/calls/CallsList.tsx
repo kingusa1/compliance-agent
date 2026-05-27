@@ -101,6 +101,7 @@ export function CallsList({ calls }: { calls: AdminCallRow[] }) {
             <Th>When</Th>
             <Th>Customer</Th>
             <Th>Supplier</Th>
+            <Th>Segments</Th>
             <Th>Agent</Th>
             <Th>Score</Th>
             <Th>Compliant</Th>
@@ -130,6 +131,30 @@ export function CallsList({ calls }: { calls: AdminCallRow[] }) {
               </TableCell>
               <TableCell className="py-3 text-[13px] text-[var(--text-muted)]">
                 {c.detected_supplier ?? "—"}
+              </TableCell>
+              <TableCell className="py-3">
+                {/* Wave-28 — one chip per detected segment kind. Falls
+                    back to a single call_type chip when segments=[]
+                    (legacy data, or pipeline still running). */}
+                <div className="flex flex-wrap gap-1">
+                  {Array.isArray(c.segments) && c.segments.length > 0 ? (
+                    c.segments.map((s, k) => (
+                      <Badge
+                        key={`${s.kind ?? "x"}-${k}`}
+                        variant="outline"
+                        className="font-normal text-[10px] uppercase tracking-wide"
+                      >
+                        {(s.kind ?? "—").replace(/_/g, " ")}
+                      </Badge>
+                    ))
+                  ) : c.call_type ? (
+                    <Badge variant="outline" className="font-normal text-[10px] uppercase tracking-wide">
+                      {c.call_type.replace(/_/g, " ")}
+                    </Badge>
+                  ) : (
+                    <span className="text-[12px] text-[var(--text-muted)]">—</span>
+                  )}
+                </div>
               </TableCell>
               <TableCell className="py-3 text-[13px] text-[var(--text-muted)]">
                 {c.agent_name ?? "—"}
