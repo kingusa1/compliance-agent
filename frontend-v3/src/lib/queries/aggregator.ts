@@ -100,6 +100,17 @@ export type DealCall = {
   detected_supplier: string | null;
   created_at: string | null;
   completed_at: string | null;
+  // Wave-26 — per-call segment chips (lead_gen / pre_sales / verbal /
+  // loa / preamble). Empty array = legacy data without CallSegment
+  // rows; UI falls back to a single call_type chip. Bulk-loaded by
+  // backend's fetch_segments_by_call_ids in /api/deals/{id}/calls.
+  segments?: {
+    kind: string;
+    score?: string | null;
+    compliant?: boolean | null;
+    confidence?: number | null;
+    idx?: number;
+  }[];
 };
 
 export type CallBreakdown = {

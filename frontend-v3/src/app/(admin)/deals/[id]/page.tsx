@@ -254,6 +254,24 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
           {d?.deal_value_gbp != null && ` · £${Math.round(d.deal_value_gbp).toLocaleString()}`}
           {d?.created_at && ` · created ${new Date(d.created_at).toLocaleDateString()}`}
         </span>
+        {/* Wave-30 — deal-level segments coverage strip. Surfaces every
+            compliance phase the deal's calls have covered (lead_gen /
+            pre_sales / verbal / loa), including segments INSIDE multi-
+            segment files. Sourced from wave-27's backend addition to
+            /api/deals/{id}. `segments_coverage` is declared optional on
+            DealRow so no cast needed. */}
+        {Array.isArray(d?.segments_coverage) && d.segments_coverage.length > 0 && (
+          <div className="flex flex-wrap gap-1" data-testid="deal-coverage-strip">
+            {d.segments_coverage.map((k) => (
+              <span
+                key={k}
+                className="rounded bg-[var(--bg-elev3)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]"
+              >
+                {k.replace(/_/g, " ")}
+              </span>
+            ))}
+          </div>
+        )}
         {/* 2026-05-24 — Smart "+ Upload <next stage>" CTA in the top bar.
             Mirrors the customer-detail page so users get the same one-
             click flow whether they navigated to a customer or a deal. */}
@@ -763,8 +781,21 @@ export default function DealDetailPage({ params }: { params: Promise<{ id: strin
                         fontSize: 13,
                       }}
                     >
-                      <div>
-                        <Pill tone="neutral">{row.call_type ?? "—"}</Pill>
+                      {/* Wave-30 — one Pill per detected segment kind.
+                          Falls back to a single call_type Pill when
+                          segments[] is empty (legacy data, pipeline
+                          still running, or call has no CallSegment
+                          rows yet). */}
+                      <div className="flex flex-wrap gap-1">
+                        {Array.isArray(call?.segments) && (call!.segments?.length ?? 0) > 0 ? (
+                          call!.segments!.map((s, k) => (
+                            <Pill key={`${s.kind}-${k}`} tone="neutral">
+                              {(s.kind ?? "—").replace(/_/g, " ")}
+                            </Pill>
+                          ))
+                        ) : (
+                          <Pill tone="neutral">{row.call_type ?? "—"}</Pill>
+                        )}
                       </div>
                       <div>
                         <Pill tone={actionTone(row.action)} dot>
