@@ -2344,6 +2344,19 @@ def get_call_bundle(
 
     # Words — read from Call.word_data JSON column. Already loaded as
     # part of the Call row above; no extra round-trip needed.
+    #
+    # 2026-05-27 wave-22 — tag each word with AGENT/CUSTOMER role via
+    # the wave-16 `_detect_agent_speaker` heuristic, mirroring the
+    # `/api/calls/{call_id}/words` endpoint. Before this fix, the
+    # bundle returned raw word_data WITHOUT role, and the frontend
+    # fell through to a hardcoded `letterToIdx` map (speaker "A" → 1,
+    # speaker "B" → 2) that ignored which speaker was actually the
+    # agent. On the Elzicle Ltd call the agent was speaker B but the
+    # UI displayed speaker A's "hello" under "Peli AGENT" and the
+    # broker monologue under "Elzicle Ltd CUSTOMER" — exactly the bug
+    # owner reported on 2026-05-27. Bundle now ships `role` per word
+    # so the frontend's `_speakerKeyOf` short-circuits to the correct
+    # mapping.
     words: list[dict] = []
     if call.word_data:
         try:
@@ -2352,6 +2365,36 @@ def get_call_bundle(
                 words = parsed
         except (TypeError, ValueError):
             words = []
+
+        if words:
+            from app.transcription import _detect_agent_speaker
+
+            _agent_id: str | None = None
+            _speaker_ids: set[str] = set()
+            for _w in words:
+                _raw = _w.get("speaker")
+                if _raw is None or _raw == "":
+                    continue
+                _spk = str(_raw)
+                if _spk in {"UNK", "unknown"}:
+                    continue
+                _speaker_ids.add(_spk)
+            if len(_speaker_ids) >= 2:
+                try:
+                    _agent_id = _detect_agent_speaker(words)
+                except Exception:  # noqa: BLE001 — role tag is best-effort
+                    _agent_id = None
+
+            for _w in words:
+                _raw = _w.get("speaker")
+                _spk = "" if _raw is None or _raw == "" else str(_raw)
+                if _agent_id is None:
+                    # Single-speaker recording (or detector failed) —
+                    # call it AGENT so the colour treatment matches
+                    # broker-side rendering, same as /words.
+                    _w["role"] = "AGENT"
+                else:
+                    _w["role"] = "AGENT" if _spk == _agent_id else "CUSTOMER"
 
     # Script checkpoints — 2026-05-28 P0 owner-reported "Script text
     # unavailable" on every checkpoint card. Bundle previously read from

@@ -282,7 +282,15 @@ export function CheckpointCard(props: CheckpointCardProps) {
             <span>{script.required}</span>
           ) : (
             <span style={{ color: "var(--text-faint, #8a857e)", fontStyle: "italic" }}>
-              (Script text unavailable — script not matched to this call.)
+              {/* 2026-05-27 wave-23 — clarify the "no script text" copy.
+                  Phrase-pack rubrics (e.g. 88-rule Pre-Sales) don't HAVE
+                  a per-checkpoint script template — they're rule-based.
+                  Saying "script not matched" was misleading. Now the
+                  copy reflects the actual rubric kind so reviewers know
+                  this is by design, not a data error. */}
+              {rubricKind === "phrase_pack"
+                ? "(Rule-based phrase pack — no script template for this checkpoint.)"
+                : "(Script text unavailable — script not matched to this call.)"}
             </span>
           )}
           {script?.customer_response_required && (
