@@ -191,6 +191,25 @@ def list_deals(
         ):
             calls_by_deal.setdefault(c.deal_id, []).append(c)
 
+    # Wave-27 — segment-coverage chip strip. Bulk-fetch every detected
+    # CallSegment.kind for every call across every deal on this page in
+    # ONE round-trip via the wave-26 json_agg helper. Then group by deal.
+    # Without this the Deals list showed a single lifecycle pill per row
+    # and hid the fact that one Marsden Capital file already covers
+    # pre_sales + verbal. Reusing wave-26's §0 research (agent
+    # a50f03bffacc55da8 — 4 citations on json_agg + COALESCE).
+    all_call_ids: list[str] = []
+    for ccs in calls_by_deal.values():
+        for cc in ccs:
+            all_call_ids.append(str(cc.id))
+    segs_by_call = (
+        fetch_segments_by_call_ids(db, all_call_ids) if all_call_ids else {}
+    )
+
+    # Hoist canonical_order once — same const used per-row in the loop.
+    _CANONICAL_ORDER = ["lead_gen", "pre_sales", "verbal", "loa"]
+    _CANONICAL_SET = set(_CANONICAL_ORDER)
+
     out_deals = []
     for r in rows:
         d = _serialise_deal(r)
@@ -219,6 +238,20 @@ def list_deals(
             # Listing must never 500 — degrade silently if the composite
             # math throws and let the row render its stored "—".
             pass
+        # Wave-27 — derive segments_coverage: ordered, deduped list of
+        # every segment kind detected across all calls in this deal.
+        # Order follows the canonical taxonomy
+        # (lead_gen → pre_sales → verbal → loa) so the UI chip strip
+        # renders left-to-right in pipeline order.
+        coverage_set: set[str] = set()
+        for cc in deal_calls:
+            for chip in segs_by_call.get(str(cc.id), []):
+                k = (chip.kind or "").lower()
+                if k:
+                    coverage_set.add(k)
+        d["segments_coverage"] = [
+            k for k in _CANONICAL_ORDER if k in coverage_set
+        ] + sorted(coverage_set - _CANONICAL_SET)
         out_deals.append(d)
 
     return {
@@ -255,6 +288,24 @@ def get_deal(
     derived_lifecycle = derive_lifecycle_status(deal, calls)
     payload = _serialise_deal(deal)
     payload["lifecycle_status"] = derived_lifecycle
+
+    # Wave-27 — same segments_coverage field as the list endpoint so
+    # the deal-detail page can render the chip strip without an extra
+    # /api/deals/{id}/calls round-trip.
+    segs_by_call = (
+        fetch_segments_by_call_ids(db, [str(c.id) for c in calls])
+        if calls else {}
+    )
+    coverage_set: set[str] = set()
+    for cc in calls:
+        for chip in segs_by_call.get(str(cc.id), []):
+            k = (chip.kind or "").lower()
+            if k:
+                coverage_set.add(k)
+    canonical_order = ["lead_gen", "pre_sales", "verbal", "loa"]
+    payload["segments_coverage"] = [
+        k for k in canonical_order if k in coverage_set
+    ] + sorted(coverage_set - set(canonical_order))
 
     # Response shape: deal fields are also spread at the root so older
     # callers that did `resp["id"]` keep working. Newer callers should

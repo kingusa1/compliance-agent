@@ -55,6 +55,14 @@ export type DealRow = {
   external_watt_site_id?: number | null;
   // W1.2 (v3-watt-coverage): meter array — supports dual-fuel deals.
   meters?: DealMeter[];
+  // Wave-27 (2026-05-27) — deal-level segment-coverage chip strip.
+  // Ordered, deduped list of every CallSegment.kind detected across
+  // ALL calls in the deal. Canonical order
+  // (lead_gen → pre_sales → verbal → loa) followed by any new kinds
+  // sorted alphabetically. Empty array = no segments detected yet
+  // (legacy data or pipeline still running); UI falls back to the
+  // single lifecycle pill in that case.
+  segments_coverage?: string[];
 };
 
 export type DealsListParams = {

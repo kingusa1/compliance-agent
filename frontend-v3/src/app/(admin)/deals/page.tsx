@@ -77,10 +77,15 @@ function DealsPageBody() {
   const [q, setQ] = useState(() => get("q"));
   const debouncedQ = useDebouncedValue(q, 300);
   const filter = parseFilter(get("filter") || "all");
+  // Wave-27 — supplier filter persisted in URL ?supplier=. Empty string
+  // means "all suppliers". Backend already supports `supplier=` param.
+  const supplier = get("supplier") || "";
   const offset = Math.max(0, parseInt(get("offset") || "0", 10) || 0);
 
   const setFilter = (next: LifecycleFilter) =>
     setMany({ filter: next === "all" ? null : next, offset: null });
+  const setSupplier = (next: string) =>
+    setMany({ supplier: next || null, offset: null });
 
   // Mirror the debounced search into ?q= and reset offset on change.
   useEffect(() => {
@@ -98,9 +103,12 @@ function DealsPageBody() {
 
   // Lifecycle filtering still happens in-memory (backend filter is
   // `status` not `lifecycle_status`); cursor pagination drives ?offset.
+  // Wave-27 — supplier filter is sent server-side via the `supplier=`
+  // query param the backend already supports.
   const query = useQuery({
     ...getDealsListQuery({
       q: debouncedQ.trim() || undefined,
+      supplier: supplier || undefined,
       limit: DEALS_PAGE_LIMIT,
       offset,
     }),
@@ -117,6 +125,19 @@ function DealsPageBody() {
       return false;
     });
   }, [query.data, filter]);
+
+  // Wave-27 — supplier dropdown options derived from the current page's
+  // unique supplier values (sorted). Always includes "All" + the
+  // currently-selected supplier even if no rows on this page carry it
+  // (so the chip stays selectable after a filter narrows the result set).
+  const supplierOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const d of query.data?.deals ?? []) {
+      if (d.supplier) set.add(d.supplier);
+    }
+    if (supplier) set.add(supplier);
+    return Array.from(set).sort();
+  }, [query.data, supplier]);
 
   return (
     // 2026-05-24 — switched from max-w-7xl box to /customers-style full-height
@@ -174,28 +195,50 @@ function DealsPageBody() {
           </span>
         </div>
 
-        <div
-          className="ml-auto flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-0.5"
-          role="tablist"
-          aria-label="Lifecycle filter"
-        >
-          {(Object.keys(FILTER_LABELS) as LifecycleFilter[]).map((k) => (
-            <button
-              key={k}
-              type="button"
-              role="tab"
-              aria-selected={filter === k}
-              onClick={() => setFilter(k)}
-              data-testid={`filter-${k}`}
-              className={
-                filter === k
-                  ? "rounded-sm bg-[var(--bg-elev3)] px-2.5 py-1 text-[12px] font-medium text-[var(--text-primary)]"
-                  : "rounded-sm px-2.5 py-1 text-[12px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-              }
+        {/* Wave-27 — supplier filter dropdown. Server-side filter via
+            ?supplier=. Empty value = all suppliers. */}
+        <div className="ml-auto flex items-center gap-2">
+          <label className="flex items-center gap-2 text-[12px] text-[var(--text-muted)]">
+            <span className="uppercase tracking-wide text-[10px] text-[var(--text-faint)]">Supplier</span>
+            <select
+              value={supplier}
+              onChange={(e) => setSupplier(e.target.value)}
+              data-testid="deals-supplier-filter"
+              aria-label="Supplier filter"
+              className="h-8 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elev1)] px-2 text-[12px] text-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-blue)]"
             >
-              {FILTER_LABELS[k]}
-            </button>
-          ))}
+              <option value="">All</option>
+              {supplierOptions.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div
+            className="flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elev1)] p-0.5"
+            role="tablist"
+            aria-label="Lifecycle filter"
+          >
+            {(Object.keys(FILTER_LABELS) as LifecycleFilter[]).map((k) => (
+              <button
+                key={k}
+                type="button"
+                role="tab"
+                aria-selected={filter === k}
+                onClick={() => setFilter(k)}
+                data-testid={`filter-${k}`}
+                className={
+                  filter === k
+                    ? "rounded-sm bg-[var(--bg-elev3)] px-2.5 py-1 text-[12px] font-medium text-[var(--text-primary)]"
+                    : "rounded-sm px-2.5 py-1 text-[12px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                }
+              >
+                {FILTER_LABELS[k]}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

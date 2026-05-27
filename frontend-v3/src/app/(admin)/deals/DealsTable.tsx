@@ -208,7 +208,27 @@ export function DealsTable({ deals }: DealsTableProps) {
               )}
             </div>
             <div className="truncate text-[var(--text-muted)]">{d.supplier ?? "—"}</div>
-            <div><LifecyclePill status={d.lifecycle_status} /></div>
+            <div className="flex flex-col gap-1">
+              <LifecyclePill status={d.lifecycle_status} />
+              {/* Wave-27 — segments-covered chip strip. Shows which
+                  compliance phases the deal's uploaded calls actually
+                  surfaced (lead_gen / pre_sales / verbal / loa).
+                  Reviewer scan: lifecycle pill = highest-watermark phase;
+                  these chips = every phase covered by ANY call in the
+                  deal, including segments INSIDE multi-segment files. */}
+              {Array.isArray(d.segments_coverage) && d.segments_coverage.length > 0 && (
+                <div className="flex flex-wrap gap-1" data-testid="deal-segments-coverage">
+                  {d.segments_coverage.map((k) => (
+                    <span
+                      key={k}
+                      className="rounded bg-[var(--bg-elev3)] px-1.5 py-0.5 text-[9px] font-medium uppercase text-[var(--text-muted)]"
+                    >
+                      {k.replace(/_/g, " ")}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
             <div><ScoreBar value={d.final_score} /></div>
             <div><ActionPill action={d.final_action} /></div>
             <div className="tabular-nums text-[var(--text-primary)]">{formatGBP(d.deal_value_gbp)}</div>
