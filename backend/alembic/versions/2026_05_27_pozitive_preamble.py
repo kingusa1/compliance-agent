@@ -127,6 +127,37 @@ EXISTING_POZITIVE_VERBAL_SCRIPT_ID = "1f7b102c-bac1-4475-9757-94449d0d3807"
 def upgrade() -> None:
     bind = op.get_bind()
 
+    # Widen the ck_scripts_lifecycle_phase CHECK constraint to admit
+    # 'preamble' as a valid lifecycle. The constraint was introduced in
+    # c3d4e5f6a7b8_l3_deal_lifecycle_loa with a closed set
+    # (lead_gen / closer / amendment / c_call / standalone_loa / passover
+    # / full) that didn't anticipate Pozitive's NON-verbal pre-contract
+    # disclosure. Without this drop+recreate the INSERT below fails on
+    # Postgres with `new row for relation "scripts" violates check
+    # constraint "ck_scripts_lifecycle_phase"` (CI run 26513437261).
+    #
+    # SQLite (CI alembic-on-sqlite + local tests) doesn't enforce CHECK
+    # constraints the same way; the drop is a best-effort no-op there.
+    if bind.dialect.name == "postgresql":
+        # DO-block wraps ADD CONSTRAINT in an EXCEPTION handler so a
+        # re-run (downgrade → upgrade) doesn't error on duplicate_object
+        # when the widened constraint is already installed. Per
+        # database-reviewer + python-reviewer trio 2026-05-27.
+        bind.execute(text("""
+            DO $$
+            BEGIN
+                ALTER TABLE scripts DROP CONSTRAINT IF EXISTS ck_scripts_lifecycle_phase;
+                ALTER TABLE scripts ADD CONSTRAINT ck_scripts_lifecycle_phase CHECK (
+                    lifecycle_phase IS NULL OR lifecycle_phase IN (
+                        'lead_gen','closer','amendment','c_call','standalone_loa',
+                        'passover','full','preamble'
+                    )
+                );
+            EXCEPTION WHEN duplicate_object THEN
+                NULL;  -- constraint already in place — safe re-run
+            END $$;
+        """))
+
     # Insert the new Preamble script. Idempotent: skip if one with the
     # same name already exists (re-runs on staging/local don't double-insert).
     existing = bind.execute(
@@ -188,6 +219,14 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     bind = op.get_bind()
+
+    # Note: this downgrade is INTENTIONALLY asymmetric — it deletes the
+    # data row but leaves ck_scripts_lifecycle_phase widened to include
+    # 'preamble'. After the DELETE no row has lifecycle_phase='preamble'
+    # so the widened constraint causes no data-integrity risk, and
+    # narrowing the constraint here would (a) require validating every
+    # remaining row against the old set and (b) re-break upgrade re-runs
+    # on a downgrade-then-upgrade cycle. Per database-reviewer 2026-05-27.
 
     # Remove the Preamble script we inserted.
     bind.execute(
