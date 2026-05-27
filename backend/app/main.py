@@ -508,6 +508,120 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001 — boot must never block on resume setup
             app_log.warning(f"AUTO_RESUME_SETUP_FAILED: {type(e).__name__}: {e}")
 
+    # 2026-05-27 wave-21 — one-time speaker-label backfill of historical
+    # `Call.transcript` blobs using the post-wave-16 `_detect_agent_speaker`
+    # heuristic. Closes the wave-16 carry-forward where the persisted
+    # transcript still carried the OLD diarized labels even after
+    # /api/calls/{id}/words request-time re-derivation was fixed.
+    #
+    # Owner reported on 2026-05-27 that the Elzicle Ltd call STILL showed
+    # swapped Agent/Customer labels in the UI even after clicking
+    # Reanalyze. This boot-time backfill (paired with the new in-Reanalyze
+    # rederive in app/replay.py) closes the gap for ALL existing calls.
+    #
+    # Off-loop via asyncio.to_thread per wave-18 pattern. Idempotent —
+    # writes only when the new text differs from the stored transcript.
+    # Batched + capped per boot so a 100K-call backlog doesn't OOM the
+    # worker. Fire-and-forget after `yield` so it never blocks Railway's
+    # readiness probe.
+    backfill_task: asyncio.Task | None = None
+
+    async def _speaker_label_backfill_on_boot() -> None:
+        # Sleep briefly to let the readiness probe ack first, then do
+        # one batch (capped). Re-runs idempotently on subsequent boots
+        # until the unchanged count plateaus.
+        await asyncio.sleep(30.0)
+        try:
+            from app.transcription import format_diarized_transcript
+            import json as _json
+
+            def _backfill_batch_in_thread() -> dict[str, int]:
+                from app.database import SessionLocal as _SL
+                _db = _SL()
+                updated = 0
+                unchanged = 0
+                skipped = 0
+                scanned = 0
+                try:
+                    # Cap to 2000/boot so a giant backlog doesn't tie up
+                    # the worker. Subsequent boots clear more rows; once
+                    # the dataset is fully migrated `updated` plateaus to 0.
+                    rows = (
+                        _db.query(Call)
+                        .filter(Call.word_data.isnot(None))
+                        .filter(Call.transcript.isnot(None))
+                        .limit(2000)
+                        .all()
+                    )
+                    for row in rows:
+                        scanned += 1
+                        try:
+                            raw = row.word_data
+                            words = (
+                                _json.loads(raw)
+                                if isinstance(raw, (str, bytes, bytearray))
+                                else raw
+                            )
+                            if not isinstance(words, list) or not words:
+                                skipped += 1
+                                continue
+                            new_text = format_diarized_transcript(words)
+                            if new_text == (row.transcript or ""):
+                                unchanged += 1
+                                continue
+                            row.transcript = new_text
+                            updated += 1
+                            # Batch-commit every 200 (per wave-17 pattern)
+                            # to bound the loss-window on a transient
+                            # Supavisor disconnect.
+                            if updated % 200 == 0:
+                                _db.commit()
+                        except Exception:  # noqa: BLE001
+                            skipped += 1
+                            continue
+                    _db.commit()
+                finally:
+                    try:
+                        _db.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                return {
+                    "updated": updated,
+                    "unchanged": unchanged,
+                    "skipped": skipped,
+                    "scanned": scanned,
+                }
+
+            result = await asyncio.to_thread(_backfill_batch_in_thread)
+            app_log.info(
+                "BOOT_SPEAKER_LABEL_BACKFILL updated=%d unchanged=%d "
+                "skipped=%d scanned=%d (cap=2000)",
+                result["updated"], result["unchanged"],
+                result["skipped"], result["scanned"],
+            )
+        except Exception as e:  # noqa: BLE001 — boot backfill must not crash app
+            app_log.warning(
+                f"BOOT_SPEAKER_LABEL_BACKFILL_FAILED: "
+                f"{type(e).__name__}: {e}"
+            )
+
+    if not settings.use_inngest_pipeline:
+        # Skip on Inngest path — the durable workflow has its own data-
+        # repair cron and we don't want duplicate writes.
+        backfill_task = asyncio.create_task(_speaker_label_backfill_on_boot())
+
+        def _log_backfill_task_exc(t: asyncio.Task) -> None:
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                app_log.warning(
+                    "BOOT_SPEAKER_LABEL_BACKFILL_TASK_LEAK: %s: %s",
+                    type(exc).__name__, exc,
+                )
+
+        backfill_task.add_done_callback(_log_backfill_task_exc)
+
     try:
         yield
     finally:
@@ -522,6 +636,15 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(loop_lag_task, timeout=2)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
+        # Wave-21 — cancel the boot-time speaker-label backfill on
+        # shutdown. The task is idempotent so a mid-batch cancel just
+        # means the next boot picks up where this one left off.
+        if backfill_task is not None:
+            backfill_task.cancel()
+            try:
+                await asyncio.wait_for(backfill_task, timeout=2)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
         # 2026-05-26 — close the shared httpx.AsyncClient pool on shutdown.
         try:
             from app.http_clients import aclose_all_clients

@@ -178,6 +178,20 @@ async def _run_reanalysis(call_id: str, run_id: str) -> None:
         finally:
             db.close()
 
+        # Step 7 (wave-21, 2026-05-27) — re-derive Call.transcript from
+        # word_data using the current `_detect_agent_speaker` heuristic.
+        # Closes the wave-16 gap where role tags were fixed in the live
+        # `/api/calls/{id}/words` derivation but `Call.transcript` (which
+        # /bundle, RAG ingest, exports, and AI prompts read directly)
+        # still carried the OLD diarized labels at ingest time.
+        #
+        # The user reported on 2026-05-27 that even after Reanalyze, the
+        # Elzicle Ltd call still showed swapped Agent/Customer labels in
+        # the UI. Root cause: the persisted text was never re-derived.
+        # Now it is, every Reanalyze click. Idempotent: writes only when
+        # the new text differs.
+        await _rederive_speaker_labels(call_id, run_id)
+
         log.info(f"REANALYZE done call_id={call_id} run_id={run_id}")
     except Exception as e:  # noqa: BLE001 — terminal log + status flip
         log.error(f"REANALYZE failed call_id={call_id} run_id={run_id} err={e!r}")
@@ -199,3 +213,100 @@ async def _run_reanalysis(call_id: str, run_id: str) -> None:
                     _err_db.commit()
         finally:
             _err_db.close()
+
+
+async def _rederive_speaker_labels(call_id: str, run_id: str) -> None:
+    """Wave-21 (2026-05-27) — re-derive `Call.transcript` Agent/Customer
+    labels from `Call.word_data` using the current `_detect_agent_speaker`
+    heuristic (wave-16).
+
+    Why this exists: wave-16 fixed the role-tagging logic in
+    `app/transcription.py:_detect_agent_speaker`, but the persisted
+    `Call.transcript` column was written at original ingest with the
+    OLD heuristic. `/api/calls/{id}/words` re-derives at request time;
+    `/api/calls/{id}/bundle` and any consumer reading `Call.transcript`
+    directly (RAG, exports) saw stale labels. This helper closes the
+    gap on the Reanalyze path.
+
+    Off-loop via `asyncio.to_thread` per wave-18 pattern — the
+    `format_diarized_transcript` + JSON parse + DB commit shouldn't
+    block the asyncio loop while reviewers are mid-keystroke. Idempotent:
+    writes only when the new text differs from `Call.transcript`. Never
+    propagates an exception — the reviewer's Reanalyze must not fail
+    just because the label re-derive hit a snag.
+
+    Sources (per BRAIN/00_LAW_OF_ENTERPRISE_GRADE §0 — re-used from
+    wave-18 research agent `a3b9b2dc48f2ca55d`):
+      - Python asyncio docs (asyncio.to_thread for blocking sync work)
+      - Wave-18 commit message (off-loop DB write pattern)
+      - Wave-17 commit message (idempotent diff-only writer)
+    """
+    import asyncio
+    import json as _json
+
+    from app.database import SessionLocal as _SL
+    from app.transcription import format_diarized_transcript
+
+    def _persist_label_rederivation() -> str:
+        """Sync worker: runs entirely on a threadpool thread, opens its
+        own SessionLocal so neither the JSON parse nor the DB commit
+        can block the asyncio loop. Returns a status string for logging.
+        """
+        _db = _SL()
+        try:
+            call = _db.query(Call).filter_by(id=call_id).first()
+            if call is None:
+                return "skipped:call_gone"
+            if not call.word_data:
+                return "skipped:no_word_data"
+            try:
+                raw = call.word_data
+                words = (
+                    _json.loads(raw)
+                    if isinstance(raw, (str, bytes, bytearray))
+                    else raw
+                )
+            except (_json.JSONDecodeError, ValueError, TypeError):
+                return "skipped:word_data_corrupt"
+            if not isinstance(words, list) or not words:
+                return "skipped:empty_words"
+            try:
+                new_text = format_diarized_transcript(words)
+            except Exception as fmt_e:  # noqa: BLE001
+                log.warning(
+                    "rederive_speaker_labels format failed call_id=%s: %s: %s",
+                    call_id, type(fmt_e).__name__, fmt_e,
+                )
+                return "skipped:format_failed"
+            if new_text == (call.transcript or ""):
+                return "unchanged"
+            call.transcript = new_text
+            _db.commit()
+            return "updated"
+        except Exception as outer_e:  # noqa: BLE001 — never propagate
+            try:
+                _db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            log.warning(
+                "rederive_speaker_labels failed call_id=%s: %s: %s",
+                call_id, type(outer_e).__name__, outer_e,
+            )
+            return "skipped:exception"
+        finally:
+            try:
+                _db.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    status = await asyncio.to_thread(_persist_label_rederivation)
+    if status == "updated":
+        log.info(
+            "REANALYZE speaker_labels rederived call_id=%s run_id=%s",
+            call_id, run_id,
+        )
+    elif status != "unchanged":
+        log.info(
+            "REANALYZE speaker_labels not-rederived call_id=%s reason=%s",
+            call_id, status,
+        )
