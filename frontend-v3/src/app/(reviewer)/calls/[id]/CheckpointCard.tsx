@@ -146,6 +146,13 @@ export interface CheckpointCardProps {
   // and inherits the segment's rubric source).
   rubricKind?: string;
   rubricLabel?: string;
+  // Wave-25: per-card selection checkbox for bulk verdict actions.
+  // The parent owns the selected set; the card only renders the box +
+  // forwards toggles. Both are optional — when omitted no checkbox
+  // renders, preserving the original layout for surfaces that don't
+  // wire bulk selection (e.g. read-only verdict tab previews).
+  selected?: boolean;
+  onToggleSelect?: (origIndex: number, name: string, next: boolean) => void;
 }
 
 export function CheckpointCard(props: CheckpointCardProps) {
@@ -165,6 +172,8 @@ export function CheckpointCard(props: CheckpointCardProps) {
     onRetry,
     rubricKind,
     rubricLabel,
+    selected,
+    onToggleSelect,
   } = props;
 
   const cpId = `CP${String(index + 1).padStart(2, "0")}`;
@@ -273,6 +282,17 @@ export function CheckpointCard(props: CheckpointCardProps) {
         hasVerdict={!!verdict}
         rubricKind={rubricKind}
         rubricLabel={rubricLabel}
+        selected={selected}
+        onToggleSelect={
+          onToggleSelect
+            ? (next) =>
+                onToggleSelect(
+                  origIndex ?? index,
+                  script?.name || verdict?.name || "",
+                  next,
+                )
+            : undefined
+        }
       />
 
       {/* Section 1 — Script */}
@@ -408,6 +428,8 @@ function Header({
   hasVerdict,
   rubricKind,
   rubricLabel,
+  selected,
+  onToggleSelect,
 }: {
   cpId: string;
   name: string;
@@ -420,6 +442,8 @@ function Header({
   hasVerdict: boolean;
   rubricKind?: string;
   rubricLabel?: string;
+  selected?: boolean;
+  onToggleSelect?: (next: boolean) => void;
 }) {
   // 2026-05-14 redesign: two-row header so the checkpoint name never gets
   // squeezed into a one-word-per-line column when the metadata chips
@@ -445,6 +469,24 @@ function Header({
           minWidth: 0,
         }}
       >
+        {onToggleSelect && (
+          <input
+            type="checkbox"
+            data-slot="cp-select"
+            aria-label={`Select ${cpId} for bulk action`}
+            checked={!!selected}
+            onChange={(e) => onToggleSelect(e.target.checked)}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+            style={{
+              width: 16,
+              height: 16,
+              accentColor: accent,
+              cursor: "pointer",
+              flexShrink: 0,
+            }}
+          />
+        )}
         <span
           style={{
             fontFamily: "var(--font-mono)",

@@ -266,6 +266,133 @@ export function useReviewCheckpoint() {
   });
 }
 
+// ── Bulk checkpoint verdict (PUT, JSON body) ─────────────────────
+//
+// 2026-05-27 wave-25 — Charlotte's feedback: "we're wondering if there's
+// a way to quickly pass something without going through each checkpoint
+// individually." This hook drives the BulkActionToolbar. Optimistic
+// updates apply to ALL selected CPs at once so the UI feels instant on a
+// 50-CP bulk; the single backend POST returns HTTP 207 with per-item
+// status (per pre-wave research agent a10ae26df28b8663b — Zalando + TQ
+// optimistic-updates docs).
+
+export type BulkCheckpointVerdictArgs = {
+  callId: string;
+  /** 1-based or 0-based indices into `checkpoint_results`. Use names
+   *  when available for order-independence; indices are a back-compat
+   *  fallback. */
+  checkpointIndices?: number[];
+  /** Preferred: resolve by name (matches backend's order-independent
+   *  path same as the single-verdict mutation). */
+  checkpointNames?: string[];
+  /** "pass" / "fail" / "n_a". */
+  verdict: "pass" | "fail" | "n_a";
+  /** Optional reviewer note attached to every CP in the batch. */
+  reasoning?: string;
+};
+
+type BulkVerdictResponse = {
+  ok: number[];
+  failed: Array<{ index: number | null; name: string | null; reason: string }>;
+  score?: number | null;
+  compliant?: boolean | null;
+  needs_review_remaining?: number;
+  review_status?: string;
+};
+
+export function useBulkVerdictMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: BulkCheckpointVerdictArgs): Promise<BulkVerdictResponse> =>
+      putJson(
+        `/api/calls/${encodeURIComponent(args.callId)}/checkpoints/bulk-verdict`,
+        {
+          checkpoint_indices: args.checkpointIndices ?? [],
+          checkpoint_names: args.checkpointNames ?? [],
+          verdict: args.verdict,
+          reasoning: args.reasoning,
+        },
+      ),
+    // Optimistic update — flip every selected CP IMMEDIATELY so the UI
+    // feels instant. Server confirmation arrives in background.
+    onMutate: async ({ callId, checkpointIndices, checkpointNames, verdict, reasoning }) => {
+      const detailKey = reviewerKeys.callDetail(callId);
+      const bundleKey = reviewerKeys.callBundle(callId);
+      await qc.cancelQueries({ queryKey: ["call", callId] });
+
+      const prev = qc.getQueryData<{ checkpoint_results?: string | null } | undefined>(detailKey);
+      const prevBundle = qc.getQueryData<{ call?: { checkpoint_results?: string | null } } | undefined>(bundleKey);
+
+      const indicesSet = new Set(checkpointIndices ?? []);
+      const namesSet = new Set((checkpointNames ?? []).map((n) => n.trim().toLowerCase()));
+
+      const patchResults = (raw: string | null | undefined): string | null | undefined => {
+        if (!raw) return raw;
+        try {
+          const parsed = JSON.parse(raw);
+          if (!Array.isArray(parsed)) return raw;
+          const next = parsed.map((cp: unknown, i: number) => {
+            if (typeof cp !== "object" || cp === null) return cp;
+            const cpName = ((cp as { name?: unknown }).name);
+            const nameMatches = typeof cpName === "string" &&
+              namesSet.has(cpName.trim().toLowerCase());
+            const indexMatches = indicesSet.has(i);
+            if (nameMatches || indexMatches) {
+              return {
+                ...(cp as object),
+                reviewer_verdict: verdict,
+                reviewer_notes: reasoning ?? "",
+                needs_review: false,
+              };
+            }
+            return cp;
+          });
+          return JSON.stringify(next);
+        } catch {
+          return raw;
+        }
+      };
+
+      if (prev && typeof prev === "object" && "checkpoint_results" in prev) {
+        const patched = patchResults(prev.checkpoint_results);
+        qc.setQueryData(detailKey, { ...prev, checkpoint_results: patched });
+      }
+      if (
+        prevBundle && typeof prevBundle === "object" &&
+        "call" in prevBundle && prevBundle.call &&
+        typeof prevBundle.call === "object"
+      ) {
+        const patched = patchResults(prevBundle.call.checkpoint_results);
+        qc.setQueryData(bundleKey, {
+          ...prevBundle,
+          call: { ...prevBundle.call, checkpoint_results: patched },
+        });
+      }
+
+      return { prev, prevBundle };
+    },
+    onError: (err, args, ctx) => {
+      if (ctx?.prev !== undefined) {
+        qc.setQueryData(reviewerKeys.callDetail(args.callId), ctx.prev);
+      }
+      if (ctx?.prevBundle !== undefined) {
+        qc.setQueryData(reviewerKeys.callBundle(args.callId), ctx.prevBundle);
+      }
+      toast.error("Couldn't save bulk verdict", { description: _errMessage(err, "Try again.") });
+    },
+    onSuccess: (data, args) => {
+      _invalidateCallSlices(qc, args.callId);
+      const ok = data?.ok?.length ?? 0;
+      const failed = data?.failed?.length ?? 0;
+      if (failed > 0) {
+        toast.warning(`${ok} checkpoints updated, ${failed} could not be updated`);
+      } else if (ok > 0) {
+        toast.success(`${ok} checkpoints marked ${args.verdict.toUpperCase()}`);
+      }
+    },
+  });
+}
+
 // ── Retry checkpoint (POST) ───────────────────────────────────────
 // Re-runs analysis for a single checkpoint against the call's current
 // transcript. Used by the per-card retry button when reviewers want to

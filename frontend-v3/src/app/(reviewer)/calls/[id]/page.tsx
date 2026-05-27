@@ -42,6 +42,7 @@ import {
   useReviewCheckpoint,
   useRetryCheckpoint,
   useClaimCall,
+  useBulkVerdictMutation,
   type VerdictAction,
 } from "@/lib/mutations/reviewer";
 import { ApiError, apiFetch } from "@/lib/api";
@@ -53,6 +54,7 @@ import { WorkflowTypePill } from "@/components/design/WorkflowTypePill";
 import { Waveform } from "@/components/design/Waveform";
 import { useCallEvents } from "@/lib/hooks/useCallEvents";
 import { CheckpointCard, parseCheckpointResults, type CheckpointVerdict } from "./CheckpointCard";
+import { BulkActionToolbar } from "./BulkActionToolbar";
 import { TranscriptPlayer, type WordData } from "./TranscriptPlayer";
 // 2026-05-18: TranscriptAgreementChip + diarization-fallback chip removed
 // per user request. The two chips ("Transcripts agree (90%)" and "Speakers
@@ -366,6 +368,10 @@ export default function CallDetailPage({
   const reviewCheckpoint = useReviewCheckpoint();
   const retryCheckpoint = useRetryCheckpoint();
   const claimCall = useClaimCall();
+  // Wave-25: bulk verdict mutation (Charlotte's feedback — quickly mark
+  // many CPs without clicking through each one). Backed by HTTP 207
+  // `PUT /api/calls/{id}/checkpoints/bulk-verdict`.
+  const bulkVerdict = useBulkVerdictMutation();
   // useReleaseCall intentionally NOT used here — we fire release via a
   // direct fetch({ keepalive: true }) in the effect cleanup below. See
   // the comment on releaseClaim below for the smoke-test evidence (2026-
@@ -444,6 +450,20 @@ export default function CallDetailPage({
   // Plan §5b: top-row pill filter restored (Pass / Partial / Non-Compliant)
   // with counts. Click a chip → narrow the checkpoint list to that status.
   const [cpFilter, setCpFilter] = useState<"all" | "passed" | "partial" | "fail" | "na">("all");
+  // Wave-25: selected checkpoint origIndices for bulk-verdict actions. The
+  // checkbox lives on each CheckpointCard's header; the BulkActionToolbar
+  // floats at the bottom of the Checkpoints tab.
+  const [selectedCpIndices, setSelectedCpIndices] = useState<Set<number>>(() => new Set());
+  // Esc clears the bulk-selection. Scoped at window level so the reviewer
+  // can hit Escape from anywhere on the page (matches Gmail / Drive UX).
+  useEffect(() => {
+    if (selectedCpIndices.size === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSelectedCpIndices(new Set());
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedCpIndices.size]);
   const [chosen, setChosen] = useState<VerdictAction | null>(null);
   const [committed, setCommitted] = useState(false);
   const [chatInput, setChatInput] = useState("");
@@ -1634,75 +1654,160 @@ export default function CallDetailPage({
                 {(() => {
                   // Plan §5b: status filter pills with counts. The pills now
                   // SCOPE the nested CheckpointCards inside each SegmentCard.
-                  const counts = cpCards.reduce(
-                    (acc, m) => {
-                      const s = (m.verdict?.status ?? "").toLowerCase();
-                      if (s === "pass") acc.passed++;
-                      else if (s === "partial") acc.partial++;
-                      else if (s === "fail") acc.fail++;
-                      // 2026-05-27 D10 — `n_a` (with underscore) is the
-                      // backend's canonical "conditional did not fire"
-                      // status; rolled into the N/A pill alongside the
-                      // legacy unscored variants so a reviewer sees one
-                      // unified count of "rows that don't affect the score".
-                      else if (s === "" || s === "na" || s === "n_a" || s === "skipped" || s === "unscored" || s === "not_scored") acc.na++;
-                      // Unknown statuses (error / pending / future enums) are
-                      // intentionally NOT counted — they should surface as a
-                      // missing-row total instead of silently inflating N/A.
-                      return acc;
-                    },
-                    { passed: 0, partial: 0, fail: 0, na: 0 },
-                  );
+                  // Wave-25: each chip carries a "bucket origIndices" list
+                  // so we can offer "select all in this bucket" with one
+                  // click and surface a per-chip selected count.
+                  const buckets: Record<typeof cpFilter, number[]> = {
+                    all: [],
+                    passed: [],
+                    partial: [],
+                    fail: [],
+                    na: [],
+                  };
+                  cpCards.forEach((m, i) => {
+                    buckets.all.push(i);
+                    const s = (m.verdict?.status ?? "").toLowerCase();
+                    if (s === "pass") buckets.passed.push(i);
+                    else if (s === "partial") buckets.partial.push(i);
+                    else if (s === "fail") buckets.fail.push(i);
+                    else if (
+                      s === "" || s === "na" || s === "n_a" || s === "skipped" ||
+                      s === "unscored" || s === "not_scored"
+                    ) buckets.na.push(i);
+                  });
+                  const counts = {
+                    passed: buckets.passed.length,
+                    partial: buckets.partial.length,
+                    fail: buckets.fail.length,
+                    na: buckets.na.length,
+                  };
                   // Audit 2026-05-16 P1 #9: previously `All` = cpCards.length
                   // while Passed+Partial+Fail summed only scored CPs, so the
                   // pills didn't add up (e.g. All 113 / 63+6+19=88, 25 hidden).
                   // Expose an explicit N/A pill so reviewers can see the
                   // skipped/unscored category instead of silently dropping it.
-                  const chips: { key: typeof cpFilter; label: string; n: number; tone: string }[] = [
-                    { key: "all", label: "All", n: cpCards.length, tone: "var(--text-primary)" },
-                    { key: "passed", label: "Passed", n: counts.passed, tone: "var(--emerald)" },
-                    { key: "partial", label: "Partial", n: counts.partial, tone: "var(--amber)" },
-                    { key: "fail", label: "Non-Compliant", n: counts.fail, tone: "var(--red)" },
+                  const chips: {
+                    key: typeof cpFilter;
+                    label: string;
+                    n: number;
+                    tone: string;
+                    bucket: number[];
+                  }[] = [
+                    { key: "all", label: "All", n: cpCards.length, tone: "var(--text-primary)", bucket: buckets.all },
+                    { key: "passed", label: "Passed", n: counts.passed, tone: "var(--emerald)", bucket: buckets.passed },
+                    { key: "partial", label: "Partial", n: counts.partial, tone: "var(--amber)", bucket: buckets.partial },
+                    { key: "fail", label: "Non-Compliant", n: counts.fail, tone: "var(--red)", bucket: buckets.fail },
                     ...(counts.na > 0
-                      ? [{ key: "na" as const, label: "N/A", n: counts.na, tone: "var(--text-faint)" }]
+                      ? [{ key: "na" as const, label: "N/A", n: counts.na, tone: "var(--text-faint)", bucket: buckets.na }]
                       : []),
                   ];
                   return (
                     <div style={{ display: "flex", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
                       {chips.map((c) => {
                         const active = cpFilter === c.key;
+                        // Wave-25: "select all in bucket" — tri-state-ish.
+                        // none → all selected; some/all → none.
+                        const bucketSet = new Set(c.bucket);
+                        const selectedInBucket = c.bucket.filter((i) => selectedCpIndices.has(i)).length;
+                        const allSelected = c.bucket.length > 0 && selectedInBucket === c.bucket.length;
+                        const someSelected = selectedInBucket > 0 && !allSelected;
+                        const toggleBucket = (e: React.MouseEvent) => {
+                          e.stopPropagation();
+                          setSelectedCpIndices((prev) => {
+                            const next = new Set(prev);
+                            if (allSelected) {
+                              for (const i of bucketSet) next.delete(i);
+                            } else {
+                              for (const i of bucketSet) next.add(i);
+                            }
+                            return next;
+                          });
+                        };
+                        const boxBg = allSelected
+                          ? c.tone
+                          : someSelected
+                            ? `${c.tone}55`
+                            : "transparent";
                         return (
-                          <button
+                          <div
                             key={c.key}
-                            type="button"
-                            onClick={() => setCpFilter(c.key)}
                             style={{
                               display: "inline-flex",
                               alignItems: "center",
-                              gap: 6,
+                              gap: 4,
                               height: 28,
-                              padding: "0 10px",
+                              padding: "0 4px 0 8px",
                               fontSize: 12,
                               fontWeight: 500,
                               background: active ? "var(--bg-elev3)" : "var(--bg-elev2)",
                               color: active ? c.tone : "var(--text-muted)",
                               border: `1px solid ${active ? c.tone : "var(--border-subtle)"}`,
                               borderRadius: 999,
-                              cursor: "pointer",
                             }}
                           >
-                            <span>{c.label}</span>
-                            <span
+                            {c.bucket.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={toggleBucket}
+                                aria-label={
+                                  allSelected
+                                    ? `Deselect all ${c.label} checkpoints`
+                                    : `Select all ${c.label} checkpoints`
+                                }
+                                title={
+                                  allSelected
+                                    ? "Deselect all in this group"
+                                    : "Select all in this group"
+                                }
+                                style={{
+                                  width: 14,
+                                  height: 14,
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  background: boxBg,
+                                  border: `1px solid ${c.tone}`,
+                                  borderRadius: 3,
+                                  cursor: "pointer",
+                                  padding: 0,
+                                  color: "#0b0b0d",
+                                  fontSize: 10,
+                                  fontWeight: 800,
+                                  lineHeight: 1,
+                                }}
+                              >
+                                {allSelected ? "✓" : someSelected ? "–" : ""}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setCpFilter(c.key)}
                               style={{
-                                fontFamily: "var(--font-mono)",
-                                fontSize: 11,
-                                fontVariantNumeric: "tabular-nums",
-                                color: active ? c.tone : "var(--text-faint)",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 6,
+                                background: "transparent",
+                                border: "none",
+                                color: "inherit",
+                                font: "inherit",
+                                cursor: "pointer",
+                                padding: "0 6px 0 2px",
+                                height: 24,
                               }}
                             >
-                              {c.n}
-                            </span>
-                          </button>
+                              <span>{c.label}</span>
+                              <span
+                                style={{
+                                  fontFamily: "var(--font-mono)",
+                                  fontSize: 11,
+                                  fontVariantNumeric: "tabular-nums",
+                                  color: active ? c.tone : "var(--text-faint)",
+                                }}
+                              >
+                                {c.n}
+                              </span>
+                            </button>
+                          </div>
                         );
                       })}
                     </div>
@@ -1753,9 +1858,69 @@ export default function CallDetailPage({
                           index: origIndex,
                         });
                       },
+                      selectedOrigIndices: selectedCpIndices,
+                      onToggleCheckpointSelect: (origIndex, _name, next) => {
+                        setSelectedCpIndices((prev) => {
+                          const out = new Set(prev);
+                          if (next) out.add(origIndex);
+                          else out.delete(origIndex);
+                          return out;
+                        });
+                      },
                     }}
                   />
                 )}
+
+                {/* Wave-25: floating bulk-action toolbar — only renders when
+                    the reviewer has selected at least one checkpoint. Uses
+                    optimistic updates so the verdict chips flip instantly. */}
+                <BulkActionToolbar
+                  selectedCount={selectedCpIndices.size}
+                  busy={bulkVerdict.isPending}
+                  onClear={() => setSelectedCpIndices(new Set())}
+                  onBulkPass={() => {
+                    const names = Array.from(selectedCpIndices)
+                      .map((i) => cpCards[i]?.script?.name ?? cpCards[i]?.verdict?.name ?? "")
+                      .filter((n): n is string => !!n);
+                    bulkVerdict.mutate(
+                      {
+                        callId: id,
+                        checkpointIndices: Array.from(selectedCpIndices),
+                        checkpointNames: names,
+                        verdict: "pass",
+                      },
+                      { onSuccess: () => setSelectedCpIndices(new Set()) },
+                    );
+                  }}
+                  onBulkFail={() => {
+                    const names = Array.from(selectedCpIndices)
+                      .map((i) => cpCards[i]?.script?.name ?? cpCards[i]?.verdict?.name ?? "")
+                      .filter((n): n is string => !!n);
+                    bulkVerdict.mutate(
+                      {
+                        callId: id,
+                        checkpointIndices: Array.from(selectedCpIndices),
+                        checkpointNames: names,
+                        verdict: "fail",
+                      },
+                      { onSuccess: () => setSelectedCpIndices(new Set()) },
+                    );
+                  }}
+                  onBulkNA={() => {
+                    const names = Array.from(selectedCpIndices)
+                      .map((i) => cpCards[i]?.script?.name ?? cpCards[i]?.verdict?.name ?? "")
+                      .filter((n): n is string => !!n);
+                    bulkVerdict.mutate(
+                      {
+                        callId: id,
+                        checkpointIndices: Array.from(selectedCpIndices),
+                        checkpointNames: names,
+                        verdict: "n_a",
+                      },
+                      { onSuccess: () => setSelectedCpIndices(new Set()) },
+                    );
+                  }}
+                />
               </div>
             )}
             {tab === "verdict" && (

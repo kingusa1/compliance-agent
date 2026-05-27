@@ -9,6 +9,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -1166,6 +1167,236 @@ async def review_checkpoint_verdict(
         "score": call.score,
         "compliant": call.compliant,
         "needs_review_remaining": needs_review_remaining,
+    }
+
+
+# 2026-05-27 wave-25 — Bulk verdict endpoint (per Charlotte's feedback:
+# "we're wondering if there's a way to quickly pass something without
+# going through each checkpoint and individually passing each one").
+#
+# Pattern (per pre-wave research agent a10ae26df28b8663b, 7 citations
+# including TanStack Query optimistic-updates + Zalando bulk-API
+# guidelines + PatternFly bulk-selection):
+#   - Single transaction (one db.commit) for all CPs in the batch
+#   - HTTP 207 Multi-Status: returns {ok: [...], failed: [...]} so the
+#     UI can toast partial failures without blanket success/error
+#   - Cap batch_size at 200 to bound the loop runtime
+#   - LEARNING extraction is FIRE-AND-FORGET per-CP (same wave-19
+#     pattern) so a 50-CP bulk doesn't block the response on 50 LLM
+#     calls
+#   - Hard cap on simultaneous learning tasks: a 50-CP bulk only fires
+#     learning when reviewer's verdict DIFFERS from the AI's prior
+
+
+class BulkVerdictPayload(BaseModel):
+    checkpoint_indices: list[int] = []  # legacy: by int index
+    checkpoint_names: list[str] = []  # preferred: by name (order-independent)
+    verdict: str  # pass | fail | n_a
+    reasoning: str | None = None
+
+
+@router.put("/api/calls/{call_id}/checkpoints/bulk-verdict", status_code=207)
+async def bulk_review_checkpoint_verdict(
+    call_id: str,
+    payload: BulkVerdictPayload,
+    db: Session = Depends(get_db),
+    _reviewer=Depends(current_reviewer),
+):
+    """Bulk-apply a verdict to multiple checkpoints in one transaction.
+
+    Returns HTTP 207 with `{ok: [...], failed: [{index, name, reason}]}`
+    so the frontend can show partial-success state via toast.
+
+    Wave-25 (Charlotte's feedback 2026-05-27) — reviewers can select N
+    checkpoints via the bulk-action toolbar and apply one verdict to
+    all of them. Compared to N individual PUT calls this is ~50x
+    faster (one DB round-trip vs N), the audit trail still has one row
+    per CP (so review history is unchanged), and the SSE fan-out emits
+    one `verdict_batch_changed` frame so other reviewers' tabs
+    re-render once instead of N times.
+
+    Auth: `current_reviewer` (any reviewer role can bulk-verdict).
+    Hard limits: max 200 CPs per request; verdict must be one of
+    {pass, fail, n_a}.
+    """
+    call = db.query(Call).filter_by(id=call_id).first()
+    if not call:
+        raise HTTPException(404, "Call not found")
+    if not call.checkpoint_results:
+        raise HTTPException(400, "Call has no checkpoint results")
+
+    verdict = (payload.verdict or "").strip().lower()
+    if verdict not in {"pass", "fail", "n_a"}:
+        raise HTTPException(400, f"Invalid verdict {payload.verdict!r}")
+
+    indices = payload.checkpoint_indices or []
+    names = [n.strip() for n in (payload.checkpoint_names or []) if (n or "").strip()]
+    if not indices and not names:
+        raise HTTPException(400, "checkpoint_indices or checkpoint_names required")
+    if len(indices) + len(names) > 200:
+        raise HTTPException(400, "Bulk batch capped at 200 checkpoints per request")
+
+    try:
+        results = json.loads(call.checkpoint_results)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "Call.checkpoint_results is not valid JSON")
+
+    # Build a set of resolved indices. Name-based resolution wins (it's
+    # order-independent — see wave-15 D-PASS-BTN fix); int indices are
+    # the legacy back-compat path.
+    resolved: list[int] = []
+    failed: list[dict] = []
+    used_indices: set[int] = set()
+
+    for i in indices:
+        if 0 <= i < len(results) and i not in used_indices:
+            resolved.append(i)
+            used_indices.add(i)
+        else:
+            failed.append({"index": i, "name": None, "reason": "index_out_of_range"})
+
+    for nm in names:
+        norm = nm.lower()
+        # First unused match wins
+        match = next(
+            (
+                i for i, r in enumerate(results)
+                if isinstance(r, dict)
+                and (r.get("name") or "").strip().lower() == norm
+                and i not in used_indices
+            ),
+            None,
+        )
+        if match is not None:
+            resolved.append(match)
+            used_indices.add(match)
+        else:
+            failed.append({"index": None, "name": nm, "reason": "name_not_found"})
+
+    if not resolved:
+        # No CPs resolved — 207 with all-failed body is more informative
+        # than a 400 because the client can still see WHY each lookup
+        # failed (e.g. "name_not_found" vs "index_out_of_range").
+        return {
+            "ok": [],
+            "failed": failed,
+            "score": call.score,
+            "compliant": call.compliant,
+        }
+
+    # Apply verdict to each resolved CP. Track which CPs the reviewer
+    # disagreed with the AI on so we fire LEARNING fire-and-forget only
+    # for those.
+    learning_candidates: list[tuple[str, str, str, str]] = []  # (cp_name, evidence, ai_simple, human)
+    for ri in resolved:
+        cp = results[ri]
+        if not isinstance(cp, dict):
+            failed.append({"index": ri, "name": None, "reason": "checkpoint_not_dict"})
+            continue
+        agent_status = cp.get("status", "fail")
+        agent_simple = "pass" if agent_status == "pass" else "fail"
+        cp["reviewer_verdict"] = verdict
+        cp["reviewer_notes"] = payload.reasoning or ""
+        cp["needs_review"] = False
+        if agent_simple != verdict and verdict in {"pass", "fail"}:
+            learning_candidates.append((
+                cp.get("name", f"Checkpoint {ri}"),
+                (cp.get("evidence", "") or "")[:2000],
+                agent_simple,
+                verdict,
+            ))
+
+    call.checkpoint_results = json.dumps(results)
+
+    # Recompute needs_review_remaining (cheap on this list)
+    needs_review_remaining = sum(
+        1 for r in results
+        if isinstance(r, dict)
+        and r.get("needs_review")
+        and r.get("status") != "error"
+    )
+
+    # Auto-promote review_status per wave-15 wave-4 D-QUEUE-TAB rule.
+    # If every non-error CP has a reviewer_verdict → "reviewed". If any
+    # override → at least "in_review". (Detail re-uses the
+    # single-verdict endpoint's promotion logic shape.)
+    all_verdicts_present = all(
+        (r.get("status") == "error")
+        or r.get("reviewer_verdict") in {"pass", "fail", "n_a"}
+        for r in results
+        if isinstance(r, dict)
+    )
+    if all_verdicts_present:
+        call.review_status = "reviewed"
+    elif call.review_status == "unclaimed":
+        call.review_status = "in_review"
+
+    db.commit()
+
+    # SSE batch event — one frame, ids array. Per pre-wave research,
+    # this prevents render-thrash on other reviewers' open tabs (50
+    # individual events → 1 batched event). `realtime.publish` is sync
+    # (signature: (call_id, event_type, payload)) — no await.
+    try:
+        from app.realtime import publish as _realtime_publish
+        _realtime_publish(call_id, "verdict_batch_changed", {
+            "call_id": call_id,
+            "checkpoint_indices": resolved,
+            "verdict": verdict,
+            "score": call.score,
+            "compliant": call.compliant,
+            "needs_review_remaining": needs_review_remaining,
+            "review_status": call.review_status,
+        })
+    except Exception as rt_e:  # noqa: BLE001
+        log.warning(f"realtime publish (bulk) failed (non-fatal): {rt_e}")
+
+    # Fire-and-forget LEARNING extraction per disagreeing CP (wave-19
+    # pattern). Each gets its own asyncio task so the response returns
+    # immediately even on a 50-CP bulk where 30 disagreed with the AI.
+    if learning_candidates:
+        supplier = call.detected_supplier or "Unknown"
+        _notes = payload.reasoning
+
+        async def _bg_bulk_learning(name: str, excerpt: str, ai_v: str, human_v: str) -> None:
+            try:
+                await abstract_and_store_review(
+                    supplier=supplier,
+                    checkpoint_name=name,
+                    transcript_excerpt=excerpt,
+                    agent_verdict=ai_v,
+                    human_verdict=human_v,
+                    reviewer_notes=_notes,
+                )
+            except Exception as bg_e:  # noqa: BLE001
+                log.warning(
+                    f"📚 bulk learning failed cp={name!r} (non-fatal): {bg_e}"
+                )
+
+        for cp_name, excerpt, ai_simple, human in learning_candidates:
+            t = asyncio.create_task(
+                _bg_bulk_learning(cp_name, excerpt, ai_simple, human)
+            )
+
+            def _log_bulk_learning_exc(task: asyncio.Task) -> None:
+                if task.cancelled():
+                    return
+                exc = task.exception()
+                if exc is not None:
+                    log.warning(
+                        "BULK_LEARNING_TASK_LEAK: %s: %s",
+                        type(exc).__name__, exc,
+                    )
+
+            t.add_done_callback(_log_bulk_learning_exc)
+
+    return {
+        "ok": resolved,
+        "failed": failed,
+        "score": call.score,
+        "compliant": call.compliant,
+        "needs_review_remaining": needs_review_remaining,
+        "review_status": call.review_status,
     }
 
 

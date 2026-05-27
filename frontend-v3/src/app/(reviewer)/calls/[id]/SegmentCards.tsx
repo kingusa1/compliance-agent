@@ -284,6 +284,11 @@ export type SegmentCardsProps = {
     onRetry?: (origIndex: number) => Promise<void>;
     activeCheckpointKey?: string | null;
     totalSections: number;
+    // Wave-25: bulk-selection plumbing. Parent owns the set; SegmentCards
+    // forwards selected state + toggle handler to each CheckpointCard
+    // using its origIndex (position in the page-level cpCards array).
+    selectedOrigIndices?: Set<number>;
+    onToggleCheckpointSelect?: (origIndex: number, name: string, next: boolean) => void;
   };
 };
 
@@ -651,26 +656,33 @@ export function SegmentCards({ callId, cpCards = [], cpFilter = "all", innerProp
                     }}
                   >
                     {innerProps
-                      ? subset.map((cpc, i) => (
-                          <CheckpointCard
-                            key={`${cpc.key}-${i}`}
-                            index={i}
-                            script={cpc.script}
-                            verdict={cpc.verdict}
-                            startSec={cpc.startSec}
-                            isActive={innerProps.activeCheckpointKey === cpc.key}
-                            onPlay={innerProps.seekAndPlay}
-                            callId={callId}
-                            callDurationSec={innerProps.callDurationSec}
-                            totalSections={innerProps.totalSections}
-                            words={innerProps.words}
-                            origIndex={cpCards.indexOf(cpc)}
-                            rubricKind={s.rubric_kind ?? undefined}
-                            rubricLabel={s.rubric_label ?? undefined}
-                            onReviewVerdict={innerProps.onReviewVerdict}
-                            onRetry={innerProps.onRetry}
-                          />
-                        ))
+                      ? subset.map((cpc, i) => {
+                          const origIndex = cpCards.indexOf(cpc);
+                          const isSelected =
+                            innerProps.selectedOrigIndices?.has(origIndex) ?? false;
+                          return (
+                            <CheckpointCard
+                              key={`${cpc.key}-${i}`}
+                              index={i}
+                              script={cpc.script}
+                              verdict={cpc.verdict}
+                              startSec={cpc.startSec}
+                              isActive={innerProps.activeCheckpointKey === cpc.key}
+                              onPlay={innerProps.seekAndPlay}
+                              callId={callId}
+                              callDurationSec={innerProps.callDurationSec}
+                              totalSections={innerProps.totalSections}
+                              words={innerProps.words}
+                              origIndex={origIndex}
+                              rubricKind={s.rubric_kind ?? undefined}
+                              rubricLabel={s.rubric_label ?? undefined}
+                              onReviewVerdict={innerProps.onReviewVerdict}
+                              onRetry={innerProps.onRetry}
+                              selected={isSelected}
+                              onToggleSelect={innerProps.onToggleCheckpointSelect}
+                            />
+                          );
+                        })
                       : subset.map((cpc) => (
                           <div
                             key={cpc.key}
