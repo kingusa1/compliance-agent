@@ -43,6 +43,7 @@ from app.deal_lifecycle import (
     required_phases,
 )
 from app.models import Call, CustomerDeal
+from app.segment_chips import fetch_segments_by_call_ids
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +155,15 @@ def aggregate_deal_verdict(deal_id, db: Session) -> DealVerdict:
         .all()
     )
 
+    # Wave-26 (2026-05-27) — a single audio file can contain multiple
+    # segments (lead_gen + pre_sales + verbal + loa). Without this the
+    # deal-detail page said "2 of 4 required calls missing" even when
+    # both uploaded files covered Pre-Sales + Verbal between them.
+    # Bulk-fetch every detected segment kind so completed_phases is the
+    # UNION of (call_type) and (every segment kind in every call).
+    call_ids = [str(c.id) for c in calls if c.completed_at]
+    segs_by_call = fetch_segments_by_call_ids(db, call_ids) if call_ids else {}
+
     breakdown: list[CallBreakdown] = []
     weighted_sum = 0.0
     weight_total = 0.0
@@ -166,8 +176,16 @@ def aggregate_deal_verdict(deal_id, db: Session) -> DealVerdict:
         action = _call_action(c)
         actions.append(action)
 
-        if c.completed_at and phase:
-            completed_phases.add(phase)
+        if c.completed_at:
+            if phase:
+                completed_phases.add(phase)
+            # Wave-26 — also count every detected segment phase. Segment
+            # `kind` is already in the canonical taxonomy (lead_gen,
+            # pre_sales, verbal, loa) so no remapping needed.
+            for chip in segs_by_call.get(str(c.id), []):
+                k = (chip.kind or "").lower()
+                if k:
+                    completed_phases.add(k)
 
         if phase and frac is not None:
             w = WEIGHTS.get(phase)

@@ -295,6 +295,37 @@ def test_postgres_json_str_payload_branch():
     assert out["c-str"][1].compliant is False
 
 
+def test_deal_verdict_unions_segment_phases_into_completed_phases(
+    mock_jwks, seed_profile, seed_marsden_with_2_calls, auth
+):
+    """Wave-26 follow-up: a deal whose calls are call_type='verbal'
+    but contain pre_sales + verbal segments must NOT report Lead Gen /
+    Pre-Sales as "missing". The deal-detail UI says "X of 4 required
+    calls missing" sourced from /api/deals/{id}/verdict — the fix
+    unions every segment.kind into completed_phases.
+    """
+    # Mark both seeded calls as completed so their phases count.
+    db = TestSessionLocal()
+    try:
+        from app._clock import utcnow
+        deal_id = str(db.query(CustomerDeal).first().id)
+        for cid in ("call-a", "call-b"):
+            row = db.query(Call).filter_by(id=cid).one()
+            row.completed_at = utcnow()
+        db.commit()
+    finally:
+        db.close()
+
+    r = client.get(f"/api/deals/{deal_id}/verdict", headers=auth("sarah"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Before wave-26 follow-up: missing_calls included 'pre_sales'
+    # because the fixture's call_type='verbal' on both calls. With
+    # the segment-union fix, pre_sales is covered (it's INSIDE the
+    # verbal file) so it MUST NOT appear in missing.
+    assert "pre_sales" not in (body.get("missing_calls") or [])
+
+
 def test_legacy_call_with_no_segments_returns_empty_list(
     mock_jwks, seed_profile, auth
 ):
