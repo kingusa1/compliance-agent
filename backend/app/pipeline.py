@@ -585,7 +585,8 @@ async def process_call(call_id: str, file_path: str, db: Session | None = None, 
         # honours the invariant "one deal = one supplier contract".
         try:
             from app.models import CustomerDeal as _Deal
-            from app.deal_meter_merge import _supplier_norm
+            from app.deal_meter_merge import _supplier_norm, _is_lock_timeout
+            from sqlalchemy import text as _sql_text
             _supplier_db = SessionLocal()
             try:
                 final_call = _supplier_db.query(Call).filter_by(id=call_id).first()
@@ -595,14 +596,54 @@ async def process_call(call_id: str, file_path: str, db: Session | None = None, 
                     and final_call.detected_supplier
                     and final_call.detected_supplier.lower() not in ("unknown", "n/a", "none", "null", "-")
                 ):
-                    final_deal = (
-                        _supplier_db.query(_Deal)
-                        .filter_by(id=final_call.deal_id)
-                        .with_for_update()
-                        .first()
-                        if _supplier_db.bind and _supplier_db.bind.dialect.name == "postgresql"
-                        else _supplier_db.query(_Deal).filter_by(id=final_call.deal_id).first()
+                    # 2026-05-27 wave-15 — burn 2s on a contended lock, never 15s.
+                    # SET LOCAL applies to this transaction only and reverts at
+                    # COMMIT/ROLLBACK. Under N-way concurrent finalize for the
+                    # same deal, the loser fails fast and we move on without
+                    # ever hitting statement_timeout=15000 → STEP_RETRY storm.
+                    # Owner-observed in Railway logs 2026-05-27: call 311c8cff
+                    # supplier-peel retried twice. Eliminated here.
+                    #
+                    # database-reviewer CRITICAL — use `get_bind()` instead
+                    # of deprecated `db.bind` for SQLAlchemy 2.0 forward-compat.
+                    _bind = _supplier_db.get_bind()
+                    _is_pg = (
+                        _bind is not None and _bind.dialect.name == "postgresql"
                     )
+                    if _is_pg:
+                        _supplier_db.execute(_sql_text("SET LOCAL lock_timeout = '2s'"))
+                    final_deal = None
+                    try:
+                        final_deal = (
+                            _supplier_db.query(_Deal)
+                            .filter_by(id=final_call.deal_id)
+                            .with_for_update()
+                            .first()
+                            if _is_pg
+                            else _supplier_db.query(_Deal).filter_by(id=final_call.deal_id).first()
+                        )
+                    except Exception as _lock_e:  # noqa: BLE001
+                        # 2026-05-27 wave-15 — lock_timeout fired (another
+                        # finalize holds the row). Safety-net is best-effort:
+                        # leave `final_deal` as None so the peel naturally
+                        # skips, then let the next pipeline run / re-analyze
+                        # pick it up. Never raise from the safety net AND
+                        # never return early — the COMPLETE log line + the
+                        # outer `local_audio` cleanup finally must still run.
+                        #
+                        # python+database-reviewer HIGH — use the typed
+                        # `_is_lock_timeout` helper (SQLSTATE + psycopg2
+                        # class + substring fallback) instead of a bare
+                        # substring match. Statement_timeout cancellations
+                        # propagate up to be retried by the outer pipeline.
+                        if _is_lock_timeout(_lock_e):
+                            log.warning(
+                                f"SUPPLIER_PEEL_LOCK_BUSY call_id={call_id} "
+                                f"— another finalize holds the deal row; "
+                                f"skipping (will retry on next run)"
+                            )
+                        else:
+                            raise
                     if final_deal is not None:
                         deal_norm = _supplier_norm(final_deal.supplier)
                         call_norm = _supplier_norm(final_call.detected_supplier)

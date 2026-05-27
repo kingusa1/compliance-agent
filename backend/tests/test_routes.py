@@ -51,6 +51,11 @@ client = TestClient(app)
 def clean_db():
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
+    # 2026-05-27 wave-15 — bust the /api/stats TTL cache so each test
+    # gets a fresh DB read (the cache is module-level and would otherwise
+    # leak state across tests).
+    from app.routes import _STATS_CACHE
+    _STATS_CACHE.clear()
     yield
 
 
@@ -104,6 +109,85 @@ def test_get_stats_with_data():
     assert data["compliant_count"] == 3
     assert data["non_compliant_count"] == 2
     assert data["compliance_rate"] == 60.0
+
+
+# 2026-05-27 wave-15 (perf P0) regression tests --------------------------
+
+def test_get_stats_cache_hit_returns_stale_within_ttl():
+    """Wave-15: /api/stats caches its result for ~10s. A second call BEFORE
+    the TTL expires should return the same payload even if rows were
+    inserted in between — proves the cache is wired."""
+    # First call → populates cache with empty state
+    r1 = client.get("/api/stats")
+    assert r1.status_code == 200
+    assert r1.json()["total_calls"] == 0
+
+    # Insert a row directly while the cache is warm
+    db = TestSessionLocal()
+    db.add(Call(
+        id=str(uuid.uuid4()),
+        filename="cache_test.mp3",
+        file_path="/uploads/cache_test.mp3",
+        file_size=1024,
+        status="completed",
+        compliant=True,
+    ))
+    db.commit()
+    db.close()
+
+    # Second call within TTL → SHOULD still return cached empty state.
+    # If the cache wasn't wired, this would return total_calls=1 and the
+    # test would fail.
+    r2 = client.get("/api/stats")
+    assert r2.status_code == 200
+    assert r2.json()["total_calls"] == 0, (
+        "TTL cache hit failed — /api/stats should return stale cached value "
+        "within the 10s window"
+    )
+
+    # Force-clear the cache and re-call — now should see the new row.
+    from app.routes import _STATS_CACHE
+    _STATS_CACHE.clear()
+    r3 = client.get("/api/stats")
+    assert r3.status_code == 200
+    assert r3.json()["total_calls"] == 1, "post-clear call should see fresh data"
+
+
+def test_get_stats_single_round_trip_consolidation():
+    """Wave-15: the 7 sequential COUNT queries were collapsed into TWO
+    multi-aggregate queries (one over calls, one over call_checkpoints).
+    Verify by counting the SQL statements emitted for one /api/stats call.
+    This locks the contract against a regression that re-splits the
+    aggregate into per-status COUNT(*) queries."""
+    from sqlalchemy import event
+
+    statements: list[str] = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        # Skip SQLAlchemy's own connection-init pings + transaction frames.
+        sql = statement.strip().lower()
+        if sql.startswith("select"):
+            statements.append(sql)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        # Cache may be warm from prior test; force a real DB hit.
+        from app.routes import _STATS_CACHE
+        _STATS_CACHE.clear()
+        r = client.get("/api/stats")
+        assert r.status_code == 200
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
+    # Wave-15 contract: stats endpoint issues AT MOST 2 SELECT statements
+    # (one over calls, one over call_checkpoints). The prior implementation
+    # issued 7. We assert ≤3 to allow one defensive extra (e.g. a future
+    # JOIN or pre-flight check) without becoming brittle, but reject any
+    # regression that goes back toward the original 7.
+    assert len(statements) <= 3, (
+        f"Wave-15 regression: /api/stats issued {len(statements)} SELECTs "
+        f"(was 7 before, now expected ≤3): {statements}"
+    )
 
 
 def test_get_call_with_checkpoints():

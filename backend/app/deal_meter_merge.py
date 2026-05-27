@@ -53,7 +53,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
@@ -556,16 +556,83 @@ def _lock_survivor(db: Session, deal_id: uuid.UUID) -> Optional[CustomerDeal]:
     serialise on it. Falls back to a plain SELECT on SQLite (tests) which
     has no row-level locking.
 
-    Postgres semantics: the second worker blocks here until the first
-    worker commits or rolls back. After acquiring the lock the second
-    worker re-validates — if the survivor row was deleted in the
-    meantime, returns None and the caller short-circuits.
+    Postgres semantics (post wave-15, 2026-05-27): we set
+    ``SET LOCAL lock_timeout = '2s'`` before the FOR UPDATE so a contended
+    lock fails fast inside the 15s statement_timeout budget instead of
+    queueing the entire pipeline. The transaction-scoped setting reverts
+    automatically at COMMIT/ROLLBACK, so it never leaks across requests.
+
+    Returns ``None`` on lock contention (typed as `_LockBusy`-like
+    semantically — but we keep the existing `None` contract because the
+    upstream caller already treats `None` as "survivor disappeared under
+    lock"; either way the merge short-circuits and a future re-finalize
+    picks it up.
+
+    Reference: pganalyze L72 — "Canceling statement due to lock timeout"
+    + Postgres lock_timeout docs. Burn 2s on a contended lock, never 15s.
     """
-    is_pg = db.bind.dialect.name == "postgresql" if db.bind else False
+    # 2026-05-27 wave-15 (database-reviewer CRITICAL) — `db.bind` is
+    # deprecated in SQLAlchemy 2.0 and emits a warning + raises on full
+    # 2.0-strict mode. `db.get_bind()` is the forward-compatible form
+    # that resolves to the same Engine via Session.get_bind().
+    bind = db.get_bind()
+    is_pg = bind.dialect.name == "postgresql" if bind is not None else False
+    if is_pg:
+        # SET LOCAL applies to the current transaction only. SQLAlchemy
+        # opens the implicit txn on this first `.execute()` so the
+        # subsequent FOR UPDATE shares the same transaction scope.
+        db.execute(text("SET LOCAL lock_timeout = '2s'"))
     q = db.query(CustomerDeal).filter(CustomerDeal.id == deal_id)
     if is_pg:
         q = q.with_for_update()
-    return q.first()
+    try:
+        return q.first()
+    except Exception as e:  # noqa: BLE001 — structured detection below
+        # 2026-05-27 wave-15 (python+database-reviewer HIGH) — detect
+        # lock_timeout by Postgres SQLSTATE (55P03 = lock_not_available)
+        # OR psycopg2's typed exception class. Substring on the error
+        # message is the last-resort fallback for the SQLAlchemy-wrapped
+        # variant where the inner pgcode isn't always reachable. This
+        # avoids both false-positives (random RuntimeError happens to
+        # mention "lock timeout") and false-negatives (locale changes).
+        if _is_lock_timeout(e):
+            return None
+        raise
+
+
+def _is_lock_timeout(exc: BaseException) -> bool:
+    """True iff `exc` is a Postgres lock_timeout cancellation.
+
+    Three checks in order of fidelity:
+      1. The underlying psycopg2/psycopg cause's `pgcode == '55P03'`
+         (LOCK_NOT_AVAILABLE — emitted when `lock_timeout` fires).
+      2. `isinstance` against `psycopg2.errors.LockNotAvailable` if the
+         driver is psycopg2 (the project's current driver).
+      3. Substring match `"lock timeout"` on the error message as a
+         resilient last-resort. Bounded false-positive risk because
+         the surrounding code only calls this from FOR UPDATE call
+         sites where lock_timeout is the dominant cancellation mode.
+
+    Returns False for `statement_timeout` cancellations (different
+    error message + SQLSTATE 57014), which must propagate to the
+    outer pipeline so the surrounding retry layer can react.
+    """
+    # Layer 1 — SQLSTATE
+    orig = getattr(exc, "orig", None)
+    pgcode = getattr(orig, "pgcode", None) or getattr(exc, "pgcode", None)
+    if pgcode == "55P03":
+        return True
+    # Layer 2 — psycopg2 typed exception
+    try:
+        from psycopg2 import errors as _pg_errors  # type: ignore
+        if orig is not None and isinstance(orig, _pg_errors.LockNotAvailable):
+            return True
+        if isinstance(exc, _pg_errors.LockNotAvailable):
+            return True
+    except Exception:  # noqa: BLE001 — psycopg2 not installed (SQLite-only env)
+        pass
+    # Layer 3 — message substring (last-resort)
+    return "lock timeout" in str(exc).lower()
 
 
 def merge_deals_on_meter_match(call: Call, db: Session) -> MergeOutcome:

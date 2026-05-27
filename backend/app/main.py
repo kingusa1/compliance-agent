@@ -153,6 +153,27 @@ async def _loop_lag_canary(
     except Exception:  # noqa: BLE001 — metric optional
         LOOP_LAG_WARN_TOTAL = None  # type: ignore
 
+    # 2026-05-27 wave-15 — Sentry capture on loop_lag spike so ops gets
+    # paged the first time the loop starves, not "whenever Mohamed reads
+    # Railway logs". Uses `new_scope()` (sentry-sdk 2.x API — `push_scope`
+    # was deprecated and silently no-ops scope-set calls in 2.x). Tags
+    # group events by severity bucket; the message body itself stays the
+    # same as the log line so log+Sentry events are 1:1 searchable.
+    # Imported lazily so this background canary never fails on a Sentry
+    # SDK import problem.
+    try:
+        import sentry_sdk as _sentry_sdk  # type: ignore
+    except Exception:  # noqa: BLE001
+        _sentry_sdk = None  # type: ignore
+
+    # 2026-05-27 wave-15 hardening (python-reviewer HIGH) — explicit
+    # rate limit. Without this, a perma-starved loop fires 12 events/min
+    # = 17,280/day, burning ~3.4× the Sentry free-tier daily error
+    # budget. Cap at 1 Sentry event per 60s; logs + Prometheus counter
+    # still fire on every sample, so observability is intact.
+    _SENTRY_RATE_LIMIT_S = 60.0
+    _last_sentry_emit = 0.0  # time.monotonic() of last Sentry event
+
     while True:
         start = _time.monotonic()
         try:
@@ -171,6 +192,34 @@ async def _loop_lag_canary(
                 try:
                     LOOP_LAG_WARN_TOTAL.inc()
                 except Exception:  # noqa: BLE001
+                    pass
+            # 2026-05-27 wave-15 — capture to Sentry, rate-limited to 1
+            # event per 60s. Best-effort: never raise from the canary loop.
+            now = _time.monotonic()
+            if (
+                _sentry_sdk is not None
+                and (now - _last_sentry_emit) >= _SENTRY_RATE_LIMIT_S
+            ):
+                try:
+                    # sentry-sdk 2.x: `new_scope()` is the supported
+                    # context manager. `push_scope()` is deprecated; on
+                    # 2.x it forwards to `new_scope()` but the API may
+                    # change again. Use the current name explicitly.
+                    with _sentry_sdk.new_scope() as _scope:
+                        _scope.set_tag("perf.loop_lag", "warn")
+                        _scope.set_tag(
+                            "perf.lag_bucket",
+                            ">2s" if lag > 2.0 else (">1s" if lag > 1.0 else ">500ms"),
+                        )
+                        _scope.set_extra("lag_ms", round(lag * 1000, 1))
+                        _scope.set_extra("actual_ms", round(actual * 1000, 1))
+                        _scope.set_extra("target_ms", round(target_sleep_s * 1000, 1))
+                        _sentry_sdk.capture_message(
+                            f"loop_lag {round(lag * 1000)}ms — asyncio loop starved",
+                            level="warning",
+                        )
+                    _last_sentry_emit = now
+                except Exception:  # noqa: BLE001 — canary must never crash
                     pass
         await asyncio.sleep(sample_interval_s)
 

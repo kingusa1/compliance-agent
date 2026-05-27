@@ -9,7 +9,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.agent.feedback import abstract_and_store_review
@@ -1323,30 +1323,92 @@ def update_transcription_settings(body: dict, _=Depends(_require_admin)):
     return {"status": "ok", "enabled": valid}
 
 
+# 2026-05-27 wave-15 (perf P0) — /api/stats consolidation.
+#
+# Before: 7 sequential COUNT queries against `calls` + `call_checkpoints`.
+# Each pays ~70-90ms cross-region RTT (Railway Singapore → Supabase Mumbai)
+# = ~500-600ms wall-clock per dashboard render. Plus dashboard polls this
+# every few seconds for every authed user, multiplying the load.
+#
+# After: single SQL with FILTER (Postgres-native conditional aggregates)
+# returning all 6 counters in one round-trip. SQLite test fallback uses
+# CASE WHEN expressions (semantically identical). Plus a 10-second
+# process-level TTL cache so concurrent dashboard polls share one DB
+# round-trip per 10s. Owner-friendly: stats don't need to be fresh to
+# the second.
+#
+# Win: ~500-600ms saved per dashboard render. Under burst, the cache
+# keeps a single hit even with N reviewers polling concurrently.
+import threading
+
+from cachetools import TTLCache
+
+# Process-level cache shared across all reviewer polls.
+# - maxsize=1: there is only one "stats" key globally; no per-user variance.
+# - ttl=10s: stats are aggregate counts, not individual record state;
+#   freshness within 10s is acceptable. Cache invalidates naturally;
+#   no explicit bust needed because the wall-clock window is short.
+#
+# `get_stats` is declared as plain `def` (not `async def`), so FastAPI
+# runs it in a threadpool — multiple concurrent requests can land in
+# parallel threads. `cachetools.TTLCache` is documented NOT thread-safe,
+# so we guard read+write with an explicit lock (python-reviewer HIGH,
+# 2026-05-27 wave-15). Race-free even under Uvicorn `--workers 1` with
+# many concurrent requests, and remains correct if WEB_CONCURRENCY rises
+# per process (each worker gets its own cache, but that's a separate
+# concern documented in the database-reviewer note).
+_STATS_CACHE: TTLCache = TTLCache(maxsize=1, ttl=10)
+_STATS_CACHE_LOCK = threading.Lock()
+
+
 @router.get("/api/stats", response_model=StatsResponse)
 def get_stats(
     db: Session = Depends(get_db),
     _user: dict = Depends(current_reviewer),
 ):
-    total = db.query(func.count(Call.id)).scalar()
-    compliant = db.query(func.count(Call.id)).filter(Call.compliant == True).scalar()
-    non_compliant = db.query(func.count(Call.id)).filter(Call.compliant == False).scalar()
-    processing = db.query(func.count(Call.id)).filter(Call.status == "processing").scalar()
+    with _STATS_CACHE_LOCK:
+        cached = _STATS_CACHE.get("stats")
+    if cached is not None:
+        return cached
 
-    # Review analytics
-    total_checkpoints = db.query(func.count(CallCheckpoint.id)).scalar() or 0
-    needs_review = db.query(func.count(CallCheckpoint.id)).filter(
-        CallCheckpoint.needs_review == True
-    ).scalar() or 0
-    reviewed = db.query(func.count(CallCheckpoint.id)).filter(
-        CallCheckpoint.reviewer_verdict.isnot(None)
-    ).scalar() or 0
-    automated = total_checkpoints - needs_review - reviewed
+    # Single multi-aggregate query — counts are mutually independent so
+    # SQLAlchemy emits them in ONE round-trip. Uses `case()` so the
+    # query plan is identical between Postgres and SQLite (tests).
+    call_row = db.query(
+        func.count(Call.id).label("total"),
+        func.coalesce(
+            func.sum(case((Call.compliant == True, 1), else_=0)), 0
+        ).label("compliant"),
+        func.coalesce(
+            func.sum(case((Call.compliant == False, 1), else_=0)), 0
+        ).label("non_compliant"),
+        func.coalesce(
+            func.sum(case((Call.status == "processing", 1), else_=0)), 0
+        ).label("processing"),
+    ).one()
+
+    cp_row = db.query(
+        func.count(CallCheckpoint.id).label("total_cp"),
+        func.coalesce(
+            func.sum(case((CallCheckpoint.needs_review == True, 1), else_=0)), 0
+        ).label("needs_review"),
+        func.coalesce(
+            func.sum(case((CallCheckpoint.reviewer_verdict.isnot(None), 1), else_=0)), 0
+        ).label("reviewed"),
+    ).one()
+
+    total = int(call_row.total or 0)
+    compliant = int(call_row.compliant or 0)
+    non_compliant = int(call_row.non_compliant or 0)
+    processing = int(call_row.processing or 0)
+    total_checkpoints = int(cp_row.total_cp or 0)
+    needs_review = int(cp_row.needs_review or 0)
+    reviewed = int(cp_row.reviewed or 0)
+    automated = max(0, total_checkpoints - needs_review - reviewed)
     automated_rate = (automated / total_checkpoints * 100) if total_checkpoints > 0 else 0.0
-
     rate = (compliant / total * 100) if total > 0 else 0.0
 
-    return StatsResponse(
+    result = StatsResponse(
         total_calls=total,
         compliant_count=compliant,
         non_compliant_count=non_compliant,
@@ -1356,6 +1418,9 @@ def get_stats(
         reviewed_count=reviewed,
         automated_rate=round(automated_rate, 1),
     )
+    with _STATS_CACHE_LOCK:
+        _STATS_CACHE["stats"] = result
+    return result
 
 
 # --- SSE Streaming Endpoint ---

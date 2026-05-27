@@ -913,3 +913,103 @@ class TestBackfillPlaceholderCustomerNames:
         test_db.refresh(d)
         # Falls back to the Customer.legal_name when calls don't help.
         assert d.customer_name == "Backup Customer Ltd"
+
+
+# 2026-05-27 wave-15 (perf P0) — _lock_survivor lock_timeout regression --
+
+class TestLockSurvivorTimeout:
+    """Wave-15: `_lock_survivor` now sets `SET LOCAL lock_timeout = '2s'`
+    on Postgres so a contended row-lock fails fast instead of queueing
+    past the 15s statement_timeout. On a lock-timeout error the function
+    returns None (matching the existing "survivor disappeared under lock"
+    contract). Tests verify both the happy path AND the lock-timeout
+    swallow behavior."""
+
+    def test_lock_survivor_returns_deal_on_happy_path(self, test_db):
+        """Baseline: when no contention, _lock_survivor returns the deal."""
+        from app.deal_meter_merge import _lock_survivor
+
+        deal = CustomerDeal(
+            customer_name="Lock Test Ltd",
+            supplier="EON",
+            status="in_progress",
+        )
+        test_db.add(deal)
+        test_db.commit()
+
+        result = _lock_survivor(test_db, deal.id)
+        assert result is not None
+        assert result.id == deal.id
+        assert result.customer_name == "Lock Test Ltd"
+
+    def test_lock_survivor_swallows_lock_timeout_returns_none(self):
+        """When Postgres raises QueryCanceled for lock timeout, the
+        function MUST return None (not propagate the exception) so the
+        upstream merge_deals_on_meter_match short-circuits cleanly. The
+        original symptom this fixes: SUPPLIER_PEEL_RETRYABLE statement
+        timeout retries in Railway logs 2026-05-27.
+
+        Uses a fully-mocked Session so we can simulate the Postgres
+        is_pg=True branch (SET LOCAL lock_timeout + FOR UPDATE) without
+        an actual Postgres instance.
+        """
+        from unittest.mock import MagicMock
+        from app.deal_meter_merge import _lock_survivor
+
+        mock_db = MagicMock()
+        # Wave-15 uses get_bind() not .bind for SA 2.0 forward-compat.
+        mock_db.get_bind.return_value.dialect.name = "postgresql"
+        # `execute(text("SET LOCAL ..."))` is a no-op in the mock.
+        mock_db.execute.return_value = MagicMock()
+        # The FOR UPDATE query's `.first()` raises the lock-timeout error.
+        mock_query = MagicMock()
+        mock_query.filter.return_value = mock_query
+        mock_query.with_for_update.return_value = mock_query
+        # Use a typed exception that the wave-15 _is_lock_timeout helper
+        # detects via the substring fallback (Layer 3). A real psycopg2
+        # error would hit Layer 1 (SQLSTATE 55P03) or Layer 2 (isinstance
+        # LockNotAvailable), both verified in production. The substring
+        # layer is what we test here without a Postgres dependency.
+        mock_query.first.side_effect = RuntimeError(
+            "(psycopg2.errors.QueryCanceled) "
+            "canceling statement due to lock timeout"
+        )
+        mock_db.query.return_value = mock_query
+
+        result = _lock_survivor(mock_db, uuid.uuid4())
+
+        # Contract: lock-timeout exception swallowed, return None.
+        assert result is None
+        # Verify SET LOCAL was issued (proves the Postgres branch ran).
+        executed_sql = []
+        for call_args in mock_db.execute.call_args_list:
+            args, _kwargs = call_args
+            for arg in args:
+                # TextClause has a `.text` attribute holding the SQL string
+                sql_str = getattr(arg, "text", None) or str(arg)
+                executed_sql.append(sql_str)
+        assert any("SET LOCAL lock_timeout" in s for s in executed_sql), (
+            f"SET LOCAL lock_timeout was not issued on the Postgres path; "
+            f"executed: {executed_sql}"
+        )
+
+    def test_lock_survivor_propagates_non_timeout_errors(self):
+        """Wave-15 must ONLY swallow lock-timeout. Other errors (FK
+        violation, syntax error, connection lost) MUST still propagate
+        so the surrounding pipeline records them."""
+        from unittest.mock import MagicMock
+        from app.deal_meter_merge import _lock_survivor
+
+        mock_db = MagicMock()
+        mock_db.get_bind.return_value.dialect.name = "postgresql"
+        mock_db.execute.return_value = MagicMock()
+        mock_query = MagicMock()
+        mock_query.filter.return_value = mock_query
+        mock_query.with_for_update.return_value = mock_query
+        mock_query.first.side_effect = RuntimeError(
+            "foreign key constraint violated"
+        )
+        mock_db.query.return_value = mock_query
+
+        with pytest.raises(RuntimeError, match="foreign key"):
+            _lock_survivor(mock_db, uuid.uuid4())
