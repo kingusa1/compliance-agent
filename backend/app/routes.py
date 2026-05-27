@@ -1219,7 +1219,13 @@ async def bulk_review_checkpoint_verdict(
     Hard limits: max 200 CPs per request; verdict must be one of
     {pass, fail, n_a}.
     """
-    call = db.query(Call).filter_by(id=call_id).first()
+    # Row-level lock to prevent the "two reviewers bulk-edit the same call"
+    # race where both load the same checkpoint_results snapshot, mutate
+    # disjoint indices, and the second commit clobbers the first
+    # (code-reviewer C1). `with_for_update` is a no-op on SQLite (tests)
+    # and a SELECT ... FOR UPDATE on Postgres (prod). Same pattern as
+    # deal_meter_merge.py:_lock_survivor.
+    call = db.query(Call).filter_by(id=call_id).with_for_update().first()
     if not call:
         raise HTTPException(404, "Call not found")
     if not call.checkpoint_results:
@@ -1240,6 +1246,10 @@ async def bulk_review_checkpoint_verdict(
         results = json.loads(call.checkpoint_results)
     except json.JSONDecodeError:
         raise HTTPException(400, "Call.checkpoint_results is not valid JSON")
+    # Guard against bare-null / object payloads — len()/enumerate fail
+    # opaquely on non-lists. python-reviewer MED.
+    if not isinstance(results, list):
+        raise HTTPException(400, "Call.checkpoint_results is not a JSON array")
 
     # Build a set of resolved indices. Name-based resolution wins (it's
     # order-independent — see wave-15 D-PASS-BTN fix); int indices are
@@ -1349,45 +1359,52 @@ async def bulk_review_checkpoint_verdict(
             "review_status": call.review_status,
         })
     except Exception as rt_e:  # noqa: BLE001
-        log.warning(f"realtime publish (bulk) failed (non-fatal): {rt_e}")
+        log.warning("realtime publish (bulk) failed (non-fatal): %s", rt_e)
 
     # Fire-and-forget LEARNING extraction per disagreeing CP (wave-19
     # pattern). Each gets its own asyncio task so the response returns
     # immediately even on a 50-CP bulk where 30 disagreed with the AI.
+    #
+    # security-reviewer H1 / code-reviewer C2: bound the fan-out with an
+    # asyncio.Semaphore so a 200-CP bulk doesn't fire 200 simultaneous
+    # OpenRouter calls (token budget + 429 risk). 8 concurrent LLM calls
+    # is the same shoulder-tap budget the rest of the pipeline uses for
+    # learning extraction (see analysis._extraction_semaphore).
     if learning_candidates:
         supplier = call.detected_supplier or "Unknown"
-        _notes = payload.reasoning
+        notes = payload.reasoning
+        _bulk_learning_sem = asyncio.Semaphore(8)
 
         async def _bg_bulk_learning(name: str, excerpt: str, ai_v: str, human_v: str) -> None:
-            try:
-                await abstract_and_store_review(
-                    supplier=supplier,
-                    checkpoint_name=name,
-                    transcript_excerpt=excerpt,
-                    agent_verdict=ai_v,
-                    human_verdict=human_v,
-                    reviewer_notes=_notes,
-                )
-            except Exception as bg_e:  # noqa: BLE001
+            async with _bulk_learning_sem:
+                try:
+                    await abstract_and_store_review(
+                        supplier=supplier,
+                        checkpoint_name=name,
+                        transcript_excerpt=excerpt,
+                        agent_verdict=ai_v,
+                        human_verdict=human_v,
+                        reviewer_notes=notes,
+                    )
+                except Exception as bg_e:  # noqa: BLE001
+                    log.warning(
+                        "bulk learning failed cp=%r (non-fatal): %s", name, bg_e,
+                    )
+
+        def _log_bulk_learning_exc(task: asyncio.Task) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
                 log.warning(
-                    f"📚 bulk learning failed cp={name!r} (non-fatal): {bg_e}"
+                    "BULK_LEARNING_TASK_LEAK: %s: %s",
+                    type(exc).__name__, exc,
                 )
 
         for cp_name, excerpt, ai_simple, human in learning_candidates:
             t = asyncio.create_task(
                 _bg_bulk_learning(cp_name, excerpt, ai_simple, human)
             )
-
-            def _log_bulk_learning_exc(task: asyncio.Task) -> None:
-                if task.cancelled():
-                    return
-                exc = task.exception()
-                if exc is not None:
-                    log.warning(
-                        "BULK_LEARNING_TASK_LEAK: %s: %s",
-                        type(exc).__name__, exc,
-                    )
-
             t.add_done_callback(_log_bulk_learning_exc)
 
     return {

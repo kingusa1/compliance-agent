@@ -1707,6 +1707,14 @@ export default function CallDetailPage({
                         const active = cpFilter === c.key;
                         // Wave-25: "select all in bucket" — tri-state-ish.
                         // none → all selected; some/all → none.
+                        // Closure race (code-reviewer H1): read state from
+                        // the setter's `prev` arg, NOT from the closure-
+                        // captured `allSelected` boolean. A rapid double-
+                        // click on the chip checkbox would otherwise see
+                        // the same stale `allSelected=false` in both setter
+                        // invocations and additively select instead of
+                        // toggling. The render-time `allSelected` is only
+                        // used for the icon glyph; the action recomputes.
                         const bucketSet = new Set(c.bucket);
                         const selectedInBucket = c.bucket.filter((i) => selectedCpIndices.has(i)).length;
                         const allSelected = c.bucket.length > 0 && selectedInBucket === c.bucket.length;
@@ -1715,7 +1723,10 @@ export default function CallDetailPage({
                           e.stopPropagation();
                           setSelectedCpIndices((prev) => {
                             const next = new Set(prev);
-                            if (allSelected) {
+                            const liveAllSelected =
+                              c.bucket.length > 0 &&
+                              c.bucket.every((i) => prev.has(i));
+                            if (liveAllSelected) {
                               for (const i of bucketSet) next.delete(i);
                             } else {
                               for (const i of bucketSet) next.add(i);
