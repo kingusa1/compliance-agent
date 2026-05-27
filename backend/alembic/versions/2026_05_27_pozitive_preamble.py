@@ -171,24 +171,30 @@ def upgrade() -> None:
         new_id = str(uuid.uuid4())
         # SQLite (CI) tolerates the literal JSON via the Text column;
         # Postgres stores it as the same JSON text the model expects.
+        # 2026-05-27 hot-fix: include `mode` in the INSERT. Raw SQL does
+        # NOT fire SQLAlchemy's ORM default (Column(String,
+        # default="meaning_for_meaning")), so leaving the column out
+        # leaves mode=NULL and breaks the Pydantic ScriptResponse on
+        # GET /api/scripts. Companion data backfill is in
+        # 2026_05_27_backfill_script_mode.py.
         bind.execute(
             text(
                 """
                 INSERT INTO scripts (
-                    id, supplier_name, script_name, version, active,
+                    id, supplier_name, script_name, version, mode, active,
                     lifecycle_phase, checkpoints, created_at
                 ) VALUES (
-                    :id, :supplier_name, :script_name, :version, :active,
+                    :id, :supplier_name, :script_name, :version, :mode, :active,
                     :lifecycle_phase, :checkpoints, NOW()
                 )
                 """
                 if bind.dialect.name == "postgresql"
                 else """
                 INSERT INTO scripts (
-                    id, supplier_name, script_name, version, active,
+                    id, supplier_name, script_name, version, mode, active,
                     lifecycle_phase, checkpoints, created_at
                 ) VALUES (
-                    :id, :supplier_name, :script_name, :version, :active,
+                    :id, :supplier_name, :script_name, :version, :mode, :active,
                     :lifecycle_phase, :checkpoints, CURRENT_TIMESTAMP
                 )
                 """
@@ -198,6 +204,7 @@ def upgrade() -> None:
                 "supplier_name": "Pozitive",
                 "script_name": "Pozitive Preamble (Pass-Through Disclosure)",
                 "version": "v1",
+                "mode": "meaning_for_meaning",
                 "active": True,
                 "lifecycle_phase": "preamble",
                 "checkpoints": json.dumps(POZITIVE_PREAMBLE_CHECKPOINTS),

@@ -41,6 +41,25 @@ class ScriptResponse(BaseModel):
     class Config:
         from_attributes = True
 
+    # 2026-05-27 hot-fix — prod /api/scripts 500'd because a wave-24
+    # raw-SQL INSERT bypassed the SQLAlchemy default and left mode=NULL.
+    # Coerce None → default so a stray-null script row can NEVER take
+    # down the whole list endpoint again. Companion data backfill ships
+    # in alembic/versions/2026_05_27_backfill_script_mode.py.
+    # security-reviewer LOW: log a warning when coerce fires so future
+    # data-quality regressions surface in logs instead of being silent.
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _default_mode(cls, v: str | None) -> str:
+        if not v:
+            import logging
+            logging.getLogger("app.schemas").warning(
+                "ScriptResponse.mode coerced from NULL/empty to default — "
+                "investigate the upstream INSERT that wrote it"
+            )
+            return "meaning_for_meaning"
+        return v
+
 
 class ScriptListResponse(BaseModel):
     scripts: list[ScriptResponse]
@@ -57,6 +76,14 @@ class ScriptVersionResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+    # Same hot-fix as ScriptResponse.mode — a NULL mode_snapshot would
+    # break GET /api/scripts/{id}/versions identically. Symmetry per
+    # python-reviewer 2026-05-27 trio.
+    @field_validator("mode_snapshot", mode="before")
+    @classmethod
+    def _default_mode_snapshot(cls, v: str | None) -> str:
+        return v if v else "meaning_for_meaning"
 
 
 class ScriptVersionListResponse(BaseModel):
