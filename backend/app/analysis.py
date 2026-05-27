@@ -752,27 +752,63 @@ def _supplier_regex_prepass(transcript: str) -> str | None:
     Distinguishes broker target supplier (the contract the agent is selling)
     from the customer's departing supplier by requiring a target-cue phrase
     near the supplier mention.
+
+    2026-05-27 wave-24a — multi-match scoring. The prior implementation
+    returned the FIRST supplier in `_SUPPLIER_REGEX_PREPASS` that had ANY
+    target cue in its 240-char window. On a Pozitive call where the
+    broker mentions both "you're currently with E.ON" (customer's
+    DEPARTING supplier) and "the new contract is with Pozitive" (broker
+    TARGET), the prior logic returned "E.ON Next" because E.ON appears
+    first in the prepass list. Owner-reported on 2026-05-27 — Pozitive
+    contracts were misdetected as E.ON verbal.
+
+    Fix: scan ALL prepass patterns, score each match by STRENGTH of its
+    target cue (strong cues = unambiguously broker-target; weak cues =
+    could be current OR target). Pick the supplier with the highest
+    strength score; ties broken by ORDER of appearance in the transcript
+    (later mention typically wins because broker reveals target supplier
+    after explaining the customer's departing one).
     """
     if not transcript:
         return None
     # Scan only the opening 2000 chars; the broker-target supplier is named
     # in the third-party disclosure / verbal preamble, both early in the call.
     head = transcript[:2000].lower()
-    target_cues = (
-        "on behalf of", "your contract is with", "your new contract is with",
-        "agreed with", "energy supply", "not directly employed by",
-        "the contract with", "from the contract with", "supply at",
+
+    # STRONG cues — unambiguously identify the broker-target supplier (the
+    # contract being SOLD). If a supplier mention falls within a strong
+    # cue window it's almost certainly the broker target.
+    strong_cues = (
+        "on behalf of", "your new contract is with", "your contract is with",
+        "agreed with", "not directly employed by", "calling on behalf",
+        "the new contract is with", "moving you to", "switching you to",
     )
+    # WEAK cues — could be current supplier OR target. Lower confidence.
+    weak_cues = (
+        "energy supply", "the contract with", "from the contract with",
+        "supply at",
+    )
+
+    # Find ALL matches across ALL patterns. Score each by cue strength.
+    candidates: list[tuple[int, int, str]] = []  # (strength, match_pos, canonical)
     for pattern, canonical in _SUPPLIER_REGEX_PREPASS:
-        m = pattern.search(head)
-        if not m:
-            continue
-        win_start = max(0, m.start() - 120)
-        win_end = min(len(head), m.end() + 120)
-        window = head[win_start:win_end]
-        if any(cue in window for cue in target_cues):
-            return canonical
-    return None
+        for m in pattern.finditer(head):
+            win_start = max(0, m.start() - 120)
+            win_end = min(len(head), m.end() + 120)
+            window = head[win_start:win_end]
+            if any(cue in window for cue in strong_cues):
+                candidates.append((2, m.start(), canonical))
+            elif any(cue in window for cue in weak_cues):
+                candidates.append((1, m.start(), canonical))
+
+    if not candidates:
+        return None
+
+    # Pick best: highest strength wins; on tie, the LATER mention wins
+    # (the broker reveals the TARGET after explaining the departing
+    # supplier; "moving FROM E.ON TO Pozitive" → Pozitive at later pos).
+    candidates.sort(key=lambda t: (-t[0], -t[1]))
+    return candidates[0][2]
 
 
 async def detect_supplier(transcript: str) -> str:
