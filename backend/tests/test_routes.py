@@ -377,3 +377,266 @@ def test_retry_call_with_error_status():
     data = response.json()
     assert data["status"] == "processing"
     assert data["reason"] is None
+
+
+# 2026-05-27 wave-17 — speaker-label backfill endpoint regression tests
+
+class TestBackfillSpeakerLabels:
+    """Wave-17: POST /api/admin/backfill-speaker-labels re-derives
+    `Call.transcript` using the current `_detect_agent_speaker`
+    heuristic (the post wave-16 logic). Contract:
+      - idempotent (re-running on a clean dataset returns updated=0)
+      - bounded by `limit` query param
+      - optional `call_id` query param narrows scope to one row
+      - audit-logged only on at-least-one update
+    """
+
+    def _setup_lead_override(self):
+        """Install a stub lead-role user so require_lead passes the test."""
+        from app.auth import require_lead
+
+        _stub_lead = {
+            "id": "test-lead",
+            "email": "lead@compliance-agent.local",
+            "role": "lead",
+        }
+        app.dependency_overrides[require_lead] = lambda: _stub_lead
+        return _stub_lead
+
+    def _teardown_lead_override(self):
+        from app.auth import require_lead
+        app.dependency_overrides.pop(require_lead, None)
+
+    def _seed_call_with_old_labels(self, call_id: str, *, old_transcript: str,
+                                    word_data: list[dict]) -> None:
+        import json as _json
+        db = TestSessionLocal()
+        try:
+            db.add(Call(
+                id=call_id,
+                filename=f"{call_id}.mp3",
+                file_path=f"/uploads/{call_id}.mp3",
+                file_size=1024,
+                status="completed",
+                transcript=old_transcript,
+                word_data=_json.dumps(word_data),
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+    def test_backfill_updates_stale_transcript(self):
+        """Seed a Call with a transcript that doesn't match what the
+        current `format_diarized_transcript` would emit; verify the
+        backfill rewrites it."""
+        self._setup_lead_override()
+        try:
+            # Word data with two speakers — heuristic picks A as agent
+            # (has the broker signals) but transcript field stores the
+            # WRONG labels (manually corrupted to simulate the wave-16
+            # bug carry-forward).
+            call_id = str(uuid.uuid4())
+            word_data = [
+                {"word": "We", "speaker": "A", "start": 0.0, "end": 0.2},
+                {"word": "are", "speaker": "A", "start": 0.2, "end": 0.4},
+                {"word": "a", "speaker": "A", "start": 0.4, "end": 0.5},
+                {"word": "third", "speaker": "A", "start": 0.5, "end": 0.7},
+                {"word": "party", "speaker": "A", "start": 0.7, "end": 1.0},
+                {"word": "broker", "speaker": "A", "start": 1.0, "end": 1.3},
+                {"word": "calling", "speaker": "A", "start": 1.3, "end": 1.6},
+                {"word": "from", "speaker": "A", "start": 1.6, "end": 1.8},
+                {"word": "Watt", "speaker": "A", "start": 1.8, "end": 2.0},
+                {"word": "Utilities", "speaker": "A", "start": 2.0, "end": 2.3},
+                {"word": "Okay", "speaker": "B", "start": 3.0, "end": 3.3},
+            ]
+            self._seed_call_with_old_labels(
+                call_id,
+                old_transcript="[00:00] Customer: We are a third party broker",
+                word_data=word_data,
+            )
+
+            response = client.post(
+                f"/api/admin/backfill-speaker-labels?call_id={call_id}"
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["updated"] == 1
+            assert data["scanned"] == 1
+            assert data["call_id"] == call_id
+
+            # Verify the persisted transcript now matches the heuristic
+            db = TestSessionLocal()
+            try:
+                row = db.query(Call).filter_by(id=call_id).first()
+                # Speaker A scored on broker signals — should now be labeled Agent
+                assert "Agent:" in row.transcript
+                assert "We are a third party broker" in row.transcript
+            finally:
+                db.close()
+        finally:
+            self._teardown_lead_override()
+
+    def test_backfill_is_idempotent(self):
+        """Running the endpoint twice on the same call returns
+        updated=0 on the second invocation."""
+        self._setup_lead_override()
+        try:
+            call_id = str(uuid.uuid4())
+            word_data = [
+                {"word": "We", "speaker": "A", "start": 0.0, "end": 0.2},
+                {"word": "are", "speaker": "A", "start": 0.2, "end": 0.4},
+                {"word": "third", "speaker": "A", "start": 0.4, "end": 0.6},
+                {"word": "party", "speaker": "A", "start": 0.6, "end": 0.8},
+                {"word": "broker", "speaker": "A", "start": 0.8, "end": 1.1},
+                {"word": "Hi", "speaker": "B", "start": 2.0, "end": 2.2},
+            ]
+            self._seed_call_with_old_labels(
+                call_id,
+                old_transcript="ignore me — first call will rewrite",
+                word_data=word_data,
+            )
+
+            # First call: rewrites
+            r1 = client.post(
+                f"/api/admin/backfill-speaker-labels?call_id={call_id}"
+            )
+            assert r1.status_code == 200
+            assert r1.json()["updated"] == 1
+
+            # Second call: no-op (idempotent — transcript already matches)
+            r2 = client.post(
+                f"/api/admin/backfill-speaker-labels?call_id={call_id}"
+            )
+            assert r2.status_code == 200
+            assert r2.json()["updated"] == 0, (
+                f"Wave-17 regression: second invocation should be a no-op. "
+                f"Got {r2.json()}"
+            )
+            assert r2.json()["skipped_unchanged"] == 1
+        finally:
+            self._teardown_lead_override()
+
+    def test_backfill_skips_calls_without_word_data(self):
+        """A Call row with word_data=NULL should be silently skipped,
+        not raise an exception."""
+        self._setup_lead_override()
+        try:
+            call_id = str(uuid.uuid4())
+            db = TestSessionLocal()
+            try:
+                db.add(Call(
+                    id=call_id,
+                    filename="no_words.mp3",
+                    file_path="/uploads/no_words.mp3",
+                    file_size=1024,
+                    status="completed",
+                    transcript="stale",
+                    word_data=None,  # ← explicitly missing
+                ))
+                db.commit()
+            finally:
+                db.close()
+
+            response = client.post(
+                f"/api/admin/backfill-speaker-labels?call_id={call_id}"
+            )
+            # The query filter `word_data.isnot(None)` excludes it →
+            # scanned=0, updated=0. No exception raised.
+            assert response.status_code == 200
+            data = response.json()
+            assert data["scanned"] == 0
+            assert data["updated"] == 0
+        finally:
+            self._teardown_lead_override()
+
+    def test_backfill_handles_corrupt_word_data_gracefully(self):
+        """A Call row with un-parseable word_data JSON should be
+        counted in skipped_parse, not crash the batch."""
+        self._setup_lead_override()
+        try:
+            call_id = str(uuid.uuid4())
+            db = TestSessionLocal()
+            try:
+                db.add(Call(
+                    id=call_id,
+                    filename="corrupt.mp3",
+                    file_path="/uploads/corrupt.mp3",
+                    file_size=1024,
+                    status="completed",
+                    transcript="stale text",
+                    word_data="{this is not valid json",  # ← corrupt
+                ))
+                db.commit()
+            finally:
+                db.close()
+
+            response = client.post(
+                f"/api/admin/backfill-speaker-labels?call_id={call_id}"
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["skipped_parse"] == 1
+            assert data["updated"] == 0
+            # Verify the transcript was NOT modified
+            db = TestSessionLocal()
+            try:
+                row = db.query(Call).filter_by(id=call_id).first()
+                assert row.transcript == "stale text"
+            finally:
+                db.close()
+        finally:
+            self._teardown_lead_override()
+
+    def test_backfill_rejects_malformed_call_id_with_422(self):
+        """Wave-17 v2 (security-reviewer MEDIUM) — call_id must be a
+        valid UUID. Malformed input returns 422, not a 500 that could
+        leak schema details if Call.id ever migrates to a UUID column."""
+        self._setup_lead_override()
+        try:
+            response = client.post(
+                "/api/admin/backfill-speaker-labels?call_id=not-a-uuid"
+            )
+            assert response.status_code == 422
+            assert "uuid" in response.json()["detail"].lower()
+        finally:
+            self._teardown_lead_override()
+
+    def test_backfill_respects_limit_parameter(self):
+        """The `limit` query param caps the number of rows scanned.
+        Clamped to [1, 5000]."""
+        self._setup_lead_override()
+        try:
+            # Seed 3 calls, request limit=2 → only 2 scanned.
+            import json as _json
+            for i in range(3):
+                db = TestSessionLocal()
+                try:
+                    db.add(Call(
+                        id=str(uuid.uuid4()),
+                        filename=f"limit_{i}.mp3",
+                        file_path=f"/uploads/limit_{i}.mp3",
+                        file_size=1024,
+                        status="completed",
+                        transcript=f"stale_{i}",
+                        word_data=_json.dumps([
+                            {"word": "broker", "speaker": "A",
+                             "start": 0.0, "end": 0.3},
+                            {"word": "ok", "speaker": "B",
+                             "start": 1.0, "end": 1.2},
+                        ]),
+                    ))
+                    db.commit()
+                finally:
+                    db.close()
+
+            response = client.post(
+                "/api/admin/backfill-speaker-labels?limit=2"
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["scanned"] == 2, (
+                f"Wave-17 regression: limit=2 should cap scanned to 2; "
+                f"got {data['scanned']}"
+            )
+        finally:
+            self._teardown_lead_override()

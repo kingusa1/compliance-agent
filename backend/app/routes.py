@@ -2806,6 +2806,204 @@ def admin_backfill_compliant_strict(
     }
 
 
+# 2026-05-27 wave-17 — speaker-label backfill endpoint.
+#
+# wave-16 fixed `_detect_agent_speaker` so future calls (and any
+# request-time re-derivation via `/api/calls/{id}/words`) get correct
+# AGENT/CUSTOMER tags. But `Call.transcript` is persisted at ingest
+# time via `format_diarized_transcript(words)` — existing rows still
+# carry the OLD diarized labels. Anywhere a consumer reads
+# `call.transcript` directly (RAG ingestion, exports, search index,
+# AI prompts) will see stale labels until each call is re-processed.
+#
+# This endpoint re-runs `format_diarized_transcript(call.word_data)`
+# against the post-wave-16 heuristic and writes the new text to
+# `call.transcript`. Idempotent: only writes when the new text
+# differs from the stored text. Optional `call_id` query param
+# narrows the scan to a single call (useful for one-shot owner
+# verification on the Elzicle/Peli case).
+#
+# Auth: `require_lead` (matches the existing backfill endpoints).
+#
+# Hardening (reviewer-trio findings folded in pre-push):
+# - HIGH: yield_per streaming (no 500MB heap spike)
+# - HIGH: batch-commit every 200 (no lost progress on timeout)
+# - MEDIUM: pg_try_advisory_xact_lock (no concurrent double-runs)
+# - MEDIUM: UUID validation on call_id (no schema leak via 500)
+# - MEDIUM: bytes/bytearray word_data handled
+
+
+_SPEAKER_LABEL_BACKFILL_LOCK_ID = 20260527  # matches rederive-compliance pattern
+
+
+@router.post("/api/admin/backfill-speaker-labels", status_code=200)
+def admin_backfill_speaker_labels(
+    call_id: str | None = None,
+    limit: int = 1000,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(require_lead),
+) -> dict[str, int | str | None]:
+    """Re-derive `Call.transcript` Agent/Customer labels using the
+    current `_detect_agent_speaker` heuristic (wave-16 fix).
+
+    Why: `Call.transcript` is persisted at ingest. After the wave-16
+    fix, the request-time `/api/calls/{id}/words` endpoint returns
+    correct role tags but the stored transcript blob is stale.
+    Re-deriving the persisted text closes the gap for downstream
+    consumers (RAG, exports).
+
+    Query params:
+      - `call_id`: optional UUID. When set, backfill only this call
+        (used for owner-driven spot-checks on the Elzicle/Peli case).
+      - `limit`: hard cap on rows scanned per invocation (default
+        1000, clamped to [1, 5000]). Prevents accidentally rewriting
+        the entire history in one transaction. Safe to re-run until
+        the unchanged count plateaus.
+
+    Idempotent: writes a row only when the new text differs from
+    `call.transcript`. Re-running on a clean dataset returns
+    `updated=0`. Audit row stamped when ≥1 row updated OR when
+    `call_id`-scoped (per security-reviewer MEDIUM — single-call
+    spot-checks should leave a forensic trace even on no-op).
+    """
+    from sqlalchemy import text as _sql_text
+    from app.transcription import format_diarized_transcript
+
+    # Wave-17 v2 (security-reviewer MEDIUM) — validate call_id format.
+    # Without this, a malformed string is passed to SQLAlchemy and if
+    # the Call.id column type ever migrates from String to UUID the
+    # downstream Postgres error would leak schema details via the
+    # default 500 handler.
+    if call_id is not None:
+        try:
+            uuid.UUID(call_id)
+        except (ValueError, AttributeError):
+            raise HTTPException(
+                status_code=422,
+                detail="call_id must be a valid UUID",
+            )
+
+    # Wave-17 v2 (security-reviewer MEDIUM) — concurrency guard.
+    # Matches the existing rederive-compliance endpoint pattern:
+    # pg_try_advisory_xact_lock returns FALSE if another invocation
+    # holds the lock → 409. SQLite (CI) silently ignores the call
+    # (NULL scalar) so tests pass through without contention.
+    bind = db.get_bind()
+    is_pg = bind is not None and bind.dialect.name == "postgresql"
+    if is_pg:
+        try:
+            acquired = db.execute(
+                _sql_text("SELECT pg_try_advisory_xact_lock(:lid)"),
+                {"lid": _SPEAKER_LABEL_BACKFILL_LOCK_ID},
+            ).scalar()
+            if acquired is False:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Another backfill-speaker-labels run is in progress; "
+                        "retry shortly."
+                    ),
+                )
+        except HTTPException:
+            raise
+        except Exception as _adv_e:  # noqa: BLE001 — advisory lock failure is non-fatal
+            log.warning(
+                f"backfill_speaker_labels advisory lock skipped: "
+                f"{type(_adv_e).__name__}: {_adv_e}"
+            )
+
+    query = db.query(Call).filter(Call.word_data.isnot(None))
+    if call_id:
+        query = query.filter(Call.id == call_id)
+    query = query.limit(max(1, min(int(limit), 5000)))
+
+    updated = 0
+    skipped_parse = 0
+    skipped_unchanged = 0
+    skipped_no_words = 0
+    scanned = 0
+    _BATCH_COMMIT = 200  # batch-commit every N updates to bound the loss window
+
+    # Wave-17 v2 (python-reviewer HIGH) — yield_per streaming. Avoids
+    # materialising up to 5000 × ~100KB word_data into the Python heap
+    # in one shot. Each chunk is fetched lazily as the iterator advances.
+    for row in query.yield_per(100):
+        scanned += 1
+        wd = row.word_data
+        if not wd:
+            skipped_no_words += 1
+            continue
+        try:
+            # Wave-17 v2 (python-reviewer MEDIUM) — accept bytes too;
+            # json.loads handles bytes/bytearray since Python 3.6.
+            if isinstance(wd, (str, bytes, bytearray)):
+                words = json.loads(wd)
+            else:
+                words = wd
+            if not isinstance(words, list) or not words:
+                skipped_no_words += 1
+                continue
+        except (json.JSONDecodeError, ValueError, TypeError):
+            skipped_parse += 1
+            continue
+        try:
+            new_text = format_diarized_transcript(words)
+        except Exception as e:  # noqa: BLE001 — backfill must never crash
+            log.warning(
+                f"backfill_speaker_labels skipped call_id={row.id}: "
+                f"{type(e).__name__}: {e}"
+            )
+            skipped_parse += 1
+            continue
+        if new_text == (row.transcript or ""):
+            skipped_unchanged += 1
+            continue
+        row.transcript = new_text
+        updated += 1
+
+        # Wave-17 v2 (python-reviewer HIGH) — batch-commit every N
+        # updates. A Railway/Gunicorn timeout or statement_timeout that
+        # fires mid-loop now loses at most _BATCH_COMMIT rows instead
+        # of the entire run.
+        if updated % _BATCH_COMMIT == 0:
+            db.commit()
+
+    if updated or call_id:
+        # security-reviewer MEDIUM — always audit on a call_id-scoped
+        # invocation so spot-checks leave a forensic trace even at
+        # updated=0.
+        record_audit(
+            db,
+            action="backfill.speaker_labels",
+            entity_type="call",
+            entity_id=str(call_id) if call_id else None,
+            payload={
+                "updated": updated,
+                "skipped_unchanged": skipped_unchanged,
+                "skipped_parse": skipped_parse,
+                "skipped_no_words": skipped_no_words,
+                "scanned": scanned,
+                "scope": "single" if call_id else "all",
+            },
+            actor_id=_user.get("id") if isinstance(_user, dict) else None,
+        )
+
+    db.commit()
+    log.info(
+        "BACKFILL_SPEAKER_LABELS updated=%d unchanged=%d "
+        "parse_failed=%d no_words=%d scanned=%d",
+        updated, skipped_unchanged, skipped_parse, skipped_no_words, scanned,
+    )
+    return {
+        "updated": updated,
+        "skipped_unchanged": skipped_unchanged,
+        "skipped_parse": skipped_parse,
+        "skipped_no_words": skipped_no_words,
+        "scanned": scanned,
+        "call_id": call_id,
+    }
+
+
 # Advisory lock id for /api/admin/rederive-compliance — stable int that
 # only this endpoint takes. Postgres `pg_try_advisory_xact_lock` fails
 # fast (no wait) when another invocation holds it, so two concurrent
