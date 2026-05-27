@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.audit import record_audit
 from app.database import get_db
 from app.intake.payload_schema import CustomerMeta as _CustomerMeta
+from app.segment_chips import CallSegmentChip, fetch_segments_by_call_ids
 from app.intake.upsert import upsert_customer as _upsert_customer
 from app.reviewers import current_reviewer, require_lead
 
@@ -62,6 +63,12 @@ class DealCallSlot(BaseModel):
     status: str | None
     score: str | None  # fraction like "5/7" — calls.score is varchar, not numeric
     created_at: datetime | None
+    # Wave-26 (2026-05-27): one audio file can contain multiple segments
+    # (lead_gen + pre_sales + verbal + loa). Surface every detected
+    # segment so the customer + deal UIs stop flattening a multi-segment
+    # call to a single "verbal" pill. Empty list means the call has no
+    # CallSegment rows yet (legacy data); the UI falls back to call_type.
+    segments: list[CallSegmentChip] = Field(default_factory=list)
 
 
 class CustomerDealCard(BaseModel):
@@ -441,11 +448,19 @@ def get_customer(
             FROM calls WHERE deal_id = ANY(:deal_ids)
             ORDER BY created_at ASC
         """), {"deal_ids": deal_ids}).fetchall()
+        # Wave-26 — bulk-load segments for every call in ONE round-trip
+        # via the json_agg correlated-subquery pattern. Without this the
+        # UI never sees Pre-Sales/Lead Gen/LOA segments contained inside
+        # a "verbal" call. See app/segment_chips.py for the §0 research
+        # citations behind the json_agg choice.
+        all_call_ids = [str(c.id) for c in call_rows]
+        segs_by_call = fetch_segments_by_call_ids(db, all_call_ids)
         for c in call_rows:
             calls_by_deal[c.deal_id].append(DealCallSlot(
                 id=str(c.id), call_type=c.call_type, status=c.status,
                 score=str(c.score) if c.score is not None else None,
                 created_at=c.created_at,
+                segments=segs_by_call.get(str(c.id), []),
             ))
 
     deals = [
@@ -647,6 +662,14 @@ def customer_timeline(
         {"slug": slug},
     ).fetchall()
 
+    # Wave-26 — bulk-fetch segment chips per call so the Call Timeline
+    # renders Pre-Sales + Verbal pills (etc.) instead of a single
+    # call_type per row. ONE round-trip via json_agg, ORDER BY idx
+    # preserved. See app/segment_chips.py for §0 research citations.
+    segs_by_call = fetch_segments_by_call_ids(
+        db, [str(r.call_id) for r in rows]
+    )
+
     timeline = []
     for r in rows:
         deal_ref = None
@@ -663,6 +686,9 @@ def customer_timeline(
                 "compliant": r.compliant,
                 "rejection_category": r.rejection_category,
                 "agent_name": r.agent_name,
+                "segments": [
+                    s.model_dump() for s in segs_by_call.get(str(r.call_id), [])
+                ],
             }
         )
 

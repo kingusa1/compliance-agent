@@ -307,6 +307,14 @@ class CallSummary(BaseModel):
     # without a second fetch.
     call_type: str | None = None
     deal_id: UUID | None = None
+    # Wave-26 (2026-05-27) — per-call segment chips. Bulk-loaded in the
+    # list_calls handler via app.segment_chips.fetch_segments_by_call_ids
+    # so a multi-segment call (lead_gen + pre_sales + verbal + loa) is
+    # surfaced on /calls instead of a single call_type pill.
+    # Field(default_factory=list) for consistency with DealCallSlot —
+    # avoids any chance of a shared mutable default across instances
+    # (python-reviewer 2026-05-27 trio nit).
+    segments: list[dict] = Field(default_factory=list)
 
     class Config:
         from_attributes = True

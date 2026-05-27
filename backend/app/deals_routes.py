@@ -31,6 +31,7 @@ from app.deal_verdict import DealVerdict, aggregate_deal_verdict
 from app.deals_composite import compute_composite_verdict, composite_from_calls
 from app.models import Call, CustomerDeal
 from app.schemas import CustomerDealCreate, CustomerDealOut
+from app.segment_chips import fetch_segments_by_call_ids
 
 deals_router = APIRouter(prefix="/api/deals", tags=["deals"])
 
@@ -74,7 +75,14 @@ def _serialise_deal(deal: CustomerDeal) -> dict:
     }
 
 
-def _serialise_call(c: Call) -> dict:
+def _serialise_call(c: Call, segments: list | None = None) -> dict:
+    """Serialise one Call row + (wave-26) its segment chips.
+
+    `segments` is the bulk-loaded list for this call_id from
+    fetch_segments_by_call_ids. Defaults to [] so legacy code paths
+    that don't pre-fetch keep working — but those paths now surface
+    a single-string call_type only, same as before wave-26.
+    """
     return {
         "id": str(c.id),
         "deal_id": str(c.deal_id) if c.deal_id else None,
@@ -89,6 +97,10 @@ def _serialise_call(c: Call) -> dict:
         "detected_supplier": c.detected_supplier,
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "completed_at": c.completed_at.isoformat() if c.completed_at else None,
+        # Wave-26 — multi-segment array. UIs render one pill per chip
+        # instead of a single call_type. Empty list = legacy call w/o
+        # CallSegment rows; UI falls back to call_type.
+        "segments": [s.model_dump() for s in (segments or [])],
     }
 
 
@@ -296,4 +308,13 @@ def get_deal_calls(
         .order_by(Call.created_at.desc())
         .all()
     )
-    return {"calls": [_serialise_call(c) for c in rows]}
+    # Wave-26 — bulk-load segments for every call in ONE round-trip.
+    # Without this the UI flattens multi-segment files to a single
+    # "verbal" pill and the deal page double-counts "required calls".
+    segs_by_call = fetch_segments_by_call_ids(db, [str(c.id) for c in rows])
+    return {
+        "calls": [
+            _serialise_call(c, segs_by_call.get(str(c.id), []))
+            for c in rows
+        ]
+    }

@@ -25,6 +25,7 @@ from app.models import Call, CallCheckpoint, CustomerDeal, Profile, Script
 from app.reviewers import current_reviewer, require_lead
 from app.pipeline import process_call
 from app.schemas import CallListResponse, CallResponse, StatsResponse
+from app.segment_chips import fetch_segments_by_call_ids
 from app.storage import download_audio, signed_url, upload_audio
 from app.transcription import transcribe_audio
 from app.verification import fuzzy_match, _escape_ilike
@@ -783,6 +784,12 @@ def list_calls(
         .all()
     )
     calls = [dict(r._mapping) for r in rows]
+    # Wave-26 — bulk-attach segment chips for the page-worth of calls.
+    # ONE round-trip via json_agg, fits the existing summary contract
+    # (no extra TEXT/JSONB columns hit). See app/segment_chips.py.
+    segs_by_call = fetch_segments_by_call_ids(db, [str(c["id"]) for c in calls])
+    for c in calls:
+        c["segments"] = [s.model_dump() for s in segs_by_call.get(str(c["id"]), [])]
     return CallListResponse(calls=calls, total=total)
 
 

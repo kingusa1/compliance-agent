@@ -100,10 +100,22 @@ export function DealGroupedView({ calls }: { calls: AdminCallRow[] }) {
                     <span className="text-[var(--text-muted)]">
                       {formatWhen(c.created_at)}
                     </span>
-                    <span>
-                      <Badge variant="outline" className="font-normal">
-                        {c.call_type ?? "—"}
-                      </Badge>
+                    <span className="flex flex-wrap gap-1">
+                      {/* Wave-26 — render one Badge per detected
+                          segment (lead_gen + pre_sales + verbal + loa).
+                          Falls back to call_type when segments[] is
+                          empty (legacy data). */}
+                      {Array.isArray(c.segments) && c.segments.length > 0 ? (
+                        c.segments.map((s, k) => (
+                          <Badge key={k} variant="outline" className="font-normal">
+                            {(s.kind ?? "—").replace(/_/g, " ")}
+                          </Badge>
+                        ))
+                      ) : (
+                        <Badge variant="outline" className="font-normal">
+                          {c.call_type ?? "—"}
+                        </Badge>
+                      )}
                     </span>
                     <span className="text-[var(--text-muted)]">
                       {c.agent_name ?? "—"}

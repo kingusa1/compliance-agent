@@ -56,17 +56,31 @@ function workflowStepsFor(supplier: string | null | undefined): string[] {
   return _workflowStepsForShared(supplier);
 }
 
-function completedPhaseCount(deal: { calls: { call_type?: string | null }[] }, steps: string[]): number {
-  // Count distinct workflow phases that this deal's calls have covered.
-  // The 2026-05-12 taxonomy rebuild canonicalised call_type to
-  // lead_gen / pre_sales / verbal / loa — no remapping needed any more.
+function completedPhaseCount(
+  deal: {
+    calls: {
+      call_type?: string | null;
+      segments?: { kind?: string | null }[];
+    }[];
+  },
+  steps: string[],
+): number {
+  // Count distinct workflow phases this deal's calls have covered.
+  // Wave-26 (2026-05-27) — a single audio file can contain multiple
+  // segments (lead_gen + pre_sales + verbal + loa). Union BOTH the
+  // call_type column AND every detected segment kind so a multi-
+  // segment file lights up every phase it actually satisfies.
+  // Without this the deal card said "2 of 4 required calls missing"
+  // even though both calls covered Pre-Sales + Verbal together.
   const seen = new Set<string>();
   for (const c of deal.calls) {
     const p = (c.call_type ?? "").toLowerCase();
     if (steps.includes(p)) seen.add(p);
+    for (const s of c.segments ?? []) {
+      const k = (s.kind ?? "").toLowerCase();
+      if (steps.includes(k)) seen.add(k);
+    }
   }
-  // For the progress-bar position we treat every distinct workflow
-  // phase covered as one step done. Order is preserved by `steps`.
   return seen.size;
 }
 
@@ -129,6 +143,14 @@ type WorkflowCall = {
   agent_name?: string | null;
   score?: string | null;
   compliant?: boolean | string | null;
+  // Wave-26 — multi-segment chips. The same file can carry multiple
+  // segments; chip rendering uses these instead of `call_type` alone.
+  segments?: {
+    kind?: string | null;
+    score?: string | null;
+    compliant?: boolean | null;
+    idx?: number;
+  }[];
 };
 
 function parseScorePct(score: string | null | undefined): number | null {
@@ -166,11 +188,20 @@ function WorkflowBar({
   }
 
   // Resolve per-step call metadata once so the chip render stays cheap.
+  // Wave-26 — register the call against EVERY segment it covers, not
+  // just `call_type`. A single multi-segment file now lights up both
+  // its Pre-Sales chip and its Verbal chip with the right agent/score.
   const callByStep = new Map<string, WorkflowCall>();
   for (const c of calls ?? []) {
-    const t = (c.call_type ?? "").toLowerCase();
-    if (t && steps.includes(t) && !callByStep.has(t)) {
-      callByStep.set(t, c);
+    const segKinds = (c.segments ?? [])
+      .map((s) => (s.kind ?? "").toLowerCase())
+      .filter(Boolean);
+    const callType = (c.call_type ?? "").toLowerCase();
+    const coverage = new Set<string>([...(callType ? [callType] : []), ...segKinds]);
+    for (const k of coverage) {
+      if (steps.includes(k) && !callByStep.has(k)) {
+        callByStep.set(k, c);
+      }
     }
   }
 
@@ -1330,8 +1361,28 @@ export default function CustomerDetailPage({
                   >
                     {row.deal_ref ?? "—"}
                   </div>
-                  <div>
-                    <Pill tone="neutral">{row.call_type ?? "call"}</Pill>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                    {/* Wave-26 — render every detected segment as its
+                        own Pill. Falls back to a single call_type pill
+                        when segments is empty (legacy data, or a call
+                        without CallSegment rows yet). */}
+                    {Array.isArray(row.segments) && row.segments.length > 0 ? (
+                      (row.segments as { kind?: string; compliant?: boolean | null }[]).map((s, k) => {
+                        const segTone =
+                          s.compliant === true
+                            ? "emerald"
+                            : s.compliant === false
+                              ? "red"
+                              : "neutral";
+                        return (
+                          <Pill key={k} tone={segTone}>
+                            {(s.kind ?? "—").replace(/_/g, " ")}
+                          </Pill>
+                        );
+                      })
+                    ) : (
+                      <Pill tone="neutral">{row.call_type ?? "call"}</Pill>
+                    )}
                   </div>
                   <div style={{ color: "var(--text-muted)" }}>{row.agent_name ?? "—"}</div>
                   <div

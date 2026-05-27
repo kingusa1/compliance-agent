@@ -44,6 +44,16 @@ export type DealCallSlot = {
   status: string | null;
   score: string | null;
   created_at: string | null;
+  // Wave-26 (2026-05-27) — multi-segment chips per call. Backend bulk-
+  // loads via app/segment_chips.fetch_segments_by_call_ids; empty list
+  // means legacy data and the UI should fall back to `call_type`.
+  segments?: {
+    kind: string;
+    score?: string | null;
+    compliant?: boolean | null;
+    confidence?: number | null;
+    idx?: number;
+  }[];
 };
 
 export type CustomerDealCard = {
@@ -76,6 +86,14 @@ export type CustomerRollup = {
   [k: string]: unknown;
 };
 
+export type CustomerSegmentChip = {
+  kind: string;        // lead_gen | pre_sales | verbal | loa
+  score?: string | null;
+  compliant?: boolean | null;
+  confidence?: number | null;
+  idx?: number;
+};
+
 export type CustomerTimelineRow = {
   id: string;
   created_at?: string | null;
@@ -88,6 +106,10 @@ export type CustomerTimelineRow = {
   // builds used strings ("compliant" / "non_compliant"); keep both.
   compliant?: string | boolean | null;
   rejection?: string | null;
+  // Wave-26 (2026-05-27) — multi-segment chips per call. The same call
+  // file can contain Lead Gen + Pre-Sales + Verbal + LOA; the UI now
+  // renders one pill per segment instead of a flattened `call_type`.
+  segments?: CustomerSegmentChip[];
   [k: string]: unknown;
 };
 
@@ -125,6 +147,16 @@ export type AdminCallRow = {
   deal_ref?: string | null;
   deal_value_gbp?: number | null;
   call_type?: string | null;
+  // Wave-26 (2026-05-27) — multi-segment chips. One file can carry
+  // multiple compliance segments; the list page renders one chip per
+  // segment instead of a single call_type pill.
+  segments?: {
+    kind: string;
+    score?: string | null;
+    compliant?: boolean | null;
+    confidence?: number | null;
+    idx?: number;
+  }[];
 };
 
 export type AdminCallsResponse = {
