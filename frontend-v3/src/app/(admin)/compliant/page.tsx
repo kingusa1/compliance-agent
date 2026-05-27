@@ -83,6 +83,7 @@ export default function CompliantPage() {
                     <TableRow className="border-[var(--border-subtle)] hover:bg-transparent">
                       <TableHead className="text-[12px] uppercase tracking-wide text-[var(--text-muted)]">Call</TableHead>
                       <TableHead className="text-[12px] uppercase tracking-wide text-[var(--text-muted)]">Customer</TableHead>
+                      <TableHead className="text-[12px] uppercase tracking-wide text-[var(--text-muted)]">Segments</TableHead>
                       <TableHead className="text-[12px] uppercase tracking-wide text-[var(--text-muted)]">Agent</TableHead>
                       <TableHead className="text-[12px] uppercase tracking-wide text-[var(--text-muted)]">Score</TableHead>
                       <TableHead className="text-[12px] uppercase tracking-wide text-[var(--text-muted)]">Created</TableHead>
@@ -118,6 +119,28 @@ export default function CompliantPage() {
                           </TableCell>
                           <TableCell className="text-[13px] text-[var(--text-primary)]">
                             {formatCustomerName(c.customer_name)}
+                          </TableCell>
+                          <TableCell>
+                            {/* Wave-33 — one chip per segment kind, falls
+                                back to call_type chip then em-dash. */}
+                            <div className="flex flex-wrap gap-1">
+                              {Array.isArray(c.segments) && c.segments.length > 0 ? (
+                                c.segments.map((s, k) => (
+                                  <span
+                                    key={`${s.kind}-${k}`}
+                                    className="rounded border border-[var(--border-subtle)] bg-[var(--bg-elev2)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                                  >
+                                    {(s.kind ?? "—").replace(/_/g, " ")}
+                                  </span>
+                                ))
+                              ) : c.call_type ? (
+                                <span className="rounded border border-[var(--border-subtle)] bg-[var(--bg-elev2)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                                  {c.call_type.replace(/_/g, " ")}
+                                </span>
+                              ) : (
+                                <span className="text-[12px] text-[var(--text-muted)]">—</span>
+                              )}
+                            </div>
                           </TableCell>
                           <TableCell className="text-[13px] text-[var(--text-muted)]">
                             {c.agent_name ?? "—"}

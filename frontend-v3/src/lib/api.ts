@@ -96,6 +96,16 @@ export interface Call {
   audio_url?: string | null;
   deal_id?: string | null;
   call_type?: string | null;
+  // Wave-26 — multi-segment chips per call. Backend bulk-loads via
+  // app/segment_chips.fetch_segments_by_call_ids on /api/calls.
+  // Empty array = legacy data; UI falls back to a single call_type chip.
+  segments?: {
+    kind: string;
+    score?: string | null;
+    compliant?: boolean | null;
+    confidence?: number | null;
+    idx?: number;
+  }[];
   // 2026-05-17 two-layer validation — Deepgram vs AssemblyAI agreement
   // report. Populated by ``pipeline._step_transcribe`` and surfaced on
   // GET /api/calls/{id} so the call-detail page can render the
