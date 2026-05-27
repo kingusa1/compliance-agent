@@ -327,3 +327,56 @@ def test_verdict_without_auth_returns_401(seed_profiles_local, seed_call):
         json={"checkpoint_id": "cp_1", "verdict": "fail", "reasoning": "x"},
     )
     assert r.status_code == 401
+
+
+# 2026-05-27 wave-19 regression — HITL submit-verdict no longer blocks
+# on the abstract_and_store_review LLM call (which can take up to 30s
+# on Gemini Flash timeout).
+
+
+def test_verdict_response_does_not_block_on_slow_learning_extraction(
+    mock_jwks, seed_profiles_local, seed_call, auth
+):
+    """Wave-19: `abstract_and_store_review` is dispatched via
+    `asyncio.create_task` so the verdict HTTP response returns BEFORE
+    the LLM call completes. We simulate a slow LLM (5 s sleep) and
+    assert the response comes back in well under that time."""
+    import asyncio
+    import time as _time
+
+    _claim("sarah", auth)
+
+    # Make `abstract_and_store_review` sleep 5 seconds. If wave-19 is
+    # working correctly the HTTP response returns in <2 s. Pre-wave-19
+    # the `await` blocked the response for the full 5 s.
+    async def _slow_learning(**kwargs):
+        await asyncio.sleep(5.0)
+        return None
+
+    with patch(
+        "app.hitl_routes.abstract_and_store_review",
+        side_effect=_slow_learning,
+    ):
+        start = _time.monotonic()
+        r = client.post(
+            "/api/calls/c1/verdict",
+            headers=auth("sarah"),
+            json={
+                "checkpoint_id": "cp_1",
+                "verdict": "fail",
+                "reasoning": "wave-19 fire-and-forget test",
+            },
+        )
+        elapsed = _time.monotonic() - start
+
+    assert r.status_code == 200, r.text
+    # Generous ceiling — pytest fixture overhead + test client startup
+    # accounts for some baseline latency. Pre-wave-19 this would be ≥5s.
+    assert elapsed < 3.0, (
+        f"Wave-19 regression: verdict HTTP response took {elapsed:.1f}s — "
+        f"should be well under 3s because the LLM call (5s simulated) "
+        f"runs as a fire-and-forget create_task. The slow LLM should "
+        f"NOT block the response."
+    )
+    # learning_triggered flips True optimistically (the task was scheduled).
+    assert r.json()["learning_triggered"] is True

@@ -784,26 +784,69 @@ async def submit_verdict(
 
     # Learning loop fires only on per-CP submissions — there's no AI prior to
     # disagree with when the reviewer is filing an aggregate call-level verdict.
+    #
+    # 2026-05-27 wave-19 — FIRE-AND-FORGET. Previously this `await`'d
+    # `abstract_and_store_review` inline, which (a) blocks the HTTP
+    # response for up to 30s on the Gemini-Flash LLM call inside
+    # `abstract_and_store_review`, and (b) ran the DB INSERT on the
+    # event loop (wave-18 moved the INSERT off-loop). Together they
+    # made reviewer "submit verdict" feel ~20-30s slow under burst
+    # corrections. Spawning a `create_task` returns immediately:
+    # the reviewer's HTTP response no longer waits for the learning
+    # write. `learning_triggered` flips to `True` optimistically —
+    # the success/failure of the off-loop write is logged inside
+    # `abstract_and_store_review`'s own try/except (wave-18) so a
+    # learning failure never affects the reviewer's experience.
     learning_triggered = False
     if not is_call_level and cp is not None:
         ai_verdict = ai_row.verdict if ai_row else _ai_verdict_of(cp)
         if ai_verdict != payload.verdict:
-            try:
-                await abstract_and_store_review(
-                    db=db,
-                    supplier=call.detected_supplier or "Unknown",
-                    checkpoint_name=cp.get("name") or payload.checkpoint_id,
-                    transcript_excerpt=(cp.get("evidence") or call.transcript or "")[:2000],
-                    agent_verdict=ai_verdict,
-                    human_verdict=payload.verdict,
-                    reviewer_notes=payload.reasoning,
-                )
-                learning_triggered = True
-            except Exception as e:
-                # feedback.py already swallows most failures, but belt-and-braces:
-                # a bad network or a malformed LLM response should never fail the
-                # reviewer's save.
-                logger.warning("Learning extraction failed: %s", e)
+            # Bind locals BEFORE the closure so the background task doesn't
+            # observe `payload`, `cp`, `call`, `ai_verdict` mutating across
+            # requests (same pattern as routes.py:1135-1140).
+            _supplier = call.detected_supplier or "Unknown"
+            _cp_name = cp.get("name") or payload.checkpoint_id
+            _excerpt = (cp.get("evidence") or call.transcript or "")[:2000]
+            _agent_verdict = ai_verdict
+            _human_verdict = payload.verdict
+            _notes = payload.reasoning
+
+            async def _bg_hitl_learning() -> None:
+                try:
+                    # Wave-18 made the persist off-loop; wave-19 makes the
+                    # whole thing background so the LLM call doesn't block
+                    # the response either.
+                    await abstract_and_store_review(
+                        supplier=_supplier,
+                        checkpoint_name=_cp_name,
+                        transcript_excerpt=_excerpt,
+                        agent_verdict=_agent_verdict,
+                        human_verdict=_human_verdict,
+                        reviewer_notes=_notes,
+                    )
+                except Exception as bg_e:  # noqa: BLE001
+                    logger.warning(
+                        "HITL learning extraction (background) failed: %s",
+                        bg_e,
+                    )
+
+            import asyncio as _asyncio
+            _hitl_task = _asyncio.create_task(_bg_hitl_learning())
+            # Consume the task's exception (if any) so the asyncio GC
+            # doesn't log "Task exception was never retrieved" and ops
+            # gets a clean WARNING line instead of a noisy traceback.
+            def _log_hitl_task_exc(t: _asyncio.Task) -> None:
+                if t.cancelled():
+                    return
+                exc = t.exception()
+                if exc is not None:
+                    logger.warning(
+                        "HITL_LEARNING_TASK_LEAK: %s: %s",
+                        type(exc).__name__, exc,
+                    )
+
+            _hitl_task.add_done_callback(_log_hitl_task_exc)
+            learning_triggered = True
 
     return {
         "saved": True,

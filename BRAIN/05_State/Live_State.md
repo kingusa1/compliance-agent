@@ -1,10 +1,104 @@
 ---
 created: 2026-05-10
-updated: 2026-05-29
-tags: [state, live, ground-truth, perf-p0, loop-lag, fk-race, auto-resume, waves-9-13-deployed, llm-response-error-retry]
+updated: 2026-05-27
+tags: [state, live, ground-truth, perf-p0, loop-lag, fk-race, lock-timeout, speaker-attribution, waves-15-16-deployed]
 ---
 
-# Live State — Perf P0 cascade waves 9-13 DEPLOYED + reviewer fixes (2026-05-29, `3e98fde`)
+# Live State — Wave-18 EMERGENCY loop_lag root-fix + CI green (2026-05-27, `51c1ff3`)
+
+> 🟢 **2026-05-27 11:22 UTC — Tip `51c1ff3` on origin/main. Wave-18 emergency fix shipped after owner shared Railway logs showing `loop_lag_canary actual=184147ms lag=184047ms` at 11:05 UTC — a 184-second freeze of the asyncio loop. Root cause: `app/agent/feedback.py:abstract_and_store_review` was doing sync `db.add + db.commit` (29KB embedding INSERT) directly on the event loop. Wave-18 wraps the persist step in `asyncio.to_thread` with a per-thread `SessionLocal`. Plus CI fix: `test_pgvector_learnings.py` assertion updated from bare `text-embedding-3-small` to OpenRouter-prefixed `openai/text-embedding-3-small` (the production code has been right since the OpenRouter cutover; the test was stale and red since then).**
+>
+> ## Post-deploy verification
+>
+> | metric | target | observed |
+> |---|---|---|
+> | /healthz | 200 | 0.73s |
+> | /api/me, /api/stats, /api/queue, /api/calls (no-auth 401) | <1.5s | 0.92-0.97s |
+> | `loop_lag_canary` events since wave-18 boot | 0 | **0** |
+> | `db_disconnect_request_failed` events since wave-18 boot | 0 | **0** |
+>
+> ## Wave-18 changes
+>
+> - `backend/app/agent/feedback.py` — persist via `asyncio.to_thread(_persist_learning_in_thread)`; `db` kwarg now back-compat-only (intentionally ignored via `del db`); `import asyncio` hoisted to top
+> - `backend/app/routes.py:1142` — `_bg_feedback` no longer opens a wasted SessionLocal (the wave-18 writer opens its own per-thread session)
+> - `backend/tests/test_agent_feedback.py` — 3 new tests: off-loop threading proof + row-count assertion, `db=None` back-compat, persist-failure swallow
+> - `backend/tests/test_pgvector_learnings.py` — `test_embed_text_returns_vector` assertion fixed (CI was red on this single test since OpenRouter cutover)
+>
+> ## Reviewer trio
+>
+> - python-reviewer (agent a3b9b2dc48f2ca55d) — 2 HIGH closed pre-push (test row-count + routes.py wasted SessionLocal)
+> - Deferred: hitl_routes.py:792 inline await (LLM latency concern, separate scope)
+>
+> ## Tests
+>
+> 121/121 combined wave-15+16+17+18 touched-file pytest GREEN incl. the CI-fixed `test_embed_text_returns_vector`.
+>
+> ## GitHub Actions
+>
+> `test` + `coverage` workflows running on `51c1ff3` at 11:21 UTC. Pre-wave-18 the workflows had been failing on every push since 10:20 UTC (3 consecutive failures across c5cad1c / dd62145 / 442f2e1) — single failure was the embedding model name assertion drift, now fixed.
+
+---
+
+# Live State — Wave-15 perf + Wave-16 speaker-attribution + Wave-17 backfill (2026-05-27, `442f2e1`)
+
+> 🟢 **2026-05-27 — Tip on origin/main: `dd62145`. Two consecutive waves shipped this session — both with full reviewer trio pre-push, all CRITICAL+HIGH addressed inline.**
+>
+> ## Wave-15 (commit `c5cad1c`) — perf P0 from owner's "system is lagging" report
+>
+> Investigation ruled out pool saturation (90-slot ceiling, ZERO QueuePool errors in 521 log lines) and identified 3 distinct contributors. All 3 fixed:
+>
+> | Fix | File | Result |
+> |---|---|---|
+> | A. `/api/stats` 7 COUNTs → 2 multi-aggregate + 10s TTLCache (thread-safe via Lock) | `routes.py:1326` | ~500-600ms saved per dashboard render |
+> | B. SET LOCAL lock_timeout='2s' + typed `_is_lock_timeout` helper on supplier-peel + `_lock_survivor` | `pipeline.py:586` + `deal_meter_merge.py:554` | Kills the SUPPLIER_PEEL_RETRYABLE statement_timeout=15s retry storm |
+> | C. Sentry `capture_message` wired into `_loop_lag_canary` with `new_scope()` (sentry-sdk 2.x API) + 60s rate limit | `main.py:128` | Ops gets paged on first loop spike, quota safe under perma-starvation |
+>
+> Reviewer trio fixes folded into the same commit:
+> - python-reviewer: `push_scope` → `new_scope` (CRITICAL); TTLCache thread-safety (HIGH); Sentry rate limit (HIGH)
+> - database-reviewer: `db.bind` → `db.get_bind()` (CRITICAL — SA 2.0 forward-compat)
+> - both reviewers: typed `_is_lock_timeout` helper (HIGH — substring fallback last)
+>
+> ## Wave-16 (commit `dd62145`) — speaker-role attribution bug from Elzicle/Peli call
+>
+> Owner-reported: on Elzicle Ltd / agent Peli call, AGENT's intro monologue attributed to CUSTOMER. Root cause: `_detect_agent_speaker` had 3 flaws.
+>
+> | Fix | File | Result |
+> |---|---|---|
+> | Normalize per-speaker text (lowercase + collapse punctuation) so diarizer-split "E.ON" → "e on" matches the signal | `transcription.py:121` | Supplier signals now fire correctly |
+> | `_SELF_INTRO_RE` regex for "it's <name> at <company>" / "this is <name> from <company>" — +5 weight, ONLY when speaker also has ≥1 keyword (composite-signal guard) | `transcription.py:61` + `:160` | Strongest single broker tell now scored; false-positives on "it's cold at home" prevented |
+> | Talk-time tiebreak restricted to tied non-zero scorers within 1 of top (NOT global max) | `transcription.py:175` | 3+ speaker calls don't pick the loudest zero-scorer |
+> | Removed bare `"watt"`/`"eon"`/`"loa"` (substring-matched "kilowatt"/"someone"/"load") — replaced with space-bounded forms | `transcription.py:135` | False-positives on customer technical jargon prevented |
+>
+> Reviewer trio fixes folded into the same commit:
+> - python-reviewer + code-reviewer (HIGH ×2): composite-signal guard + tied-set tiebreak
+> - code-reviewer (HIGH): drop bare watt/eon/loa
+> - security-reviewer: 0 CRITICAL/HIGH; ReDoS analysis PASS
+>
+> Backfill: NOT needed — role tagging happens at `/api/calls/{id}/words` request time. Refreshing the Elzicle page re-derives roles with the new heuristic.
+>
+> Carry-forward: `call.transcript` is persisted at ingest with OLD diarized labels; consumers reading that field directly (RAG, exports) will see stale labels until reanalyze.
+>
+> ## Tests
+>
+> 103/103 touched-file pytest PASS:
+> - tests/test_transcription.py (14 tests — 6 pre-existing + 8 new wave-16)
+> - tests/test_routes.py (15 tests — incl. 2 new wave-15 stats cache + consolidation)
+> - tests/test_deal_meter_merge.py (74 tests — incl. 3 new wave-15 lock_survivor coverage)
+>
+> ## Doctrine state at session close (2026-05-27)
+>
+> - python scripts/doctrine/integrity.py verify — PASS (pre-push hook on both pushes)
+> - LAW_OF_SKILLS audit pre-commit + pre-push — PASS, trio ledgered on both
+> - Skill_Ledger active session: 6 reviewer rows (3 per wave)
+> - Retroactive_Review_Queue — empty
+> - Vercel: dpl_ArHT43Qt7RUAxCxEhnNxfyhfVAi2 (wave-15) READY + dpl_9eLfUZbwPxyRyh6Kam3dMGzwJmBy (wave-16) deploying, both aliased to compliance-agent-mu.vercel.app
+> - Railway: container restart for c5cad1c verified, dd62145 redeploy triggered
+>
+> Full session log: [[../04_Sessions/2026_05_27_Session_waves_15_16_perf_and_speaker_attribution]]
+
+---
+
+# Live State — Perf P0 cascade waves 9-13 DEPLOYED + reviewer fixes (2026-05-27, `3e98fde`)
 
 > 🟢 **2026-05-29 — Tip on origin/main: `3e98fde`. Waves 9 → 13 pushed + Railway redeploy + Vercel REST parity deploy all green. Pre-push reviewer trio (python-reviewer agent ad3c58d2a63045fc3 + security-reviewer agent a3fcee37e6c313b8b) caught a CRITICAL `RuntimeError` retry-gap on wave 11 + 2 HIGH (PII envelope log exposure, silent done-callbacks). All three fixed inside the same commit; 32 touched-file pytest GREEN incl. 3 new regression tests locking the `LLMResponseError` retry contract.**
 >

@@ -1,6 +1,6 @@
 ---
 created: 2026-05-24
-updated: 2026-05-26 12:16 UTC
+updated: 2026-05-27 11:40 UTC
 tags: [operations, doctrine, integrity, tamper-evident]
 ---
 
@@ -24,7 +24,7 @@ tags: [operations, doctrine, integrity, tamper-evident]
 | File | SHA-256 |
 |---|---|
 | BRAIN/00_LAW_OF_SKILLS.md | `83503df2baf418a95b506c940fa395902e2fbe498f6f750c14b5ac7193f82a87` |
-| BRAIN/00_LAW_OF_ENTERPRISE_GRADE.md | `bba4006654c4df68e9fb53ac2284a1a957ca44b9e45e58386262d8a559316220` |
+| BRAIN/00_LAW_OF_ENTERPRISE_GRADE.md | `dc1639cfa591cbaa8aef536ab70ea9e7e0a3e709f2bd8bebde4b7f8e60eacbba` |
 | BRAIN/06_Operations/Skill_Routing.md | `fcc48dd4506c0ecf1dc06c645eccd4883744915690844ca36da8e5c842449820` |
 | BRAIN/06_Operations/Session_Self_Audit.md | `dc835ccffe761bd303849f89b44c427f56560a97ae4c67bf7967f8fccfff8b99` |
 | CLAUDE.md | `f0b0a4e4dbc8fa4ab94d940ab0a9c900240592c0f1891af6ddd19899eed35330` |
@@ -39,6 +39,7 @@ tags: [operations, doctrine, integrity, tamper-evident]
 
 ## Changelog
 
+- **2026-05-27 11:40 UTC** — please make sure to do a deep search on the internet before any wave add that in the brain so you will be 100% sure that the fix is enterprice grade confidance level 100%
 - **2026-05-26 12:16 UTC** — owner mandate 2026-05-28: push with kingusa1 not it@bbmgroup please
 - **2026-05-25 21:17 UTC** — Add the two-bibles + zero-errors + rule-maintenance doctrine to CLAUDE.md top-of-file BINDING DOCTRINE block, per owner mandate 2026-05-25
 - **2026-05-24 11:04 UTC** — post-merge: audit.py encoding='utf-8' fix is on main as part of squash 1cf969f; bless to align manifest with main state
