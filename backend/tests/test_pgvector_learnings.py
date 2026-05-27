@@ -39,9 +39,14 @@ def test_embed_text_returns_vector(monkeypatch):
 
     assert isinstance(result, list)
     assert len(result) == 1536
-    # Calling args should include the standard model + text.
+    # Calling args should include the OpenRouter-prefixed model id + text.
+    # 2026-05-27 wave-18 — embeddings are routed through OpenRouter
+    # (see app/agent/feedback.py:embed_text) which requires the
+    # `openai/` prefix on OpenAI-hosted model ids. The test was
+    # asserting the bare `text-embedding-3-small` form which has been
+    # stale since the OpenRouter cutover; CI has been red since then.
     call = fake_client.embeddings.create.call_args
-    assert call.kwargs["model"] == "text-embedding-3-small"
+    assert call.kwargs["model"] == "openai/text-embedding-3-small"
     assert call.kwargs["input"] == "agent used vague broker language"
 
 

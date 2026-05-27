@@ -5,6 +5,7 @@ When a human reviewer flips a checkpoint verdict, we call a cheap LLM
 then insert into agent_learnings. This row survives per-tenant data
 retention and powers the get_similar_learnings agent tool.
 """
+import asyncio
 import json
 import logging
 
@@ -117,7 +118,7 @@ Return ONLY this JSON (no prose):
 
 async def abstract_and_store_review(
     *,
-    db: Session,
+    db: Session | None = None,  # noqa: ARG001 — back-compat, wave-18 ignores
     supplier: str,
     checkpoint_name: str,
     transcript_excerpt: str,
@@ -129,10 +130,21 @@ async def abstract_and_store_review(
 
     Safe: failures are logged and swallowed — never propagates to the caller
     (the review API endpoint should not fail just because feedback processing failed).
+
+    Wave-18 (2026-05-27): the persisted INSERT is now executed inside a
+    worker thread via `asyncio.to_thread` so the event loop is never
+    blocked by the embedding-vector commit or any Supavisor SSL-reconnect
+    retry. The `db` keyword argument is preserved for back-compat with
+    callers in routes.py + hitl_routes.py but is INTENTIONALLY IGNORED —
+    the worker opens its own per-thread SessionLocal.
     """
     if agent_verdict == human_verdict:
         # No correction — no lesson
         return
+
+    # `db` kwarg is back-compat-only; wave-18 writes through a per-thread
+    # session inside the threadpool worker below.
+    del db
 
     prompt = ABSTRACTION_PROMPT.format(
         supplier=supplier,
@@ -172,23 +184,58 @@ async def abstract_and_store_review(
 
     # Embed the pattern (Phase J Task 29) — failure returns None, row still
     # gets written so the lesson isn't lost. Backfill script can retry later.
-    import asyncio
     try:
         pattern_embedding = await asyncio.to_thread(embed_text, pattern)
     except Exception:
         pattern_embedding = None
 
-    row = AgentLearning(
-        supplier=supplier,
-        checkpoint_name=checkpoint_name,
-        pattern=pattern,
-        agent_verdict=agent_verdict,
-        human_verdict=human_verdict,
-        lesson=lesson,
-        embedding=pattern_embedding,
-    )
-    db.add(row)
-    db.commit()
+    # Wave-18 (2026-05-27, perf P0) — MOVE SYNC DB WRITE OFF THE ASYNCIO LOOP.
+    # The prior implementation called `db.add(row); db.commit()` directly on
+    # the loop thread. With 29KB embedding vectors going into Postgres
+    # through Supavisor's SSL-fragile transaction pooler the commit could
+    # block for seconds while psycopg2 waited on a half-closed socket.
+    # Concurrent REVIEW activity accumulated those blocked seconds into the
+    # production 184-second `loop_lag_canary actual=184147ms` freeze
+    # observed at 2026-05-27 11:05 UTC. The worker now opens its OWN
+    # SessionLocal so neither the INSERT nor any Supavisor reconnect
+    # retries can reach the event loop. The legacy `db` parameter is
+    # accepted for back-compat but intentionally ignored.
+    def _persist_learning_in_thread() -> bool:
+        from app.database import SessionLocal as _SL
+        _db = _SL()
+        try:
+            row = AgentLearning(
+                supplier=supplier,
+                checkpoint_name=checkpoint_name,
+                pattern=pattern,
+                agent_verdict=agent_verdict,
+                human_verdict=human_verdict,
+                lesson=lesson,
+                embedding=pattern_embedding,
+            )
+            _db.add(row)
+            _db.commit()
+            return True
+        except Exception as e:  # noqa: BLE001 — feedback must never crash caller
+            try:
+                _db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            logger.warning(
+                "feedback persist (off-loop) failed: %s: %s",
+                type(e).__name__, e,
+            )
+            return False
+        finally:
+            try:
+                _db.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    persisted = await asyncio.to_thread(_persist_learning_in_thread)
+    if not persisted:
+        return
+
     log.info(
         f"\U0001f4da LEARNING stored supplier=\"{supplier}\" cp=\"{checkpoint_name}\" "
         f"{agent_verdict}\u2192{human_verdict} "

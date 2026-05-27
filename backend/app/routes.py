@@ -1140,13 +1140,13 @@ async def review_checkpoint_verdict(
         _notes = notes
 
         async def _bg_feedback() -> None:
-            # Open a fresh session so we don't reuse the request session
-            # after the response has returned (psycopg2 would error).
-            from app.database import SessionLocal as _SL
-            _db = _SL()
+            # 2026-05-27 wave-18 — feedback.py:abstract_and_store_review
+            # now opens its own per-thread SessionLocal inside the
+            # threadpool worker (the actual DB write is off-loop). No
+            # need to pre-allocate a SessionLocal here — that would just
+            # double the connection pressure under bursts of corrections.
             try:
                 await abstract_and_store_review(
-                    db=_db,
                     supplier=_supplier,
                     checkpoint_name=_cp_name,
                     transcript_excerpt=_excerpt,
@@ -1156,8 +1156,6 @@ async def review_checkpoint_verdict(
                 )
             except Exception as bg_e:  # noqa: BLE001
                 log.warning(f"📚 feedback processing failed (non-fatal): {bg_e}")
-            finally:
-                _db.close()
 
         import asyncio as _asyncio
         _asyncio.create_task(_bg_feedback())

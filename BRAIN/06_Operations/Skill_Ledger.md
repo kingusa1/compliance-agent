@@ -58,6 +58,7 @@ Columns:
 | 2026-05-27 05:30 | wave-16-speaker-attribution | security-reviewer | parallel | wave16-sec-review | success: 0 CRITICAL + 0 HIGH + 0 MEDIUM + 2 LOW; LOW = real names in test fixtures (acceptable per BRAIN context — owner already shared call publicly via screenshot); ReDoS analysis PASS on both regexes | agent a2130cff71c162702; backend/tests/test_transcription.py |
 | 2026-05-27 06:30 | wave-17-backfill-speaker-labels | python-reviewer | parallel | wave17-py-review | success: 0 CRIT + 2 HIGH + 3 MEDIUM + 0 LOW; HIGH = query.all() heap pressure → yield_per(100); HIGH = single commit over 5000 rows → batch-commit every 200; all 5 findings addressed pre-push | agent ac4d0a503e34dd69b; backend/app/routes.py |
 | 2026-05-27 06:30 | wave-17-backfill-speaker-labels | security-reviewer | parallel | wave17-sec-review | success: 0 CRIT + 0 HIGH + 2 MEDIUM + 2 LOW; MEDIUM = missing advisory lock → pg_try_advisory_xact_lock added; MEDIUM = no UUID validation on call_id → 422 guard added; both addressed pre-push | agent a1f823fbc8762363b; backend/app/routes.py + tests/test_routes.py |
+| 2026-05-27 11:25 | wave-18-loop-lag-rootfix-and-ci | python-reviewer | parallel | wave18-py-review | success: 0 CRIT + 2 HIGH + 2 MEDIUM + 1 LOW; HIGH = off-loop threading test missing row-count assertion + routes.py wasted SessionLocal in _bg_feedback; both addressed pre-push | agent a3b9b2dc48f2ca55d; backend/app/agent/feedback.py + backend/app/routes.py + tests/test_agent_feedback.py + tests/test_pgvector_learnings.py |
 
 ---
 
