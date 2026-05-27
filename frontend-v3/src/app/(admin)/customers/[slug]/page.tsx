@@ -56,6 +56,34 @@ function workflowStepsFor(supplier: string | null | undefined): string[] {
   return _workflowStepsForShared(supplier);
 }
 
+/** Wave-39 — shared union of every workflow phase a deal's calls
+ * cover, via either the flat `call_type` column OR the per-segment
+ * `kind`. Single source of truth for chip-strip `done` state, the
+ * `Not yet submitted` line, and the linear `stepIdx` counter. Drift
+ * between these three was the root cause of the owner-reported
+ * 2026-05-27 contradiction where the chip strip lit Lead Gen green
+ * while the missing-line still listed Lead Gen as not submitted.
+ */
+function seenStepsFor(
+  calls: ReadonlyArray<{
+    call_type?: string | null;
+    segments?: { kind?: string | null }[];
+  }>,
+  steps: ReadonlyArray<string>,
+): Set<string> {
+  const seen = new Set<string>();
+  const stepSet = new Set(steps);
+  for (const c of calls) {
+    const p = (c.call_type ?? "").toLowerCase();
+    if (p && stepSet.has(p)) seen.add(p);
+    for (const s of c.segments ?? []) {
+      const k = (s.kind ?? "").toLowerCase();
+      if (k && stepSet.has(k)) seen.add(k);
+    }
+  }
+  return seen;
+}
+
 function completedPhaseCount(
   deal: {
     calls: {
@@ -65,23 +93,7 @@ function completedPhaseCount(
   },
   steps: string[],
 ): number {
-  // Count distinct workflow phases this deal's calls have covered.
-  // Wave-26 (2026-05-27) — a single audio file can contain multiple
-  // segments (lead_gen + pre_sales + verbal + loa). Union BOTH the
-  // call_type column AND every detected segment kind so a multi-
-  // segment file lights up every phase it actually satisfies.
-  // Without this the deal card said "2 of 4 required calls missing"
-  // even though both calls covered Pre-Sales + Verbal together.
-  const seen = new Set<string>();
-  for (const c of deal.calls) {
-    const p = (c.call_type ?? "").toLowerCase();
-    if (steps.includes(p)) seen.add(p);
-    for (const s of c.segments ?? []) {
-      const k = (s.kind ?? "").toLowerCase();
-      if (steps.includes(k)) seen.add(k);
-    }
-  }
-  return seen.size;
+  return seenStepsFor(deal.calls, steps).size;
 }
 
 function StatCard({
@@ -191,6 +203,10 @@ function WorkflowBar({
   // Wave-26 — register the call against EVERY segment it covers, not
   // just `call_type`. A single multi-segment file now lights up both
   // its Pre-Sales chip and its Verbal chip with the right agent/score.
+  // Wave-39 — `seenSteps` comes from the shared `seenStepsFor` helper
+  // so chip-strip, "Not yet submitted", and the linear counter all
+  // agree on what's covered.
+  const seenSteps = seenStepsFor(calls ?? [], steps);
   const callByStep = new Map<string, WorkflowCall>();
   for (const c of calls ?? []) {
     const segKinds = (c.segments ?? [])
@@ -227,8 +243,15 @@ function WorkflowBar({
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
         {steps.map((s, i) => {
-          const done = i < current;
-          const active = i === current;
+          // Wave-39 — `done` reflects whether THIS exact phase is
+          // covered (via call_type OR any segment.kind), not the
+          // linear position. A multi-segment verbal file covers
+          // pre_sales + verbal without covering lead_gen — so the
+          // lead_gen chip stays grey.
+          const done = seenSteps.has(s);
+          // `active` keeps the linear "what's next" indicator so the
+          // amber chip moves left-to-right as phases get covered.
+          const active = !done && i === current;
           const corrective = false;
           const isVerbalEon = eon && s === "verbal";
           const isLoaEon = eon && s === "loa";
@@ -499,11 +522,15 @@ export default function CustomerDetailPage({
   // Per-deal "missing phase" hints — what the supplier workflow expects
   // vs what calls have been uploaded. Drives the "what's next" line on
   // each deal card.
+  // Wave-39 (2026-05-27) — owner-reported: "Not yet submitted: Lead Gen,
+  // Pre-Sales, LOA" was listing phases the deal's calls already covered
+  // via their CallSegment rows (a single verbal file containing
+  // pre_sales + verbal segments). Now uses the shared `seenStepsFor`
+  // helper so chip strip + "Not yet submitted" + upload-CTA + the
+  // linear counter all agree on what's covered.
   const dealsWithMissing = deals.map((deal) => {
     const steps = workflowStepsFor(deal.supplier);
-    const seen = new Set(
-      deal.calls.map((c) => (c.call_type ?? "").toLowerCase()).filter(Boolean),
-    );
+    const seen = seenStepsFor(deal.calls, steps);
     const missing = steps.filter((s) => !seen.has(s));
     return { deal, steps, missing };
   });
