@@ -1673,12 +1673,66 @@ async def _step_detect_metadata(
                             db.add(new_deal)
                             db.flush()
                             call.deal_id = new_deal.id
+                            db.flush()
                             log.warning(
                                 f"⚠️ SUPPLIER_MISMATCH_SPLIT "
                                 f"call_id={call_id} "
                                 f"old_deal={old_deal_id} ({deal.supplier!r}) "
                                 f"new_deal={new_deal.id} (\"{detected}\")"
                             )
+                            # Wave-48 (2026-05-28) — orphan cleanup. Peeling
+                            # this call onto a new deal can leave the old
+                            # deal with zero calls (it happened on the Lucy
+                            # case: an intake-created deal whose only call
+                            # split away became a permanent empty orphan on
+                            # /deals). If the old deal is now call-less,
+                            # delete it so the split never strands an empty
+                            # row. Guarded: only delete a deal that has NO
+                            # remaining calls AND isn't itself the new deal.
+                            remaining = (
+                                db.query(Call)
+                                .filter(Call.deal_id == old_deal_id)
+                                .count()
+                            )
+                            if remaining == 0 and old_deal_id != new_deal.id:
+                                old_cust_id = getattr(deal, "customer_id", None)
+                                # python-reviewer agent a6c418b9f5c59ef70 HIGH —
+                                # mirror _absorb() phase 5: null the deal's
+                                # rejection_id back-ref before deleting so we
+                                # never strand a Rejection row pointing at a
+                                # deleted deal (its /deals/[id] deep-link would
+                                # 404). Defensive: the orphan is almost always
+                                # pre-review (rejection_id NULL), but a reviewer
+                                # could have rejected a checkpoint mid-processing.
+                                if getattr(deal, "rejection_id", None) is not None:
+                                    deal.rejection_id = None
+                                    db.flush()
+                                db.delete(deal)
+                                db.flush()
+                                log.info(
+                                    f"🗑️ SPLIT_ORPHAN_CLEANUP deleted empty "
+                                    f"old_deal={old_deal_id} after peel"
+                                )
+                                # Drop the parent Customer too if the split
+                                # emptied its last deal (mirrors delete_call /
+                                # delete_deal orphan-customer cleanup).
+                                if old_cust_id is not None:
+                                    try:
+                                        from app.models import Customer as _Cust
+                                        cust_deals = (
+                                            db.query(_Deal)
+                                            .filter(_Deal.customer_id == old_cust_id)
+                                            .count()
+                                        )
+                                        if cust_deals == 0:
+                                            c = db.query(_Cust).filter_by(id=old_cust_id).first()
+                                            if c:
+                                                db.delete(c)
+                                                db.flush()
+                                    except Exception as _ce:  # noqa: BLE001
+                                        log.warning(
+                                            f"SPLIT_ORPHAN customer cleanup skipped: {_ce}"
+                                        )
                             try:
                                 from app.audit import record_audit
                                 record_audit(

@@ -205,6 +205,19 @@ _SUPPLIER_ALIASES: dict[str, str] = {
     "eon": "e.on next",
     "e.on": "e.on next",
     "e.on next": "e.on next",
+    # Wave-49 (2026-05-28) — the SupplierEnum stores the full brand name
+    # "E.ON Next Energy" while the transcript detector emits the short
+    # "E.ON Next". Without this alias the two normalised to DIFFERENT
+    # buckets, so an upload whose deal carried "E.ON Next Energy" and
+    # whose audio detected "E.ON Next" tripped a spurious
+    # SUPPLIER_MISMATCH_SPLIT — peeling the call onto a new deal and
+    # leaving the intake deal an empty orphan (owner-reported on the Lucy
+    # case). They are the SAME supplier; collapse them here. This is the
+    # matching/merge layer only — the SupplierEnum keeps E.ON vs
+    # E.ON Next Energy distinct for the compliance-gate / LOA-model
+    # selection, which reads the canonical column, not this norm.
+    "e.on next energy": "e.on next",
+    "eon next energy": "e.on next",
     "e.on energy": "e.on next",
     "e.on energy solutions": "e.on next",
     # British Gas family.

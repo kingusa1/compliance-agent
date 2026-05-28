@@ -229,6 +229,29 @@ class TestIsSafeToAutoMerge:
         b = self._deal(supplier="British Gas")
         assert _is_safe_to_auto_merge(a, b).safe is True
 
+    def test_wave49_eon_next_energy_aliases_to_eon_next(self) -> None:
+        """Wave-49 — the SupplierEnum stores the full brand 'E.ON Next
+        Energy' but the transcript detector emits short 'E.ON Next'. They
+        are the SAME supplier; the matcher must treat them as one so an
+        upload's deal (full name) + its audio (short name) don't trip a
+        spurious SUPPLIER_MISMATCH_SPLIT that orphans the intake deal
+        (the owner-reported Lucy case)."""
+        from app.deal_meter_merge import _supplier_norm
+
+        assert _supplier_norm("E.ON Next Energy") == _supplier_norm("E.ON Next")
+        # And the merge-safety verdict agrees.
+        a = self._deal(name="Acme Ltd", supplier="E.ON Next Energy")
+        b = self._deal(name="Acme Ltd", supplier="E.ON Next")
+        assert _is_safe_to_auto_merge(a, b).safe is True
+
+    def test_wave49_eon_family_still_distinct_from_other_brands(self) -> None:
+        """Guard against over-collapsing: the E.ON alias must NOT swallow a
+        genuinely different supplier. British Gas vs E.ON Next stays a
+        cross-supplier (unsafe) pair."""
+        a = self._deal(name="Acme Ltd", supplier="E.ON Next Energy")
+        b = self._deal(name="Acme Ltd", supplier="British Gas")
+        assert _is_safe_to_auto_merge(a, b).safe is False
+
     def test_one_side_supplier_missing_is_safe(self) -> None:
         """Data-quality case — survivor was created via the stub upload
         route without a supplier yet; the new call has the real supplier.
