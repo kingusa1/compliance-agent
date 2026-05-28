@@ -661,6 +661,7 @@ async def process_call(call_id: str, file_path: str, db: Session | None = None, 
                             _supplier_db.add(new_deal)
                             _supplier_db.flush()
                             final_call.deal_id = new_deal.id
+                            _supplier_db.flush()
                             log.warning(
                                 f"⚠️ POST_PIPELINE_SUPPLIER_PEEL "
                                 f"call_id={call_id} "
@@ -668,6 +669,43 @@ async def process_call(call_id: str, file_path: str, db: Session | None = None, 
                                 f"new_deal={new_deal.id} (\"{final_call.detected_supplier}\") "
                                 f"— safety-net caught what in-step peel missed"
                             )
+                            # Wave-48 — same orphan-cleanup as the in-step
+                            # split: if peeling this call emptied the old
+                            # deal, null its rejection_id back-ref then
+                            # delete it (+ orphan-customer cleanup) so the
+                            # safety-net peel never strands an empty deal.
+                            _rem = (
+                                _supplier_db.query(Call)
+                                .filter(Call.deal_id == old_deal_id)
+                                .count()
+                            )
+                            if _rem == 0 and old_deal_id != new_deal.id:
+                                _old_cust = getattr(final_deal, "customer_id", None)
+                                if getattr(final_deal, "rejection_id", None) is not None:
+                                    final_deal.rejection_id = None
+                                    _supplier_db.flush()
+                                _supplier_db.delete(final_deal)
+                                _supplier_db.flush()
+                                log.info(
+                                    f"🗑️ POST_PEEL_ORPHAN_CLEANUP deleted empty "
+                                    f"old_deal={old_deal_id}"
+                                )
+                                if _old_cust is not None:
+                                    try:
+                                        from app.models import Customer as _Cust2
+                                        if (
+                                            _supplier_db.query(_Deal)
+                                            .filter(_Deal.customer_id == _old_cust)
+                                            .count()
+                                        ) == 0:
+                                            _c = _supplier_db.query(_Cust2).filter_by(id=_old_cust).first()
+                                            if _c:
+                                                _supplier_db.delete(_c)
+                                                _supplier_db.flush()
+                                    except Exception as _ce2:  # noqa: BLE001
+                                        log.warning(
+                                            f"POST_PEEL_ORPHAN customer cleanup skipped: {_ce2}"
+                                        )
                             try:
                                 from app.audit import record_audit
                                 record_audit(
