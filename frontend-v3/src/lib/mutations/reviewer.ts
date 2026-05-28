@@ -15,7 +15,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
-import { deleteJson, patchJson, postJson, putJson } from "@/lib/mutations";
+import { deleteJson, formatErrorDetail, patchJson, postJson, putJson } from "@/lib/mutations";
 import { ApiError, type WordEditResponse } from "@/lib/api";
 import { reviewerKeys, type ChatMessage } from "@/lib/queries/reviewer";
 
@@ -45,10 +45,14 @@ function _invalidateCallSlices(
 
 function _errMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
-    // Try to surface the backend's "detail" string if present.
+    // Try to surface the backend's "detail" through the shared
+    // formatErrorDetail helper — handles string detail (legacy), array
+    // detail (FastAPI 422), and object detail (domain codes) without
+    // ever emitting "[object Object]". Wave-40.
     try {
-      const parsed = JSON.parse(err.body) as { detail?: string };
-      if (parsed.detail) return parsed.detail;
+      const parsed = JSON.parse(err.body) as Record<string, unknown>;
+      const formatted = formatErrorDetail(parsed, "");
+      if (formatted) return formatted;
     } catch {
       /* body wasn't JSON */
     }

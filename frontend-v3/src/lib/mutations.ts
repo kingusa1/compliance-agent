@@ -74,6 +74,62 @@ export async function deleteJson<TResp = unknown>(
  * still injects the Supabase Bearer JWT. Used by /calls/upload (L7
  * IntakeForm). Returns the parsed JSON body or throws on non-2xx.
  */
+/** FastAPI validation error item — shape returned in `detail` on 422. */
+interface PydanticValidationError {
+  type?: string;
+  loc?: (string | number)[];
+  msg?: string;
+  input?: unknown;
+}
+
+/**
+ * Format a FastAPI error body into a human-readable string for toast UI.
+ *
+ * FastAPI returns `detail` in three different shapes depending on the
+ * error path:
+ *   - string             — HTTPException(400, "message"): take verbatim
+ *   - array of objects   — 422 ValidationError: list of {loc, msg, type}
+ *                          (this is the path that produced "[object Object]"
+ *                          when stringified naively — wave-40 root cause)
+ *   - object             — domain shape (e.g. {METADATA_MISMATCH, manual, auto})
+ *                          preserve full JSON so callers can parse it
+ *
+ * For the array shape we surface the FIRST validation error's
+ * `<loc>: <msg>` so the reviewer immediately sees which field is wrong,
+ * with a "(+N more)" suffix when there are additional errors. Test by
+ * blanking a required field in manual upload mode.
+ */
+export function formatErrorDetail(err: unknown, fallback: string): string {
+  if (err && typeof err === "object" && "detail" in err) {
+    const detail = (err as { detail?: unknown }).detail;
+    if (typeof detail === "string" && detail.trim()) {
+      return detail;
+    }
+    if (Array.isArray(detail) && detail.length > 0) {
+      const first = detail[0] as PydanticValidationError;
+      const path = Array.isArray(first?.loc)
+        ? first.loc
+            .filter((p) => p !== "body" && p !== "form")
+            .join(".")
+        : "";
+      const msg = first?.msg || first?.type || "validation failed";
+      const head = path ? `${path}: ${msg}` : msg;
+      return detail.length > 1 ? `${head} (+${detail.length - 1} more)` : head;
+    }
+    if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+      // Domain-shaped errors like METADATA_MISMATCH — keep the raw JSON
+      // so admin.ts:uploadCall can pattern-match on it. Array case is
+      // already handled above; empty arrays fall through to fallback.
+      try {
+        return JSON.stringify(detail);
+      } catch {
+        /* fall through */
+      }
+    }
+  }
+  return fallback;
+}
+
 export async function uploadMultipart<TResp = unknown>(
   path: string,
   formData: FormData,
@@ -87,7 +143,7 @@ export async function uploadMultipart<TResp = unknown>(
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail || `Upload failed: ${res.status}`);
+    throw new Error(formatErrorDetail(err, `Upload failed: ${res.status}`));
   }
   return res.json() as Promise<TResp>;
 }
