@@ -176,8 +176,52 @@ async def upload_call(
             raise HTTPException(400, f"invalid intake metadata: {e}")
         # Run validation gates; the blocking gate raises ValidationGateError
         # which we surface as 422. Warnings are collected for the response.
+        #
+        # Wave-42 (2026-05-28): arm `existing_deal_consistency` by looking
+        # up the existing deal's meter/supplier fields BEFORE validation.
+        # Without this, the conflict-warning machinery in validators.py
+        # never fires for the customer-page upload path (where
+        # existing_deal_id is always set by the form). With it, a reviewer
+        # who types an MPAN that disagrees with the stored MPAN sees an
+        # inline warning in the upload response instead of having their
+        # input silently dropped by upsert.py's non-destructive policy.
+        #
+        # Security gate (security-reviewer agent a66367b9e0631bbc5 HIGH —
+        # IDOR via cross-deal field leak): scope the lookup to the
+        # CUSTOMER the upload is targeting. `intake_payload.customer_id`
+        # is the customer the reviewer opened in the UI; a forged
+        # `existing_deal_id` that belongs to a different customer must
+        # not return field values to the warning response. Result: warning
+        # only fires when both ids agree, and the response leaks nothing
+        # the reviewer can't already see on /customers/<slug>.
+        #
+        # Concurrency gate (python-reviewer agent a7c6c8ea542082642 MED —
+        # write-skew on concurrent upload): row-lock the existing deal so
+        # two simultaneous uploads with different MPANs don't both pass
+        # the conflict check, then race upsert_deal's backfill silently.
+        # FOR UPDATE inside the route's session is no-oped by the second
+        # SELECT FOR UPDATE in upsert.py (same Postgres txn) — safe.
+        existing_deal_fields: dict | None = None
+        if intake_payload.deal.existing_deal_id and intake_payload.customer_id:
+            from app.models import CustomerDeal as _CustomerDeal
+
+            existing_row = (
+                db.query(_CustomerDeal)
+                .filter(
+                    _CustomerDeal.id == intake_payload.deal.existing_deal_id,
+                    _CustomerDeal.customer_id == intake_payload.customer_id,
+                )
+                .with_for_update()
+                .first()
+            )
+            if existing_row is not None:
+                existing_deal_fields = {
+                    "supplier": existing_row.supplier,
+                    "mpan_electricity": existing_row.mpan_electricity,
+                    "mprn_gas": existing_row.mprn_gas,
+                }
         try:
-            warnings = validate_payload(intake_payload)
+            warnings = validate_payload(intake_payload, existing_deal_fields)
             intake_warnings = [
                 {"code": w.code, "message": w.message, "field": w.field}
                 for w in warnings

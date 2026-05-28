@@ -22,6 +22,8 @@ that need a live DB will be added once the migration lands.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from app.intake.payload_schema import (
@@ -395,3 +397,137 @@ def test_intake_dedupes_customer_by_slug(test_db):
     assert test_db.query(CustomerDeal).count() == 2
     assert deal1.customer_id == c1.id
     assert deal2.customer_id == c1.id
+
+
+# ---------------------------------------------------------------------------
+# 11. Wave-42 — backfill MPAN/MPRN onto existing deal when row was blank.
+# ---------------------------------------------------------------------------
+
+
+def test_wave42_backfills_mpan_when_existing_deal_blank(test_db):
+    """Reviewer fills MPAN on the Customer-page upload form. The deal
+    already exists but had no MPAN recorded (pipeline failed to detect
+    it, or the deal was created from a tracker spreadsheet). The new
+    MPAN must be written through onto the existing row — otherwise the
+    deal-detail page keeps showing '—' even though the reviewer just
+    typed a value."""
+    from app.intake.upsert import upsert_customer, upsert_deal
+    from app.models import CustomerDeal
+
+    customer_meta = CustomerMeta(legal_name="Backfill Co")
+    customer = upsert_customer(customer_meta, test_db)
+
+    # Seed an existing deal with NO meter recorded.
+    deal_meta_initial = DealMeta(supplier=SupplierEnum.BG_CORE)
+    existing = upsert_deal(
+        deal_meta_initial,
+        customer_id=customer.id,
+        customer_name=customer.legal_name,
+        db=test_db,
+    )
+    test_db.commit()
+    assert existing.mpan_electricity is None
+    assert existing.mprn_gas is None
+
+    # Second upload — attach to existing deal, supply MPAN.
+    deal_meta_followup = DealMeta(
+        existing_deal_id=existing.id,
+        mpan_electricity="1012371240692",
+        mprn_gas="9876543210",
+    )
+    resolved = upsert_deal(
+        deal_meta_followup,
+        customer_id=customer.id,
+        customer_name=customer.legal_name,
+        db=test_db,
+    )
+    test_db.commit()
+
+    # Same row returned (not a new insert), and backfilled.
+    assert resolved.id == existing.id
+    fetched = test_db.query(CustomerDeal).filter_by(id=existing.id).one()
+    assert fetched.mpan_electricity == "1012371240692"
+    assert fetched.mprn_gas == "9876543210"
+
+
+def test_wave42_does_not_overwrite_existing_meter(test_db):
+    """If the deal already has an MPAN and the reviewer types a
+    DIFFERENT MPAN on the upload form, the upsert must preserve the
+    stored value. The route surfaces the disagreement to the reviewer
+    via existing_deal_consistency warning so they know their input
+    wasn't applied (see route-level integration test below)."""
+    from app.intake.upsert import upsert_customer, upsert_deal
+    from app.models import CustomerDeal
+
+    customer = upsert_customer(CustomerMeta(legal_name="NoOverwrite Co"), test_db)
+    existing = upsert_deal(
+        DealMeta(
+            supplier=SupplierEnum.BG_CORE,
+            mpan_electricity="1111111111111",
+        ),
+        customer_id=customer.id,
+        customer_name=customer.legal_name,
+        db=test_db,
+    )
+    test_db.commit()
+
+    # Form supplies a DIFFERENT MPAN.
+    resolved = upsert_deal(
+        DealMeta(
+            existing_deal_id=existing.id,
+            mpan_electricity="2222222222222",
+        ),
+        customer_id=customer.id,
+        customer_name=customer.legal_name,
+        db=test_db,
+    )
+    test_db.commit()
+
+    fetched = test_db.query(CustomerDeal).filter_by(id=existing.id).one()
+    # Stored value preserved — destructive mutation is reserved for the
+    # explicit /api/calls/{id}/metadata edit path.
+    assert fetched.mpan_electricity == "1111111111111"
+    assert resolved.id == existing.id
+
+
+def test_wave42_existing_deal_conflict_emits_warning(test_db):
+    """Validators.existing_deal_consistency fires `existing_deal_field_conflict`
+    when the upload form's MPAN disagrees with the stored deal MPAN.
+    Wave-42 (routes.py) wires existing_deal_fields into validate_payload
+    so this warning actually reaches the response — before wave-42 the
+    machinery existed but was never armed for customer-page uploads."""
+    from app.intake import validate_payload
+
+    payload = IntakePayload(
+        customer=CustomerMeta(legal_name="Conflict Co"),
+        deal=DealMeta(
+            existing_deal_id=uuid.uuid4(),
+            supplier=SupplierEnum.BG_CORE,
+            mpan_electricity="2222222222222",
+        ),
+        call=CallMeta(call_type="lead_gen"),
+        dev_auto_detect=False,
+    )
+    existing_fields = {
+        "supplier": "British Gas Core",
+        "mpan_electricity": "1111111111111",
+        "mprn_gas": None,
+    }
+    warnings = validate_payload(payload, existing_fields)
+    codes = [w.code for w in warnings]
+    assert "existing_deal_field_conflict" in codes
+    fields = [w.field for w in warnings if w.code == "existing_deal_field_conflict"]
+    assert "deal.mpan_electricity" in fields
+    # Wave-42 PII hygiene — the warning message MUST NOT echo the stored
+    # MPAN value (security-reviewer agent a66367b9e0631bbc5 MED). The
+    # supplied value also stays out of the message; the reviewer knows
+    # what they typed, and the deal page is the canonical source for
+    # the stored value.
+    mpan_warnings = [
+        w for w in warnings
+        if w.code == "existing_deal_field_conflict"
+        and w.field == "deal.mpan_electricity"
+    ]
+    for w in mpan_warnings:
+        assert "1111111111111" not in w.message
+        assert "2222222222222" not in w.message

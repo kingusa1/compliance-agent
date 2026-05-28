@@ -112,12 +112,19 @@ def existing_deal_consistency(
         if new_val is None or existing_val is None:
             continue
         if str(new_val).strip().lower() != str(existing_val).strip().lower():
+            # Wave-42 PII hygiene (security-reviewer agent
+            # a66367b9e0631bbc5 MED): do NOT echo the stored value back
+            # in the warning message. MPAN identifies a physical premises
+            # and counts as personal data under PECR/GDPR when combinable
+            # with the customer name. The reviewer can already see the
+            # stored value on the deal-detail page; the warning just
+            # needs to flag the disagreement.
             warnings.append(
                 ValidationWarning(
                     code="existing_deal_field_conflict",
                     message=(
-                        f"{field} '{new_val}' conflicts with existing deal "
-                        f"value '{existing_val}'"
+                        f"{field} supplied value disagrees with the stored "
+                        f"deal record — view the deal page to compare"
                     ),
                     field=f"deal.{field}",
                 )
