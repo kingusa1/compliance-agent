@@ -83,6 +83,56 @@ def upsert_customer(meta: CustomerMeta, db: Session) -> Customer:
     return customer
 
 
+def backfill_deal_meters(
+    meta: DealMeta,
+    deal: CustomerDeal,
+    *,
+    call_id: Optional[str] = None,
+) -> None:
+    """Wave-43 (2026-05-28) — shared backfill used by every code path
+    that resolves to an existing CustomerDeal row.
+
+    Three intake paths attach a Call to an existing deal:
+      1. ``upsert_deal`` with ``meta.existing_deal_id`` set (B-3 fast path
+         when the frontend pre-passes ``customer_id`` + deal id).
+      2. ``find_existing_deal`` matcher hit (composite / hard-key on
+         MPAN / DocuSign etc.). Routes.py grabs the row directly and
+         never calls ``upsert_deal``.
+      3. Legacy slug-based upsert when the matcher didn't hit but
+         legal_name resolved to an existing customer with one deal.
+
+    Without this helper the backfill lived only inside ``upsert_deal``'s
+    existing-deal branch, so paths 2 and 3 silently dropped any MPAN /
+    MPRN the reviewer typed. Owner-reported symptom: form MPAN never
+    appeared on the deal-detail page even though the upload succeeded.
+
+    Non-destructive — only writes when the stored field is empty. Conflict
+    cases (stored value present and disagrees) are caught by
+    ``validators.existing_deal_consistency`` which the route arms with the
+    locked-row's pre-mutation values. Emits the same structured log line
+    on each write so the audit trail shows which upload caused the value
+    to materialise on the row.
+    """
+    # security-reviewer agent a474c5af33fb3019a LOW — emit call_id
+    # alongside deal_id so the audit trail directly links the upload
+    # that caused the backfill (no log-timestamp proximity required).
+    cid = call_id or "unknown"
+    if meta.mpan_electricity and not deal.mpan_electricity:
+        deal.mpan_electricity = meta.mpan_electricity
+        log.info(
+            "✍️ DEAL_BACKFILL call_id=%s deal_id=%s field=mpan_electricity",
+            cid,
+            deal.id,
+        )
+    if meta.mprn_gas and not deal.mprn_gas:
+        deal.mprn_gas = meta.mprn_gas
+        log.info(
+            "✍️ DEAL_BACKFILL call_id=%s deal_id=%s field=mprn_gas",
+            cid,
+            deal.id,
+        )
+
+
 def upsert_deal(
     meta: DealMeta,
     customer_id: uuid.UUID,
@@ -141,22 +191,10 @@ def upsert_deal(
         # genuinely need to change a stored MPAN use the explicit
         # /api/calls/{id}/metadata edit path; the upload form is for
         # adding calls, not for destructive deal mutation.
-        if meta.mpan_electricity and not existing.mpan_electricity:
-            existing.mpan_electricity = meta.mpan_electricity
-            # python-reviewer agent a7c6c8ea542082642 NIT — match the
-            # codebase's enrichment-log style (`📅 DATE_EXTRACTOR
-            # applied`, `✍️ NAME_PROMOTE_REVERSE`) so the audit trail
-            # shows which upload caused the meter to appear on the row.
-            log.info(
-                "✍️ DEAL_BACKFILL deal_id=%s field=mpan_electricity",
-                existing.id,
-            )
-        if meta.mprn_gas and not existing.mprn_gas:
-            existing.mprn_gas = meta.mprn_gas
-            log.info(
-                "✍️ DEAL_BACKFILL deal_id=%s field=mprn_gas",
-                existing.id,
-            )
+        # Wave-43 (2026-05-28): backfill via the shared helper so the
+        # same write-thru logic runs from upsert_deal AND from the
+        # matcher-hit branch in routes.py (which used to bypass this).
+        backfill_deal_meters(meta, existing)
         return existing
 
     deal = CustomerDeal(

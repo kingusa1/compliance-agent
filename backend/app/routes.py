@@ -409,15 +409,50 @@ async def upload_call(
             matcher_hit = None
 
         if matcher_hit is not None and matcher_hit.confidence >= REVIEW_QUEUE_THRESHOLD:
+            # Wave-43 (2026-05-28): row-lock the matched deal so the
+            # subsequent backfill_deal_meters write doesn't race a
+            # parallel uploader's matcher hit. Same FOR UPDATE pattern
+            # wave-42 added on the existing_deal_id branch.
             deal_row = (
                 db.query(CustomerDeal)
                 .filter(CustomerDeal.id == matcher_hit.deal_id)
+                .with_for_update()
                 .first()
             )
             if deal_row is not None:
                 if hasattr(deal_row, "match_method"):
                     deal_row.match_method = matcher_hit.method
                     deal_row.match_confidence = float(matcher_hit.confidence)
+                # Wave-43 (owner-reported MPAN-drop on customer-page upload):
+                # matcher path used to silently drop the form-typed MPAN
+                # because it bypassed upsert_deal. Now backfills via the
+                # shared helper — same non-destructive semantics, same
+                # structured ✍️ DEAL_BACKFILL audit log.
+                #
+                # security-reviewer agent a474c5af33fb3019a MED — gate the
+                # backfill to confidence >= AUTO_MERGE_THRESHOLD. At the
+                # REVIEW_QUEUE band [0.85, 0.98) the matcher attribution
+                # is "tentative, awaiting reviewer confirmation"; writing
+                # MPAN onto that row before the reviewer confirms would
+                # leave orphaned meter data on a stranger's deal if the
+                # match is later rejected. Only auto-merged matches get
+                # the backfill; review-queue matches preserve the stored
+                # NULL until a reviewer commits. TODO(wave-44): arm
+                # `existing_deal_consistency` warning for the matcher
+                # path so conflicts get surfaced too (currently only
+                # wired on the existing_deal_id branch).
+                if matcher_hit.confidence >= AUTO_MERGE_THRESHOLD:
+                    # Inline import matches the file's local convention
+                    # (see L169, L359, L388, L393). python-reviewer NIT to
+                    # hoist this is overridden — the surrounding handler
+                    # functions all use inline imports.
+                    from app.intake.upsert import backfill_deal_meters
+
+                    backfill_deal_meters(
+                        intake_payload.deal,
+                        deal_row,
+                        call_id=call_id,
+                    )
                 db.flush()
                 resolved_deal_id = deal_row.id
                 # Pull canonical name from the linked Customer row when present

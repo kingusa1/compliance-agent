@@ -531,3 +531,72 @@ def test_wave42_existing_deal_conflict_emits_warning(test_db):
     for w in mpan_warnings:
         assert "1111111111111" not in w.message
         assert "2222222222222" not in w.message
+
+
+def test_wave43_backfill_helper_writes_when_blank(test_db):
+    """The matcher-hit path in routes.py grabs an existing deal directly
+    and never calls upsert_deal — wave-43 extracted the backfill into
+    `backfill_deal_meters(meta, deal)` so the same write-thru happens
+    regardless of which intake path resolved the row. This locks the
+    shared-helper contract."""
+    from app.intake.upsert import (
+        backfill_deal_meters,
+        upsert_customer,
+        upsert_deal,
+    )
+    from app.models import CustomerDeal
+
+    customer = upsert_customer(CustomerMeta(legal_name="Helper Co"), test_db)
+    # Seed a deal with no meter, the way the matcher would surface one
+    # that was created via tracker spreadsheet ingest.
+    blank_deal = upsert_deal(
+        DealMeta(supplier=SupplierEnum.BG_CORE),
+        customer_id=customer.id,
+        customer_name=customer.legal_name,
+        db=test_db,
+    )
+    test_db.commit()
+
+    # Mimic the route's matcher-hit branch: call the helper directly
+    # with a form-supplied DealMeta carrying MPAN.
+    backfill_deal_meters(
+        DealMeta(supplier=SupplierEnum.BG_CORE, mpan_electricity="3333222211110"),
+        blank_deal,
+    )
+    test_db.commit()
+
+    fetched = test_db.query(CustomerDeal).filter_by(id=blank_deal.id).one()
+    assert fetched.mpan_electricity == "3333222211110"
+
+
+def test_wave43_backfill_helper_does_not_overwrite(test_db):
+    """Same non-destructive contract the upsert_deal existing-deal branch
+    enforces — applies through the helper too."""
+    from app.intake.upsert import (
+        backfill_deal_meters,
+        upsert_customer,
+        upsert_deal,
+    )
+    from app.models import CustomerDeal
+
+    customer = upsert_customer(CustomerMeta(legal_name="Helper2 Co"), test_db)
+    seeded = upsert_deal(
+        DealMeta(
+            supplier=SupplierEnum.BG_CORE,
+            mpan_electricity="1111111111111",
+        ),
+        customer_id=customer.id,
+        customer_name=customer.legal_name,
+        db=test_db,
+    )
+    test_db.commit()
+
+    backfill_deal_meters(
+        DealMeta(supplier=SupplierEnum.BG_CORE, mpan_electricity="9999999999999"),
+        seeded,
+    )
+    test_db.commit()
+
+    fetched = test_db.query(CustomerDeal).filter_by(id=seeded.id).one()
+    assert fetched.mpan_electricity == "1111111111111"
+
