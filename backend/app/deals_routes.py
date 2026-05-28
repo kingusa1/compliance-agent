@@ -16,7 +16,7 @@ pagination is a future-work item but offset is good enough for the
 volumes we see in MVP.
 """
 
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -41,6 +41,59 @@ deals_router = APIRouter(prefix="/api/deals", tags=["deals"])
 # ---------------------------------------------------------------------------
 
 
+def _meter_display(deal: CustomerDeal) -> Optional[str]:
+    """Wave-46 (2026-05-28) — coalesce the meter identifier across all
+    three storage generations so the deal page never shows "—" when a
+    meter actually exists.
+
+    Three columns can hold a meter, written by different code paths:
+      * ``mpan_or_mprn``    — legacy combined column (XLSX tracker import,
+        old pipeline). Retained read-only per the model comment.
+      * ``mpan_electricity`` / ``mprn_gas`` — L7 split columns. EVERY new
+        write goes here: the intake upsert, the wave-42/43 backfill, and
+        the deal-meter matcher's hard-key lookup all read/write these.
+      * ``meters[]``        — Watt dual-fuel JSON array.
+
+    Before this, ``_serialise_deal`` returned only ``mpan_or_mprn``, so a
+    reviewer who typed an MPAN on the upload form (which lands in
+    ``mpan_electricity``) saw "—" on the deal page even though the value
+    was stored and the matcher could hard-key on it. Owner-reported as
+    "the MPAN never shows". Prefer the explicit split columns; fall back
+    to the legacy column, then the meters array.
+    """
+    parts: List[str] = []
+    if deal.mpan_electricity:
+        parts.append(str(deal.mpan_electricity))
+    if deal.mprn_gas:
+        parts.append(str(deal.mprn_gas))
+    if parts:
+        return " / ".join(parts)
+    if deal.mpan_or_mprn:
+        return str(deal.mpan_or_mprn)
+    for m in (getattr(deal, "meters", None) or []):
+        if isinstance(m, dict):
+            v = m.get("mpan") or m.get("mprn")
+            if v:
+                return str(v)
+    return None
+
+
+def _meters_display(deal: CustomerDeal) -> list:
+    """Wave-46 — the meters array shown on the deal page. When the JSON
+    ``meters`` column is empty (the common case for non-Watt deals),
+    synthesise a single row from the L7 split columns so the dual-fuel
+    UI still renders the reviewer's typed MPAN/MPRN."""
+    arr = list(getattr(deal, "meters", None) or [])
+    if arr:
+        return arr
+    row: dict = {}
+    if deal.mpan_electricity:
+        row["mpan"] = str(deal.mpan_electricity)
+    if deal.mprn_gas:
+        row["mprn"] = str(deal.mprn_gas)
+    return [row] if row else []
+
+
 def _serialise_deal(deal: CustomerDeal) -> dict:
     """Compact dict shape returned by list/detail. Keeps the public
     response stable independent of the SQLAlchemy column set."""
@@ -52,7 +105,9 @@ def _serialise_deal(deal: CustomerDeal) -> dict:
         "deal_value_gbp": (
             float(deal.deal_value_gbp) if deal.deal_value_gbp is not None else None
         ),
-        "mpan_or_mprn": deal.mpan_or_mprn,
+        # Wave-46 — coalesce across legacy + L7-split + meters-array so the
+        # value the reviewer typed (which lands in mpan_electricity) shows.
+        "mpan_or_mprn": _meter_display(deal),
         "expected_live_date": (
             deal.expected_live_date.isoformat() if deal.expected_live_date else None
         ),
@@ -71,7 +126,9 @@ def _serialise_deal(deal: CustomerDeal) -> dict:
         # W1 (v3-watt-coverage): Watt portal deep-link integer (X1).
         "external_watt_site_id": getattr(deal, "external_watt_site_id", None),
         # W1 (v3-watt-coverage): meter array — additive over mpan_or_mprn (X2).
-        "meters": list(getattr(deal, "meters", None) or []),
+        # Wave-46 — synthesise from the L7 split columns when the JSON
+        # array is empty so the dual-fuel UI shows the typed MPAN/MPRN.
+        "meters": _meters_display(deal),
     }
 
 

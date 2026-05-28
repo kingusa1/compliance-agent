@@ -5168,6 +5168,11 @@ def patch_call_metadata(
     db.commit()
     log.info(f"\U0001f4dd METADATA_EDIT call_id={call_id} actor={user['id']}")
 
+    # Wave-46 — shared meter-display coalesce (inline import per this
+    # file's convention) so the response below surfaces L7 split-column
+    # meters, not just the legacy mpan_or_mprn.
+    from app.deals_routes import _meter_display
+
     # Inngest observability — surface reviewer overrides so the dashboard
     # tracks how often auto-detect needs human correction. Fields_touched
     # lets us see which auto-detect paths fail most.
@@ -5199,7 +5204,11 @@ def patch_call_metadata(
         "deal": {
             "id": str(deal.id) if deal else None,
             "supplier": deal.supplier if deal else None,
-            "mpan_or_mprn": deal.mpan_or_mprn if deal else None,
+            # Wave-46 (python-reviewer agent a58e67631b7e0c208 MED) — use the
+            # shared coalesce so this edit-metadata response shows the L7
+            # split-column meter too, not just the legacy mpan_or_mprn
+            # (which is null for every L7-era deal). Mirrors _serialise_deal.
+            "mpan_or_mprn": _meter_display(deal) if deal else None,
             "expected_live_date": deal.expected_live_date.isoformat() if deal and deal.expected_live_date else None,
             "deal_value_gbp": float(deal.deal_value_gbp) if deal and deal.deal_value_gbp is not None else None,
         } if deal else None,
