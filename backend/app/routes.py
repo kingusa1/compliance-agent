@@ -5010,6 +5010,103 @@ def delete_call(
     }
 
 
+@router.delete("/api/deals/{deal_id}")
+def delete_deal(
+    deal_id: str,
+    force: bool = False,
+    db: Session = Depends(get_db),
+    user=Depends(require_lead),
+):
+    """Wave-47b (2026-05-28) \u2014 delete a CustomerDeal.
+
+    Closes a real gap: ``DELETE /api/calls/{id}`` cascade-cleans a deal
+    only when its LAST call is removed, so an EMPTY deal (e.g. an
+    intake-created deal whose call the async pipeline later re-homed to a
+    different deal \u2014 the orphan that prompted this) could never be
+    removed through the API and accumulated forever on /deals.
+
+    Safety: a deal that still holds calls is compliance evidence; deleting
+    it is refused with 409 unless ``?force=true`` is passed. The empty-
+    deal path (the common orphan-cleanup case) needs no force. Mirrors
+    ``delete_call``'s child-cascade + orphan-customer cleanup + audit row.
+    """
+    from app.models import Customer, CustomerDeal
+
+    deal = db.query(CustomerDeal).filter_by(id=deal_id).first()
+    if not deal:
+        raise HTTPException(404, "Deal not found")
+
+    call_ids = [c.id for c in db.query(Call).filter_by(deal_id=deal_id).all()]
+    if call_ids and not force:
+        raise HTTPException(
+            409,
+            {
+                "code": "deal_has_calls",
+                "message": (
+                    f"Deal has {len(call_ids)} call(s). Pass ?force=true to "
+                    f"delete the deal and its calls."
+                ),
+                "call_count": len(call_ids),
+            },
+        )
+
+    # Cascade child calls the same way delete_call does \u2014 CallCheckpoint has
+    # no passive_deletes so it must be cleared explicitly; the 2026-05-10
+    # migration's ON DELETE CASCADE handles the other 8 child tables.
+    for cid in call_ids:
+        db.query(CallCheckpoint).filter_by(call_id=cid).delete()
+        call = db.query(Call).filter_by(id=cid).first()
+        if call:
+            db.delete(call)
+    db.flush()
+
+    customer_id = getattr(deal, "customer_id", None)
+    supplier = deal.supplier
+    db.delete(deal)
+    db.flush()
+
+    customer_deleted = False
+    if customer_id is not None:
+        try:
+            remaining = (
+                db.query(CustomerDeal).filter_by(customer_id=customer_id).count()
+            )
+            if remaining == 0:
+                cust = db.query(Customer).filter_by(id=customer_id).first()
+                if cust:
+                    db.delete(cust)
+                    customer_deleted = True
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"\U0001f5d1\ufe0f DELETE deal customer cleanup skipped: {e}")
+
+    record_audit(
+        db,
+        action="deal.delete",
+        entity_type="deal",
+        entity_id=deal_id,
+        payload={
+            "supplier": supplier,
+            "calls_deleted": len(call_ids),
+            "forced": force,
+            "customer_deleted": customer_deleted,
+        },
+        actor_id=user.get("id") if isinstance(user, dict) else None,
+    )
+    db.commit()
+
+    log.info(
+        f"\U0001f5d1\ufe0f DELETE deal_id={deal_id} supplier={supplier!r} "
+        f"calls_deleted={len(call_ids)} forced={force} "
+        f"customer_deleted={customer_deleted}"
+    )
+    return {
+        "status": "ok",
+        "deleted": deal_id,
+        "calls_deleted": len(call_ids),
+        "customer_deleted": customer_deleted,
+    }
+
+
 # \u2500\u2500 W1 (v3-watt-coverage): risk_tags toggle \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 # Allowed enum (frontend passes one of these per chip click).
 _RISK_TAGS_ALLOWED = frozenset({
