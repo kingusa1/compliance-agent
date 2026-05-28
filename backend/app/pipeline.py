@@ -1955,12 +1955,105 @@ async def _step_detect_metadata(
             and (current_deal.customer_name or "").startswith("(auto-detect pending")
         )
         if current_deal:
+            # Wave-50 — capture the deal's DECLARED business name (the
+            # customer the reviewer attached this upload to) BEFORE any
+            # merge/promote rewrites it, so the data-quality check below
+            # can compare it against what the audio actually says.
+            declared_business_name = (current_deal.customer_name or "").strip()
+
             # 2026-05-16: Opus 4.7 mandate across all detectors (Mohamed).
             business_name = await detect_business_name(transcript)
             # Last-resort fallback: when no business name surfaces, fall back to
             # the detected customer's name so we never leave the stub label.
             if not business_name and call.customer_name and call.customer_name.strip():
                 business_name = call.customer_name.strip()
+
+            # Wave-50 — customer-name-mismatch data-quality warning.
+            # Fires ONLY when (1) the deal is NOT a stub (it carries a real,
+            # reviewer-declared business name) AND (2) the audio-detected
+            # business name strongly diverges from it. This is the "you
+            # uploaded the wrong customer's recording" guardrail. Strictly
+            # like-with-like (business name vs business name) so the
+            # person-name-vs-business-name split that exists by design
+            # NEVER triggers a false positive. Written to the dedicated
+            # data_quality_warnings channel — NOT the compliance flags
+            # table — so it can never pollute the compliance findings.
+            try:
+                if (
+                    not is_stub
+                    and business_name
+                    and declared_business_name
+                    and not declared_business_name.startswith("(auto-detect pending")
+                ):
+                    from app.deal_meter_merge import _name_fuzz_ratio
+                    ratio = _name_fuzz_ratio(
+                        declared_business_name.lower(), business_name.lower()
+                    )
+                    # CALIBRATED conservatively to avoid false positives in a
+                    # compliance tool. Measured token-set ratios (2026-05-28):
+                    #   wrong customer  "Upper Halliford News" vs "Clifton
+                    #     Rest Home"                                    = 0
+                    #   wrong customer  "Lucy" vs "Curry Express"       = 0
+                    #   SAME business   "The Church" vs "Evangelical
+                    #     Church"                                       = 33
+                    #   SAME business   "Charles Palace" vs "Awais …
+                    #     Charles Palace" (person+business)             = 40
+                    #   SAME business   "Acme Plumbing Ltd" vs "… Limited" = 50
+                    # The same-business variants (the LLM emits different
+                    # names per transcript) cluster at 33-50; genuine
+                    # wrong-customer uploads share NO tokens and score ~0.
+                    # A < 25 floor sits cleanly in the gap: it fires only on
+                    # near-zero overlap, so it never warns on a legitimate
+                    # name variant. Missing an ambiguous mid-range case is
+                    # the SAFE direction for a compliance tool — a false
+                    # "wrong customer" banner is worse than a missed one.
+                    if ratio < 25:
+                        warn = {
+                            "code": "customer_name_mismatch",
+                            "message": (
+                                f"Detected business “{business_name}” differs "
+                                f"from the deal customer “{declared_business_name}” "
+                                f"(name match {ratio}%). Verify this recording "
+                                f"belongs to this customer."
+                            ),
+                        }
+                        existing_dq = list(getattr(call, "data_quality_warnings", None) or [])
+                        if not any(
+                            isinstance(w, dict) and w.get("code") == "customer_name_mismatch"
+                            for w in existing_dq
+                        ):
+                            existing_dq.append(warn)
+                            call.data_quality_warnings = existing_dq
+                            db.flush()
+                            log.warning(
+                                f"⚠️ CUSTOMER_NAME_MISMATCH call_id={call_id} "
+                                f"declared=\"{declared_business_name}\" "
+                                f"detected=\"{business_name}\" ratio={ratio}"
+                            )
+                            try:
+                                from app.audit import record_audit
+                                record_audit(
+                                    db,
+                                    action="call.customer_name_mismatch",
+                                    entity_type="call",
+                                    entity_id=str(call_id),
+                                    payload={
+                                        "declared_business_name": declared_business_name,
+                                        "detected_business_name": business_name,
+                                        "name_match_ratio": ratio,
+                                        "deal_id": str(call.deal_id) if call.deal_id else None,
+                                    },
+                                    organization_id=(
+                                        str(call.organization_id)
+                                        if getattr(call, "organization_id", None) else None
+                                    ),
+                                )
+                            except Exception as _dq_audit_e:  # noqa: BLE001
+                                log.warning(
+                                    f"customer_name_mismatch audit append failed: {_dq_audit_e}"
+                                )
+            except Exception as _dq_e:  # noqa: BLE001 — data-quality check must never break the pipeline
+                log.warning(f"customer_name_mismatch check skipped call_id={call_id}: {_dq_e}")
 
             # 2026-05-16 second-pass deal merge using the BUSINESS name
             # (the first pass at line ~724 only had the person name on

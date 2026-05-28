@@ -154,6 +154,9 @@ def _serialise_call(c: Call, segments: list | None = None) -> dict:
         "detected_supplier": c.detected_supplier,
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "completed_at": c.completed_at.isoformat() if c.completed_at else None,
+        # Wave-50 — non-compliance data-quality warnings (e.g.
+        # customer_name_mismatch). Separate channel from compliance flags.
+        "data_quality_warnings": list(getattr(c, "data_quality_warnings", None) or []),
         # Wave-26 — multi-segment array. UIs render one pill per chip
         # instead of a single call_type. Empty list = legacy call w/o
         # CallSegment rows; UI falls back to call_type.

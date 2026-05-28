@@ -67,6 +67,7 @@ import { VerdictTab } from "./VerdictTab";
 import { SegmentCards } from "./SegmentCards";
 import { SegmentChips } from "./SegmentChips";
 import { VulnerabilityBanner } from "./VulnerabilityBanner";
+import { DataQualityBanner } from "./DataQualityBanner";
 import { EditMetadataDialog } from "./EditMetadataDialog";
 import { ReanalyzeButton } from "./ReanalyzeButton";
 import { PipelineTimeline } from "@/components/design/PipelineTimeline";
@@ -1227,6 +1228,11 @@ export default function CallDetailPage({
           extraction pipeline emitted a VULNERABLE_CUSTOMER flag.
           Stacks below the W3.A pricing-mismatch banner when both fire. */}
       <VulnerabilityBanner flags={flags} />
+
+      {/* Wave-50 — data-quality warning banner (e.g. customer_name_mismatch:
+          the reviewer likely uploaded the wrong customer's recording).
+          Separate channel from compliance flags above. */}
+      <DataQualityBanner warnings={detail.data?.data_quality_warnings} />
 
       <div
         style={{

@@ -1036,3 +1036,45 @@ class TestLockSurvivorTimeout:
 
         with pytest.raises(RuntimeError, match="foreign key"):
             _lock_survivor(mock_db, uuid.uuid4())
+
+
+class TestWave50CustomerMismatchThreshold:
+    """Wave-50 — the customer-name-mismatch data-quality warning fires
+    only when the audio-detected BUSINESS name shares essentially NO
+    tokens with the deal's declared business name (token-set ratio < 25).
+
+    The threshold was CALIBRATED against real data, not guessed: the LLM
+    emits slightly different business names per transcript for the SAME
+    physical customer ("The Church" vs "Evangelical Church" = 33;
+    "Charles Palace" vs "Awais … Charles Palace" = 40), which cluster at
+    33-50. Genuine wrong-customer uploads share no tokens and score ~0.
+    The < 25 floor sits in the gap so the warning never fires on a
+    legitimate name variant — the exact false-positive trap we designed
+    around. A missed ambiguous mid-range case is the SAFE direction for a
+    compliance tool. Strictly business-vs-business: the
+    person-name-vs-business-name split that exists by design is never
+    compared here."""
+
+    FLOOR = 25
+
+    def test_wrong_customer_audio_scores_below_floor(self) -> None:
+        """Totally different business → WARN (score 0 < 25)."""
+        from app.deal_meter_merge import _name_fuzz_ratio
+        assert _name_fuzz_ratio("upper halliford news", "clifton rest home") < self.FLOOR
+        assert _name_fuzz_ratio("lucy", "curry express") < self.FLOOR
+
+    def test_same_business_variants_stay_above_floor(self) -> None:
+        """Same business, LLM phrasing drift → NO warn (>= 25). This is the
+        false-positive case the floor must never trip."""
+        from app.deal_meter_merge import _name_fuzz_ratio
+        assert _name_fuzz_ratio("the church", "evangelical church") >= self.FLOOR
+        assert (
+            _name_fuzz_ratio(
+                "charles palace", "awais mustafa ta charles palace"
+            )
+            >= self.FLOOR
+        )
+
+    def test_identical_names_score_max(self) -> None:
+        from app.deal_meter_merge import _name_fuzz_ratio
+        assert _name_fuzz_ratio("acme plumbing ltd", "acme plumbing ltd") == 100

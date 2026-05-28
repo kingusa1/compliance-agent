@@ -138,6 +138,10 @@ export interface Call {
     assemblyai_speakers: number;
     fallback: boolean;
   } | null;
+  // Wave-50 — non-compliance data-quality warnings (e.g.
+  // customer_name_mismatch). Distinct from compliance flags; rendered as
+  // an amber banner on the call-detail page. Empty/absent on clean calls.
+  data_quality_warnings?: { code: string; message: string }[];
 }
 
 export interface CallListResponse {

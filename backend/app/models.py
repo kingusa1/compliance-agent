@@ -278,6 +278,16 @@ class Call(Base):
     # to set NOT NULL DEFAULT in one DDL); app-side coerces NULL → [].
     risk_tags = Column(TextArrayCompat, nullable=True, default=list)
 
+    # Wave-50 (2026-05-28): non-compliance "data quality" warnings —
+    # kept SEPARATE from the compliance ``flags`` relationship so a
+    # data-quality signal (e.g. customer-name-mismatch: the uploaded
+    # recording's detected business name strongly diverges from the deal
+    # it was attached to) never pollutes the compliance findings/report.
+    # Shape: list[{"code": str, "message": str}]. Server default '[]'.
+    data_quality_warnings = Column(
+        JSONBCompat, nullable=False, default=list, server_default="[]"
+    )
+
     # V2 Wiring Task 5: deal/call-type/supplier-variant linkage.
     deal_id = Column(PGUUID(as_uuid=True), ForeignKey("customer_deals.id", ondelete="SET NULL"), nullable=True, index=True)
     call_type = Column(Text, nullable=True)

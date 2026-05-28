@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Any, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ScriptCheckpoint(BaseModel):
@@ -138,6 +138,18 @@ class ComplianceResult(BaseModel):
     checkpoints: list[RuleCheckpoint] = []
 
 
+class DataQualityWarning(BaseModel):
+    """Wave-50 — one non-compliance data-quality warning on a call (e.g.
+    ``customer_name_mismatch``). Kept off the compliance ``flags`` channel
+    so it never enters the compliance findings/report. ``extra="allow"``
+    so future producers can attach context fields without a schema bump."""
+
+    model_config = ConfigDict(extra="allow")
+
+    code: str
+    message: str
+
+
 class CallResponse(BaseModel):
     id: str
     filename: str
@@ -189,6 +201,16 @@ class CallResponse(BaseModel):
     # Optional[List[str]] coerced to list — DB column is nullable so older
     # rows return None; pydantic validator below normalises to [].
     risk_tags: Optional[List[str]] = Field(default_factory=list)
+
+    # Wave-50 (2026-05-28): non-compliance data-quality warnings, e.g.
+    # customer_name_mismatch (uploaded recording's detected business name
+    # strongly diverges from the deal it was attached to). SEPARATE from
+    # ``flags`` (compliance findings) so the call-detail banner never
+    # mixes data-quality noise into the compliance report. Typed inner
+    # model gives the frontend a stable {code, message} contract
+    # (python-reviewer a4d7da00d77a76ce2). ``extra="allow"`` future-proofs
+    # the row shape without breaking older callers.
+    data_quality_warnings: List[DataQualityWarning] = Field(default_factory=list)
 
     # 2026-05-16 perf — pre-signed Supabase Storage URL for the call audio.
     # Populated by `get_call` so the call-detail page can start audio
