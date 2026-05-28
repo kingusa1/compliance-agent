@@ -31,7 +31,7 @@ from enum import Enum
 from typing import List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +90,16 @@ class CustomerMeta(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class MeterRow(BaseModel):
+    """One meter row from the L7 form. Frontend useFieldArray supports
+    dual-fuel by sending multiple rows — this schema mirrors the row
+    shape so the validator can accept the array directly. Wave-41.
+    """
+
+    mpan: Optional[str] = None
+    mprn: Optional[str] = None
+
+
 class DealMeta(BaseModel):
     """Deal-level metadata — groups 2-3 calls per supplier matrix.
 
@@ -99,11 +109,22 @@ class DealMeta(BaseModel):
 
     ``existing_deal_id`` distinguishes "+ New deal" (None → create) from
     "attach to existing" (UUID → look up).
+
+    Wave-41 (2026-05-28): also accepts ``meters: list[MeterRow]`` from
+    the L7 form's useFieldArray. A pre-validator flattens the first
+    non-empty mpan/mprn into the canonical ``mpan_electricity`` /
+    ``mprn_gas`` fields so the existing validator gate keeps working.
+    Without this, the frontend's `meters: [...]` array was silently
+    dropped by Pydantic (extra='ignore'), the two flat fields stayed
+    None, and `at_least_one_meter` fired ``meter_required`` even when
+    the reviewer had filled MPAN in the form. Defence in depth — the
+    frontend ALSO flattens in `buildUploadFormData`.
     """
 
     supplier: Optional[SupplierEnum] = None
     mpan_electricity: Optional[str] = None
     mprn_gas: Optional[str] = None
+    meters: Optional[List[MeterRow]] = None
     deal_value_gbp_annual: Optional[Decimal] = None
     commission_value: Optional[Decimal] = None
     commission_unit: Optional[Literal["pct", "gbp"]] = None
@@ -111,6 +132,38 @@ class DealMeta(BaseModel):
     term_months: Optional[Literal[12, 24, 36, 48, 60]] = None
     docusign_reference: Optional[str] = None
     existing_deal_id: Optional[UUID] = None
+
+    @model_validator(mode="after")
+    def _flatten_meters(self) -> "DealMeta":
+        # Wave-41 — defensive flatten. If `meters` was supplied and the
+        # flat fields are still empty, pull the first non-empty value
+        # of each kind into the canonical slot the validator reads.
+        # Idempotent: a payload that already filled the flat fields
+        # keeps them; a payload that only sent the array gets them
+        # derived. Skip rows where both mpan + mprn are blank.
+        # python-reviewer MED (ac1137fa65da6ed01): values derived here
+        # bypass the `_strip_meter` field_validator, so apply the same
+        # digits-only cleanup inline. Without this a meters-array value
+        # like "1012 371240692" (form auto-formatting) would land
+        # un-normalised on mpan_electricity, breaking downstream meter
+        # equality checks.
+        if not self.meters:
+            return self
+        if self.mpan_electricity is None:
+            for row in self.meters:
+                if row and row.mpan and row.mpan.strip():
+                    cleaned = "".join(ch for ch in row.mpan if ch.isdigit())
+                    if cleaned:
+                        self.mpan_electricity = cleaned
+                        break
+        if self.mprn_gas is None:
+            for row in self.meters:
+                if row and row.mprn and row.mprn.strip():
+                    cleaned = "".join(ch for ch in row.mprn if ch.isdigit())
+                    if cleaned:
+                        self.mprn_gas = cleaned
+                        break
+        return self
 
     @field_validator("mpan_electricity", "mprn_gas")
     @classmethod

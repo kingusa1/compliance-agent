@@ -86,6 +86,25 @@ describe("formatErrorDetail", () => {
     expect(out).toContain("auto");
   });
 
+  it("prefers detail.message when present (Watt {code,message} shape)", () => {
+    const body = {
+      detail: {
+        code: "meter_required",
+        message: "Provide MPAN (electricity) and/or MPRN (gas)",
+      },
+    };
+    expect(formatErrorDetail(body, "fb")).toBe(
+      "Provide MPAN (electricity) and/or MPRN (gas)",
+    );
+  });
+
+  it("prefers detail.detail when nested string is the only signal", () => {
+    const body = {
+      detail: { detail: "Upload conflict on this file" },
+    };
+    expect(formatErrorDetail(body, "fb")).toBe("Upload conflict on this file");
+  });
+
   it("NEVER returns '[object Object]' (the bug this regression locks)", () => {
     const arrayDetail = {
       detail: [{ loc: ["body", "x"], msg: "bad" }],

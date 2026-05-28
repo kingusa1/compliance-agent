@@ -117,9 +117,18 @@ export function formatErrorDetail(err: unknown, fallback: string): string {
       return detail.length > 1 ? `${head} (+${detail.length - 1} more)` : head;
     }
     if (detail && typeof detail === "object" && !Array.isArray(detail)) {
-      // Domain-shaped errors like METADATA_MISMATCH — keep the raw JSON
-      // so admin.ts:uploadCall can pattern-match on it. Array case is
-      // already handled above; empty arrays fall through to fallback.
+      // Domain-shaped errors. Prefer the explicit human-readable
+      // `message` field when present (Watt convention: `{code,
+      // message}`). Falls back to raw JSON for unknown object shapes
+      // so admin.ts:uploadCall can still pattern-match e.g.
+      // METADATA_MISMATCH. Wave-41 polish.
+      const obj = detail as Record<string, unknown>;
+      if (typeof obj.message === "string" && obj.message.trim()) {
+        return obj.message;
+      }
+      if (typeof obj.detail === "string" && obj.detail.trim()) {
+        return obj.detail;
+      }
       try {
         return JSON.stringify(detail);
       } catch {

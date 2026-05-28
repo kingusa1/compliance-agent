@@ -186,11 +186,39 @@ export function buildUploadFormData(input: {
   fd.append("customer_name", input.customer.name);
   if (input.customer_slug) fd.append("customer_slug", input.customer_slug);
   if (input.supplier_override) fd.append("supplier_override", input.supplier_override);
+
+  // Wave-41 (2026-05-28) — owner-reported "meter_required" lie when MPAN
+  // was clearly filled in the form. Root cause: form holds meters as
+  // `deal.meters: [{mpan, mprn}]` (a useFieldArray), but backend
+  // `DealMeta` only reads the flat `mpan_electricity` + `mprn_gas`
+  // fields. Pydantic ignored the extra `meters` array silently, the
+  // validator saw both flat fields = None, and fired `meter_required`.
+  //
+  // Flatten here so the existing backend contract is satisfied: the
+  // FIRST non-empty mpan / mprn across the meter array fills the flat
+  // compat fields. `meters[]` stays in the payload for forward-compat
+  // (the backend wave-41 schema also accepts it).
+  const deal: Record<string, unknown> = { ...input.deal };
+  const metersRaw = Array.isArray(deal.meters) ? (deal.meters as unknown[]) : [];
+  if (metersRaw.length > 0) {
+    let mpan: string | undefined;
+    let mprn: string | undefined;
+    for (const row of metersRaw) {
+      if (row && typeof row === "object") {
+        const r = row as Record<string, unknown>;
+        if (!mpan && typeof r.mpan === "string" && r.mpan.trim()) mpan = r.mpan.trim();
+        if (!mprn && typeof r.mprn === "string" && r.mprn.trim()) mprn = r.mprn.trim();
+      }
+    }
+    if (mpan && !deal.mpan_electricity) deal.mpan_electricity = mpan;
+    if (mprn && !deal.mprn_gas) deal.mprn_gas = mprn;
+  }
+
   // Stash the rest of the structured intake as a JSON `metadata` blob;
   // backend already accepts this string-encoded field.
   const metadata = {
     customer: input.customer,
-    deal: input.deal,
+    deal,
     call: { ...input.call, audio_file: undefined }, // strip File from JSON
     dev_auto_detect: input.dev_auto_detect ?? false,
   };

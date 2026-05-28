@@ -191,6 +191,68 @@ def test_validation_at_least_one_meter():
     assert exc_info.value.code == "meter_required"
 
 
+def test_validation_meters_array_flattens_to_mpan_electricity():
+    """Wave-41 — owner-reported: form sent `deal.meters: [{mpan, mprn}]`
+    but the gate read `mpan_electricity` / `mprn_gas` flat fields. The
+    new model_validator must flatten the first non-empty meter row so
+    the gate passes when meters[] is the only signal."""
+    payload = IntakePayload(
+        customer=CustomerMeta(legal_name="Marsden Capital Ltd"),
+        deal=DealMeta.model_validate({
+            "supplier": SupplierEnum.BG_CORE,
+            # Form-shaped meters array — no flat fields populated.
+            "meters": [{"mpan": "1012371240692", "mprn": ""}],
+        }),
+        call=CallMeta(call_type="verbal"),
+        dev_auto_detect=False,
+    )
+    # Flatten happened — gate now sees the meter.
+    assert payload.deal.mpan_electricity == "1012371240692"
+    # Gate is satisfied (does not raise).
+    validate_payload(payload)
+
+
+def test_validation_meters_array_preserves_explicit_flat_fields():
+    """If both the array and the flat field are present, the flat field
+    is authoritative (no overwrite)."""
+    payload_deal = DealMeta.model_validate({
+        "supplier": SupplierEnum.BG_CORE,
+        "mpan_electricity": "9999999999999",
+        "meters": [{"mpan": "1012371240692"}],
+    })
+    # Flat field wins.
+    assert payload_deal.mpan_electricity == "9999999999999"
+
+
+def test_validation_meters_array_dual_fuel():
+    """Each meter kind picked independently from the first row that
+    carries it — supports the dual-fuel form pattern."""
+    deal = DealMeta.model_validate({
+        "supplier": SupplierEnum.BG_CORE,
+        "meters": [
+            {"mpan": "1012371240692"},
+            {"mprn": "8765432109876"},
+        ],
+    })
+    assert deal.mpan_electricity == "1012371240692"
+    assert deal.mprn_gas == "8765432109876"
+
+
+def test_validation_meters_array_strips_spaces_and_hyphens():
+    """Wave-41 — values flattened from `meters[]` must go through the
+    same digits-only normaliser the `_strip_meter` field_validator
+    applies to the flat fields. Otherwise the canonical storage
+    diverges depending on which form-shape the reviewer used."""
+    deal = DealMeta.model_validate({
+        "supplier": SupplierEnum.BG_CORE,
+        "meters": [
+            {"mpan": "1012 371-240 692", "mprn": "8765/4321/09876"},
+        ],
+    })
+    assert deal.mpan_electricity == "1012371240692"
+    assert deal.mprn_gas == "8765432109876"
+
+
 # ---------------------------------------------------------------------------
 # 6. Validation gate — charity consistency (WARNING).
 # ---------------------------------------------------------------------------
