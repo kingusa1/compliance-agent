@@ -177,12 +177,10 @@ function parseScorePct(score: string | null | undefined): number | null {
 
 function WorkflowBar({
   steps,
-  current,
   supplier,
   calls,
 }: {
   steps: string[];
-  current: number;
   supplier?: string | null;
   // 2026-05-23 — per-stage agent + score. Each call.call_type maps to
   // a step; passing the deal's calls lets the chip render who handled
@@ -207,6 +205,15 @@ function WorkflowBar({
   // so chip-strip, "Not yet submitted", and the linear counter all
   // agree on what's covered.
   const seenSteps = seenStepsFor(calls ?? [], steps);
+  // Wave-45 (2026-05-28) — the genuine "next action" is the FIRST step
+  // in display order that hasn't been covered, NOT the count of covered
+  // steps. Owner screenshot: a British Gas deal had Verbal submitted but
+  // Lead Gen + Pre-Sales missing (out-of-order upload). The old
+  // `active = i === current` used current=seenSteps.size=1, lighting the
+  // chip at index 1 (Pre-Sales) as "active" while the "+ Upload" CTA and
+  // the "Not yet submitted" line both correctly pointed at Lead Gen
+  // (index 0). firstMissingIdx aligns the amber highlight with the CTA.
+  const firstMissingIdx = steps.findIndex((st) => !seenSteps.has(st));
   const callByStep = new Map<string, WorkflowCall>();
   for (const c of calls ?? []) {
     const segKinds = (c.segments ?? [])
@@ -249,9 +256,10 @@ function WorkflowBar({
           // pre_sales + verbal without covering lead_gen — so the
           // lead_gen chip stays grey.
           const done = seenSteps.has(s);
-          // `active` keeps the linear "what's next" indicator so the
-          // amber chip moves left-to-right as phases get covered.
-          const active = !done && i === current;
+          // Wave-45 — `active` marks the first uncovered step (the real
+          // next action), so it agrees with the upload CTA and the "Not
+          // yet submitted" line even when uploads arrive out of order.
+          const active = !done && i === firstMissingIdx;
           const corrective = false;
           const isVerbalEon = eon && s === "verbal";
           const isLoaEon = eon && s === "loa";
@@ -1141,7 +1149,6 @@ export default function CustomerDetailPage({
                   </div>
                   <WorkflowBar
                     steps={supplierAwareSteps}
-                    current={stepIdx}
                     supplier={deal.supplier}
                     calls={deal.calls}
                   />

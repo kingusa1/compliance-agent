@@ -214,10 +214,28 @@ export function buildUploadFormData(input: {
     if (mprn && !deal.mprn_gas) deal.mprn_gas = mprn;
   }
 
+  // Wave-44 (2026-05-28) — the form holds the customer's name as
+  // `customer.name`, but the backend `CustomerMeta` schema reads
+  // `legal_name`. Without this map, `IntakePayload.customer.legal_name`
+  // arrives as None, so the route's rich L7 intake branch
+  // (upsert_customer → find_existing_deal matcher → upsert_deal +
+  // wave-43 meter backfill) is SKIPPED entirely. The upload then falls
+  // to the dumb `elif customer_name:` fallback that attaches to an
+  // existing deal by name and persists NONE of the reviewer's typed
+  // deal fields (supplier, MPAN, value, term). This is the live reason
+  // the owner's form-typed MPAN never reached the deal page even after
+  // the wave-42/43 backend backfill landed — the backend code was
+  // correct but this path never reached it. Mapping name → legal_name
+  // routes the upload through the proper intake pipeline.
+  const customerMeta: Record<string, unknown> = { ...input.customer };
+  if (typeof input.customer.name === "string" && input.customer.name.trim()) {
+    customerMeta.legal_name = input.customer.name.trim();
+  }
+
   // Stash the rest of the structured intake as a JSON `metadata` blob;
   // backend already accepts this string-encoded field.
   const metadata = {
-    customer: input.customer,
+    customer: customerMeta,
     deal,
     call: { ...input.call, audio_file: undefined }, // strip File from JSON
     dev_auto_detect: input.dev_auto_detect ?? false,
