@@ -661,6 +661,8 @@ async def process_call(call_id: str, file_path: str, db: Session | None = None, 
                             )
                             _supplier_db.add(new_deal)
                             _supplier_db.flush()
+                            # Provenance (2026-05-30): peeled deal's supplier is AI-detected.
+                            set_source(new_deal, "supplier", "ai")
                             final_call.deal_id = new_deal.id
                             _supplier_db.flush()
                             log.warning(
@@ -1715,6 +1717,11 @@ async def _step_detect_metadata(
                             )
                             db.add(new_deal)
                             db.flush()
+                            # Provenance (2026-05-30): the peeled deal's supplier was
+                            # AI-detected. Was unset → field_sources tracking lost for
+                            # the new deal, so a later AI write to `supplier` couldn't be
+                            # provenance-checked. Stamp it now.
+                            set_source(new_deal, "supplier", "ai")
                             call.deal_id = new_deal.id
                             db.flush()
                             log.warning(

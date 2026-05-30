@@ -278,7 +278,7 @@ async def db_retry_on_disconnect_async(
     max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
     base_delay_s: float = _DEFAULT_BASE_DELAY_S,
     pre_retry: Callable[[], None] | None = None,
-) -> Callable[..., T]:
+) -> T:
     """Async variant — same semantics for awaitable callables. Implemented
     as a direct call (not a decorator) so caller can pass a lambda /
     `functools.partial` that already has its args bound.
