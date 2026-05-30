@@ -310,7 +310,7 @@ class PortalBatchSubmit(BaseModel):
 
 @rejections_router.get("/api/rejections")
 def list_rejections(
-    tab: str = Query("active", regex="^(active|fixed|dead|archive)$"),
+    tab: str = Query("active", pattern="^(active|fixed|dead|archive)$"),
     category: str | None = None,
     search: str | None = None,
     dead_reason: str | None = Query(
@@ -319,7 +319,7 @@ def list_rejections(
     ),
     source: str = Query(
         "all",
-        regex="^(reviewer|ai|all)$",
+        pattern="^(reviewer|ai|all)$",
         description=(
             "2026-05-12 client feedback — Phase 4 contract is enforced at "
             "create-time (pipeline._step_finalize no longer auto-creates "
@@ -410,11 +410,11 @@ def list_rejections(
 
 @rejections_router.get("/api/rejections/grouped")
 def list_rejections_grouped(
-    tab: str = Query("active", regex="^(active|fixed|dead|archive)$"),
+    tab: str = Query("active", pattern="^(active|fixed|dead|archive)$"),
     category: str | None = None,
     search: str | None = None,
     dead_reason: str | None = Query(None),
-    source: str = Query("all", regex="^(reviewer|ai|all)$"),
+    source: str = Query("all", pattern="^(reviewer|ai|all)$"),
     limit: int = Query(100, ge=1, le=500),
     user: dict = Depends(current_user),
     db: Session = Depends(get_db),

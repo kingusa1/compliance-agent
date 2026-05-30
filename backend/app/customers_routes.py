@@ -353,7 +353,7 @@ def create_customer(
 def list_customers(
     q: str | None = Query(None),
     supplier: str | None = Query(None),
-    action: str | None = Query(None, regex="^(PASS|REVIEW|REJECT|TRIAGE)$"),
+    action: str | None = Query(None, pattern="^(PASS|REVIEW|REJECT|TRIAGE)$"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
