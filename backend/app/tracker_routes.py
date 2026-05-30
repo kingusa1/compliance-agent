@@ -22,8 +22,8 @@ def _split_csv(v: Optional[str]) -> Optional[list[str]]:
 
 @tracker_router.get("/api/tracker/rows")
 def list_tracker_rows(
-    tab: str = Query("active", regex="^(active|fixed|dead|compliant|awaiting_review)$"),
-    month: Optional[str] = Query(None, regex=r"^\d{4}-\d{2}$"),
+    tab: str = Query("active", pattern="^(active|fixed|dead|compliant|awaiting_review)$"),
+    month: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}$"),
     category: Optional[str] = Query(None, description="comma-separated category enum keys"),
     supplier: Optional[str] = None,
     search: Optional[str] = None,
@@ -36,14 +36,14 @@ def list_tracker_rows(
         None,
         description="comma-separated AI_PENDING|HUMAN_CONFIRMED|HUMAN_OVERRIDDEN",
     ),
-    date_from: Optional[str] = Query(None, regex=r"^\d{4}-\d{2}-\d{2}$"),
-    date_to: Optional[str] = Query(None, regex=r"^\d{4}-\d{2}-\d{2}$"),
-    date_on: Optional[str] = Query(None, regex=r"^\d{4}-\d{2}-\d{2}$"),
+    date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_on: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     meter: Optional[str] = Query(None, description="MPAN/MPRN substring match"),
     value_min: Optional[float] = Query(None, ge=0),
     value_max: Optional[float] = Query(None, ge=0),
     deadline_state: Optional[str] = Query(
-        None, regex=r"^(overdue|due_3d|due_7d|on_track)$"
+        None, pattern=r"^(overdue|due_3d|due_7d|on_track)$"
     ),
     db: Session = Depends(get_db),
     user=Depends(current_user),

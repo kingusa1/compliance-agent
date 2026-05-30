@@ -121,9 +121,13 @@ def get_me(user=Depends(current_reviewer)):
 
 
 @router.post("/api/log")
-async def browser_log(payload: dict):
+async def browser_log(payload: dict, _user=Depends(current_reviewer)):
     """Client-side console bridge. Browser `console.*` calls POST here so devs
-    can see browser logs in the same terminal as backend logs."""
+    can see browser logs in the same terminal as backend logs.
+
+    Auth (2026-05-30 sec audit): was unauthenticated — an open POST that writes to
+    backend logs is a flooding vector. Gated to authenticated reviewers; no frontend
+    code path posts here, so this breaks nothing."""
     level = str(payload.get("level", "info")).lower()
     message = str(payload.get("message", ""))[:2000]
     source = str(payload.get("source", ""))[:120]
@@ -1514,7 +1518,7 @@ PROVIDERS = {
 
 
 @router.get("/api/settings/model")
-def get_model_settings():
+def get_model_settings(_user=Depends(current_reviewer)):  # 2026-05-30 sec audit: was unauth (leaked masked key tails)
     providers = {}
     for pid, meta in PROVIDERS.items():
         key_val = getattr(settings, meta["key_attr"], "") if meta["key_attr"] else ""
@@ -1534,8 +1538,31 @@ def get_model_settings():
 _RUNTIME_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime_settings.json")
 
 
-def _save_runtime_settings(updates: dict):
-    """Persist runtime setting overrides so they survive server restarts."""
+# Defence-in-depth (2026-05-30 security audit): secrets must NEVER be persisted to —
+# or loaded from — this on-disk JSON. API keys, DSNs, and connection strings live in
+# environment variables only. Any key whose NAME looks secret is stripped on BOTH
+# write and read, so a future caller (or a tampered file) can't smuggle a secret in.
+_SECRET_NAME_TOKENS = (
+    "api_key", "_key", "secret", "token", "password", "pwd", "url", "dsn",
+    "credential", "auth",
+)
+
+
+def _looks_secret(name: str) -> bool:
+    low = name.lower()
+    return any(tok in low for tok in _SECRET_NAME_TOKENS)
+
+
+def _save_runtime_settings(updates: dict) -> list[str]:
+    """Persist non-secret runtime overrides so they survive server restarts.
+
+    Returns the list of keys actually written. Secret-looking keys are stripped:
+    they are applied to the in-memory ``settings`` by the caller (so a UI key change
+    takes effect for the running process) but never touch disk.
+    """
+    safe_updates = {k: v for k, v in updates.items() if not _looks_secret(k)}
+    if not safe_updates:
+        return []
     current: dict = {}
     if os.path.exists(_RUNTIME_SETTINGS_FILE):
         try:
@@ -1543,9 +1570,12 @@ def _save_runtime_settings(updates: dict):
                 current = json.load(f)
         except Exception:
             current = {}
-    current.update(updates)
+    # Retroactively scrub any secret an older build may have persisted.
+    current = {k: v for k, v in current.items() if not _looks_secret(k)}
+    current.update(safe_updates)
     with open(_RUNTIME_SETTINGS_FILE, "w") as f:
         json.dump(current, f, indent=2)
+    return sorted(safe_updates.keys())
 
 
 def _load_runtime_settings():
@@ -1556,6 +1586,8 @@ def _load_runtime_settings():
         with open(_RUNTIME_SETTINGS_FILE) as f:
             data = json.load(f)
         for k, v in data.items():
+            if _looks_secret(k):
+                continue  # never load a secret from disk into the settings object
             if hasattr(settings, k):
                 setattr(settings, k, v)
         log.info(f"\u2699\ufe0f SETTINGS loaded from runtime_settings.json \u2192 provider={settings.active_provider}")
@@ -1588,12 +1620,11 @@ def update_model_settings(body: dict, _=Depends(_require_admin)):
             setattr(settings, meta["key_attr"], body[key_field])
             updates[meta["key_attr"]] = body[key_field]
 
-    if updates:
-        _save_runtime_settings(updates)
+    persisted_keys = _save_runtime_settings(updates) if updates else []
 
     active = settings.active_provider
     active_model = getattr(settings, PROVIDERS[active]["model_attr"])
-    log.info(f"⚙️ SETTINGS updated → provider={active}, model={active_model} (persisted: {list(updates.keys())})")
+    log.info(f"⚙️ SETTINGS updated → provider={active}, model={active_model} (persisted: {persisted_keys})")
     return {"status": "ok", "active_provider": active, "model": active_model}
 
 
@@ -1631,7 +1662,7 @@ def get_enabled_transcription_providers() -> list[str]:
 
 
 @router.get("/api/settings/transcription")
-def get_transcription_settings():
+def get_transcription_settings(_user=Depends(current_reviewer)):  # 2026-05-30 sec audit: was unauth
     enabled = set(get_enabled_transcription_providers())
     return {
         "providers": [
@@ -1758,8 +1789,14 @@ def get_stats(
 # --- SSE Streaming Endpoint ---
 
 @router.get("/api/calls/{call_id}/stream")
-async def stream_call_processing(call_id: str):
-    """SSE endpoint for real-time call processing with per-checkpoint streaming."""
+async def stream_call_processing(call_id: str, _user=Depends(current_reviewer)):
+    """SSE endpoint for real-time call processing with per-checkpoint streaming.
+
+    Auth (2026-05-30 sec audit): was unauthenticated — anyone with a call_id could
+    trigger a full download+transcribe+LLM pipeline run. Now gated. No frontend
+    consumer uses this path (the UI uses the in-memory /events SSE), so requiring a
+    bearer here breaks nothing while closing the unauthenticated processing trigger.
+    """
 
     async def event_generator():
         db = SessionLocal()
@@ -4502,7 +4539,7 @@ async def admin_ingest_script_checkpoints(
     _user: dict = Depends(require_lead),
 ):
     """Walk every `Script` row, locate its source markdown in
-    `.planning/phase2-docs/`, ask Opus 4.7 to extract the canonical
+    `.planning/phase2-docs/`, ask Opus 4.8 to extract the canonical
     per-rule checkpoint list, and write it to `Script.checkpoints`.
 
     Fixes the long-standing bug where every call fell through to the
@@ -4662,7 +4699,7 @@ async def admin_backfill_call_types(
     Replaces the old filename pre-pass results. Reviewer-signed-off calls
     are skipped. By default ``only_full=True`` so we only touch rows whose
     call_type is unset or 'full'; pass ``only_full=False`` to re-classify
-    every call (slower, costs Opus 4.7 calls per recording).
+    every call (slower, costs Opus 4.8 calls per recording).
 
     Pass ``?apply=true`` to persist; default is a dry-run that just logs
     the proposed changes + returns the diff.

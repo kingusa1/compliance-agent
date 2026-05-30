@@ -46,6 +46,7 @@ import {
   type VerdictAction,
 } from "@/lib/mutations/reviewer";
 import { ApiError, apiFetch } from "@/lib/api";
+import { supabase } from "@/lib/supabase";
 import { useMe } from "@/lib/auth";
 import { formatScorePercent } from "@/lib/score";
 import { formatCustomerName, isPlaceholderCustomerName } from "@/lib/customer";
@@ -528,24 +529,51 @@ export default function CallDetailPage({
   // lets the browser deliver the POST even after the document unloads
   // (hard tab close, Next.js router navigation, page reload).
   //
-  // The Authorization header is supplied via cookie (credentials: "include").
-  // No response handling — backend logs the release on its side; the UI
-  // doesn't need to wait for it.
+  // AUTH (fixed 2026-05-30): the backend release endpoint authenticates via the
+  // Supabase Bearer JWT in the Authorization header — NOT a cookie. The old code
+  // sent `credentials: "include"` only, so every release 401'd → the claim lock
+  // never cleared → calls leaked into a permanent `in_review` state (visible as a
+  // recurring 401 on /api/review-sessions/{id}/release in the console). We now
+  // capture the access token into a ref (kept fresh via onAuthStateChange) so the
+  // fire-and-forget cleanup can attach `Authorization: Bearer …` synchronously.
+  // keepalive fetch CAN set custom headers (sendBeacon cannot), so the token rides
+  // along even on hard unload.
+  const accessTokenRef = useRef<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    void supabase.auth.getSession().then(({ data }) => {
+      if (active) accessTokenRef.current = data.session?.access_token ?? null;
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      accessTokenRef.current = session?.access_token ?? null;
+    });
+    return () => {
+      active = false;
+      sub.subscription.unsubscribe();
+    };
+  }, []);
+
   const releaseClaim = useCallback((sessionId: string) => {
     if (!sessionId) return;
     const base = process.env.NEXT_PUBLIC_API_URL || "";
     const url = `${base}/api/review-sessions/${encodeURIComponent(sessionId)}/release`;
+    const token = accessTokenRef.current;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
     try {
       void fetch(url, {
         method: "POST",
         credentials: "include",
         keepalive: true,
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({}),
       });
     } catch {
-      // sendBeacon as ultimate fallback (no body, but the URL is enough
-      // for the backend to release the session).
+      // keepalive fetch failed to enqueue (rare). sendBeacon CANNOT set an
+      // Authorization header, so it would 401 too — we still fire it as a
+      // best-effort signal. The backend idle-claim reaper
+      // (POST /api/internal/release-idle-claims) is the ultimate backstop for
+      // any release that doesn't land.
       if (typeof navigator !== "undefined" && navigator.sendBeacon) {
         navigator.sendBeacon(url);
       }

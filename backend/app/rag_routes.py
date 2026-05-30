@@ -16,11 +16,14 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.auth import current_user
 from app.database import get_db
 from app.rag import search as rag_search
 from app.rag.namespaces import REGISTRY as _NS_REGISTRY
 
-rag_router = APIRouter(tags=["rag"])
+# Auth gate (2026-05-30 security audit): RAG search reads indexed transcript /
+# script content — require an authenticated user.
+rag_router = APIRouter(tags=["rag"], dependencies=[Depends(current_user)])
 
 # L10: 7 RAG namespaces (transcripts, scripts, loa_templates, supplier_docs,
 # gates, rule_catalog, rejections) + legacy 'directives' + 'all'.

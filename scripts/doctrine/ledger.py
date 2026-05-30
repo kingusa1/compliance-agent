@@ -31,6 +31,15 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Windows consoles default to cp1252; ledger evidence cells routinely contain
+# UTF-8 (≥, em-dashes) copied from agent output. Without this, `list-active`
+# crashes with UnicodeEncodeError on the first non-Latin-1 char (2026-05-30 fix).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    except Exception:
+        pass
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "doctrine"))
 from _ledger_io import (  # noqa: E402

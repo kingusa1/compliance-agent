@@ -56,7 +56,7 @@ from app.flags_routes import flags_router
 from app.hitl_routes import hitl_router
 from app.import_xlsx_routes import import_xlsx_router
 from app.inngest_client import inngest_client
-from app.observability_routes import observability_router
+from app.observability_routes import observability_router, observability_sse_router
 from app.rag_admin_routes import rag_admin_router
 from app.rag_routes import rag_router
 from app.rejections_routes import rejections_router
@@ -919,6 +919,7 @@ app.include_router(customers_router)
 app.include_router(directives_router)
 app.include_router(agents_router)
 app.include_router(observability_router)
+app.include_router(observability_sse_router)
 app.include_router(rules_router)
 # L8: glue mounts for L4 + L6 routers shipped by sub-agents.
 app.include_router(flags_router)

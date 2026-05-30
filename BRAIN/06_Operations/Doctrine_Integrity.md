@@ -1,6 +1,6 @@
 ---
 created: 2026-05-24
-updated: 2026-05-27 11:40 UTC
+updated: 2026-05-30 17:39 UTC
 tags: [operations, doctrine, integrity, tamper-evident]
 ---
 
@@ -29,7 +29,7 @@ tags: [operations, doctrine, integrity, tamper-evident]
 | BRAIN/06_Operations/Session_Self_Audit.md | `dc835ccffe761bd303849f89b44c427f56560a97ae4c67bf7967f8fccfff8b99` |
 | CLAUDE.md | `f0b0a4e4dbc8fa4ab94d940ab0a9c900240592c0f1891af6ddd19899eed35330` |
 | scripts/doctrine/audit.py | `b03d80fef18a666fb1e20d7ffca3c22231fdc023281ffacea85007e1c75cbd3b` |
-| scripts/doctrine/ledger.py | `eb934e4558255fd610ebc88bb572765aaee5d17deed81827dc2e122f4fca4431` |
+| scripts/doctrine/ledger.py | `a6d9da4fda724263039c512e8b099117d081e375e4244e6339060d3d749d50e1` |
 | scripts/doctrine/metrics.py | `fdf9680bdeed8c60b3fb2bc6e11c30b358c8956c320e7353351c43cb2bec185b` |
 | scripts/doctrine/integrity.py | `6f3689ca9d9bcabb172fe07b7afa4c88857ba12727e9feccac71385390455f6a` |
 | scripts/doctrine/_ledger_io.py | `fceb071dcadd3fd5d4365eb618188ef32c04fd7df6db3294e14fe7dc84e671f8` |
@@ -39,6 +39,7 @@ tags: [operations, doctrine, integrity, tamper-evident]
 
 ## Changelog
 
+- **2026-05-30 17:39 UTC** — ledger.py: reconfigure stdout/stderr to UTF-8 so list-active no longer crashes with UnicodeEncodeError on the '>=' char in evidence cells (2026-05-30 full-system validation session)
 - **2026-05-27 11:40 UTC** — please make sure to do a deep search on the internet before any wave add that in the brain so you will be 100% sure that the fix is enterprice grade confidance level 100%
 - **2026-05-26 12:16 UTC** — owner mandate 2026-05-28: push with kingusa1 not it@bbmgroup please
 - **2026-05-25 21:17 UTC** — Add the two-bibles + zero-errors + rule-maintenance doctrine to CLAUDE.md top-of-file BINDING DOCTRINE block, per owner mandate 2026-05-25

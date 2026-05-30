@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
+from app.auth import current_user
 from app.database import get_db
 from app.models import Call
 
@@ -29,7 +30,14 @@ from app.models import Call
 _COMPLIANT_INT = case((Call.compliant.is_(True), 1), else_=0)
 
 
-intelligence_router = APIRouter(prefix="/api/intelligence", tags=["intelligence"])
+# Auth gate (2026-05-30 security audit): all intelligence aggregations expose
+# compliance analytics (per-supplier / per-agent rates) — require an authenticated
+# user. Frontend apiFetch already attaches the Supabase bearer to every call.
+intelligence_router = APIRouter(
+    prefix="/api/intelligence",
+    tags=["intelligence"],
+    dependencies=[Depends(current_user)],
+)
 
 
 def _completed(db: Session):

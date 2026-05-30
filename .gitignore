@@ -33,6 +33,12 @@ backend/var/
 *.sqlite3
 *.db
 
+# ── Runtime settings override (2026-05-30 security audit) ────────────────
+# Written by PUT /api/settings/model. Holds provider/model overrides — and,
+# defensively, must NEVER contain API keys (the writer strips secrets). Keep
+# it out of git regardless so a future regression can't leak a key via commit.
+backend/runtime_settings.json
+
 # ── Editor / OS noise ────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db

@@ -39,6 +39,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.auth import current_user, require_lead
 from app.database import get_db
 from app.models import AgentTrace, Call, CallCheckpoint, CustomerDeal, FailedJob, PipelineStepLog
 
@@ -50,7 +51,19 @@ INNGEST_TIMEOUT_S = float(os.environ.get("INNGEST_API_TIMEOUT", "3"))
 JSON_TRUNCATE_BYTES = 4096
 
 
-observability_router = APIRouter(prefix="/api/observability", tags=["observability"])
+# Auth gate (2026-05-30 security audit): observability exposes pipeline internals,
+# the audit log, failed jobs, and orphan redispatch (triggers processing). Require an
+# authenticated user on the whole router. The SSE /stream endpoint can't carry an
+# Authorization header (EventSource limitation), so it lives on a separate ungated
+# router below — same accepted limitation as /api/calls/events.
+observability_router = APIRouter(
+    prefix="/api/observability",
+    tags=["observability"],
+    dependencies=[Depends(current_user)],
+)
+
+# Ungated sub-router for the EventSource SSE feed only.
+observability_sse_router = APIRouter(prefix="/api/observability", tags=["observability"])
 
 
 # ── GraphQL plumbing ─────────────────────────────────────────────────────
@@ -560,7 +573,11 @@ async def list_orphans(
 
 
 @observability_router.post("/orphans/{call_id}/redispatch")
-async def redispatch_orphan(call_id: str, db: Session = Depends(get_db)) -> dict:
+async def redispatch_orphan(
+    call_id: str,
+    db: Session = Depends(get_db),
+    _lead: dict = Depends(require_lead),
+) -> dict:
     """Re-emit the call/uploaded event so Inngest picks the call up.
 
     Idempotent in practice: Inngest creates a fresh run on each event;
@@ -673,7 +690,7 @@ async def get_run_detail(
 
 # ── route 3: SSE stream ──────────────────────────────────────────────────
 
-@observability_router.get("/stream")
+@observability_sse_router.get("/stream")
 async def stream_runs(request: Request) -> StreamingResponse:
     """SSE feed of run/step events.
 

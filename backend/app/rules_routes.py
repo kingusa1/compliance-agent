@@ -11,7 +11,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.auth import current_user
 
 _CATALOG_PATH = Path(__file__).resolve().parent / "rules_catalog.json"
 
@@ -30,7 +32,11 @@ _CATALOG: list[dict[str, Any]] = _load_catalog()
 _CATALOG_INDEX: dict[str, dict[str, Any]] = {r["id"]: r for r in _CATALOG if "id" in r}
 
 
-rules_router = APIRouter(prefix="/api/rules", tags=["rules"])
+# Auth gate (2026-05-30 security audit): the rule catalog is internal compliance
+# IP — require an authenticated user.
+rules_router = APIRouter(
+    prefix="/api/rules", tags=["rules"], dependencies=[Depends(current_user)]
+)
 
 
 @rules_router.get("")

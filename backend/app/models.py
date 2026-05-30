@@ -651,7 +651,10 @@ class CustomerDeal(Base):
     docusign_reference = Column(Text, nullable=True)
     # L7: link to the new Customer table. Nullable so legacy rows without
     # a customer row keep working until the backfill completes.
-    customer_id = Column(PGUUID(as_uuid=True), ForeignKey("customers.id", ondelete="CASCADE"), nullable=True, index=True)
+    # ondelete matches prod: migration 2026_05_16_hot_path_indexes (P1-8) flipped this
+    # FK to SET NULL so deleting a Customer orphans (not deletes) its deals. ORM corrected
+    # 2026-05-30 (was CASCADE → model/migration drift; SQLite tests diverged from prod).
+    customer_id = Column(PGUUID(as_uuid=True), ForeignKey("customers.id", ondelete="SET NULL"), nullable=True, index=True)
     # W1 (v3-watt-coverage): Watt portal deep-link. Every rejection-tracker
     # row in the XLSX has a hyperlink to api.wattutilities.co.uk:4433/sites/{N}.
     # See `.planning/v3-rebuild/2026-05-03-watt-xlsx-deep-dive.md` §1.3, X1.
@@ -1030,7 +1033,10 @@ class Rejection(Base):
     __tablename__ = "rejections"
 
     id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    call_id = Column(String, ForeignKey("calls.id", ondelete="SET NULL"), nullable=True, index=True)
+    # ondelete matches prod: migration 2026_05_24_rej_cascade flipped this FK to CASCADE
+    # so deleting a Call sweeps its rejections (was SET NULL → left ghost rejection rows).
+    # ORM corrected 2026-05-30 (was SET NULL → model/migration drift).
+    call_id = Column(String, ForeignKey("calls.id", ondelete="CASCADE"), nullable=True, index=True)
     customer_slug = Column(Text, nullable=True, index=True)
     external_watt_site_id = Column(Integer, nullable=True, index=True)
     supplier = Column(Text, nullable=True)
@@ -1111,7 +1117,10 @@ class ReviewerEdit(Base):
     # can log edits on awaiting-review rows that have no Rejection yet.
     # A check constraint (migration 2026_05_15_rev_call) enforces that at
     # least one of (rejection_id, call_id) is populated.
-    rejection_id = Column(UUIDCompat, nullable=True, index=True)
+    # FK matches prod: migration 2026_05_16_hot_path_indexes added fk_reviewer_edits_rejection
+    # (ON DELETE CASCADE). ORM FK added 2026-05-30 (was a bare Column → model/migration drift,
+    # so SQLite tests didn't enforce referential integrity on this column).
+    rejection_id = Column(UUIDCompat, ForeignKey("rejections.id", ondelete="CASCADE"), nullable=True, index=True)
     call_id = Column(String(64), nullable=True, index=True)
     field = Column(String(64), nullable=False)
     old_value = Column(Text, nullable=True)

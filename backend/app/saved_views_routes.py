@@ -25,11 +25,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
+from app.auth import current_user
 from app.database import get_db
 from app.logger import log
 from app.models import SavedView
 
-saved_views_router = APIRouter(prefix="/api/saved-views", tags=["saved-views"])
+# Auth gate (2026-05-30 security audit): saved-view CRUD is per-user state —
+# require an authenticated user.
+saved_views_router = APIRouter(
+    prefix="/api/saved-views",
+    tags=["saved-views"],
+    dependencies=[Depends(current_user)],
+)
 
 # Allow-listed filter keys. Mirrors FilterChips on the frontend.
 _ALLOWED_KEYS: set[str] = {

@@ -27,11 +27,14 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
+from app.auth import current_user
 from app.database import get_db
 from app.logger import log
 from app.models import Call, Flag
 
-flags_router = APIRouter(tags=["flags"])
+# Auth gate (2026-05-30 security audit): flag create (MUTATES call data) + the
+# cross-call /findings archive (customer-adjacent compliance data) — require auth.
+flags_router = APIRouter(tags=["flags"], dependencies=[Depends(current_user)])
 
 
 # ── schemas ─────────────────────────────────────────────────────────────

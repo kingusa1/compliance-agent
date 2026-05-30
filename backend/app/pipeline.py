@@ -75,7 +75,8 @@ from app.field_sources import can_overwrite, set_source
 from app.groq_transcription import transcribe_audio_groq
 from app.logger import log
 from app.models import Call, CallCheckpoint, Script
-from app.rejection_factory import build_rejection_for_call, should_create_rejection
+# app.rejection_factory import removed 2026-05-30 with _maybe_create_rejection (dead AI
+# auto-rejection path). Rejections are human-only; the AI pipeline never creates them.
 from app.storage import download_audio
 from app.transcription import transcribe_audio_full, transcribe_audio_gemini
 from app.verification import _escape_ilike
@@ -1676,7 +1677,11 @@ async def _step_detect_metadata(
                 sp = db.begin_nested()
                 try:
                     # Row-level lock — same pattern as deal_meter_merge._lock_survivor.
-                    is_pg = db.bind.dialect.name == "postgresql" if db.bind else False
+                    # SQLAlchemy 2.0: use get_bind() (db.bind is deprecated and can be
+                    # None/raise under strict mode). Matches the fix already applied at
+                    # pipeline.py:608.
+                    _bind = db.get_bind()
+                    is_pg = _bind.dialect.name == "postgresql" if _bind is not None else False
                     q = db.query(_Deal).filter_by(id=call.deal_id)
                     if is_pg:
                         q = q.with_for_update()
@@ -3684,57 +3689,13 @@ def _parse_score(score_str: str | None) -> tuple[int | None, int | None]:
         return None, None
 
 
-async def _maybe_create_rejection(call, db) -> None:
-    """Create a ``Rejection`` row for ``call`` when its score sits below the
-    threshold defined in :mod:`app.rejection_factory`.
-
-    Idempotent: skips when a Rejection already exists for ``call.id``. Caller
-    owns ``db.commit()`` — the helper ``db.add()``'s and lets the orchestrator
-    decide when to flush.
-    """
-    from app.models import Rejection, CustomerDeal as _Deal, Customer as _Cust
-
-    if db.query(Rejection).filter_by(call_id=call.id).first() is not None:
-        return  # idempotent — already created on a prior run
-
-    score, total = _parse_score(getattr(call, "score", None))
-    if not should_create_rejection(score=score, total=total):
-        return
-
-    failing: list[dict] = []
-    try:
-        if call.checkpoint_results:
-            cps = json.loads(call.checkpoint_results)
-            failing = [c for c in cps if c.get("status") in ("fail", "partial")]
-    except Exception as e:
-        log.warning(f"rejection: checkpoint parse failed call_id={call.id}: {e}")
-        return
-
-    if not failing:
-        return  # below threshold but no failing CPs to summarise — skip
-
-    customer_slug = None
-    if call.deal_id:
-        deal = db.query(_Deal).filter_by(id=call.deal_id).first()
-        if deal and deal.customer_id:
-            cust = db.query(_Cust).filter_by(id=deal.customer_id).first()
-            if cust:
-                customer_slug = cust.slug
-
-    payload = await build_rejection_for_call(
-        call_id=str(call.id),
-        customer_slug=customer_slug,
-        supplier=call.detected_supplier,
-        sales_agent=call.agent_name,
-        failing_checkpoints=failing,
-        db=db,  # enables per-LLM-call agent_traces rows for HITL "AI reasoning" UI
-    )
-    rej = Rejection(**payload)
-    for f in payload.keys():
-        if f != "call_id":  # FK, not user-editable
-            set_source(rej, f, "ai")
-    db.add(rej)
-    log.info(
-        f"\U0001f6a9 REJECTION_CREATED call_id={call.id} "
-        f"customer={customer_slug} category={payload.get('category')}"
-    )
+# ── _maybe_create_rejection REMOVED 2026-05-30 (dead code / "code-mine") ──────
+# This helper was the OLD AI auto-rejection path. It had ZERO call sites (verified
+# via grep across app/) but a backend audit flagged it as a latent hazard: if it were
+# ever re-wired, it would re-introduce the AI-auto-creates-Rejection bug the team
+# spent weeks eliminating. Per the HUMAN-ONLY rejection contract (2026-05-15, see
+# BRAIN/05_State/Known_Issues "Rejection-create contract: HUMAN-ONLY"), a Rejection
+# row is created EXCLUSIVELY when a human reviewer commits a FAIL/REVIEW verdict
+# (hitl_routes.submit_verdict → auto_create_rejection_for_verdict). The AI pipeline
+# only produces a *hint* on the awaiting-review row. Deleting the function makes the
+# invariant structurally enforceable — there is no AI path to db.add(Rejection).

@@ -19,11 +19,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.auth import current_user
 from app.database import get_db
 from app.logger import log
 from app.models import Call, FixDirective
 
-directives_router = APIRouter(tags=["directives"])
+# Auth gate (2026-05-30 security audit): directive create/list/patch + feedback
+# email all read or MUTATE call data — require an authenticated user.
+directives_router = APIRouter(
+    tags=["directives"], dependencies=[Depends(current_user)]
+)
 
 # ── state machine ─────────────────────────────────────────────────
 
