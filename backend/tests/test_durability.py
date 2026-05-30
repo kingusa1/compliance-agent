@@ -194,6 +194,7 @@ def test_observability_stuck_endpoint(test_db, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
+    from app.auth import current_user
     from app.database import get_db
     from app.models import Call
     from app.observability_routes import observability_router
@@ -217,6 +218,10 @@ def test_observability_stuck_endpoint(test_db, monkeypatch):
     app = FastAPI()
     app.include_router(observability_router)
     app.dependency_overrides[get_db] = lambda: test_db
+    # observability_router is auth-gated (2026-05-30 security audit) — stub an admin.
+    app.dependency_overrides[current_user] = lambda: {
+        "id": "test-admin", "email": "admin@test.local", "name": "Test", "role": "admin",
+    }
     client = TestClient(app)
 
     r = client.get("/api/observability/stuck")

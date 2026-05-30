@@ -20,8 +20,13 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.auth import current_user
 from app.database import Base, get_db
 import app.models  # noqa: F401  — register all models with Base before create_all
+
+# flags_router is auth-gated (2026-05-30 security audit). Stub an authenticated
+# admin so these route tests exercise the handlers, not the 401 gate.
+_STUB_USER = {"id": "test-admin", "email": "admin@test.local", "name": "Test", "role": "admin"}
 
 
 _engine = create_engine(
@@ -69,6 +74,7 @@ def _make_app() -> FastAPI:
     app = FastAPI()
     app.include_router(flags_router)
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[current_user] = lambda: _STUB_USER
     return app
 
 
