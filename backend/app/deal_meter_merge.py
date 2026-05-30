@@ -264,7 +264,11 @@ def _name_fuzz_ratio(a: str, b: str) -> int:
         return 0
     try:
         from rapidfuzz import fuzz  # type: ignore[import-not-found]
-        return int(fuzz.token_set_ratio(a, b))
+        # processor=None pinned (2026-05-30): lock to the measured default so a
+        # future rapidfuzz release that flips the default to `default_process`
+        # can't silently shift the calibrated wave-50 customer-mismatch floor
+        # (pipeline.py) or the _SAFE_NAME_FUZZ_FLOOR auto-merge guard below.
+        return int(fuzz.token_set_ratio(a, b, processor=None))
     except Exception:
         # Jaccard fallback so the predicate still works in environments
         # without rapidfuzz (some CI configs).

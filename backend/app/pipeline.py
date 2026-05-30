@@ -1259,7 +1259,7 @@ async def _maybe_merge_into_existing_deal(
     # candidates with a non-trivial similarity (e.g. "Joseph" vs
     # "Josephs Estate Agents Ltd" before the prefix-promote signal
     # existed, or transcription drift like "St Peters" vs
-    # "St Peter's Benfleet Church"), ask Opus 4.7 to judge.
+    # "St Peter's Benfleet Church"), ask Opus 4.8 to judge.
     #
     # Gated on: caller opted in by passing ai_transcript_excerpt (so the
     # cheap first-pass at upload time doesn't burn an LLM call). The
@@ -1966,7 +1966,7 @@ async def _step_detect_metadata(
             # can compare it against what the audio actually says.
             declared_business_name = (current_deal.customer_name or "").strip()
 
-            # 2026-05-16: Opus 4.7 mandate across all detectors (Mohamed).
+            # 2026-05-16: Opus 4.8 mandate across all detectors (Mohamed).
             business_name = await detect_business_name(transcript)
             # Last-resort fallback: when no business name surfaces, fall back to
             # the detected customer's name so we never leave the stub label.
@@ -1994,25 +1994,31 @@ async def _step_detect_metadata(
                     ratio = _name_fuzz_ratio(
                         declared_business_name.lower(), business_name.lower()
                     )
-                    # CALIBRATED conservatively to avoid false positives in a
-                    # compliance tool. Measured token-set ratios (2026-05-28):
-                    #   wrong customer  "Upper Halliford News" vs "Clifton
-                    #     Rest Home"                                    = 0
-                    #   wrong customer  "Lucy" vs "Curry Express"       = 0
-                    #   SAME business   "The Church" vs "Evangelical
-                    #     Church"                                       = 33
-                    #   SAME business   "Charles Palace" vs "Awais …
-                    #     Charles Palace" (person+business)             = 40
-                    #   SAME business   "Acme Plumbing Ltd" vs "… Limited" = 50
-                    # The same-business variants (the LLM emits different
-                    # names per transcript) cluster at 33-50; genuine
-                    # wrong-customer uploads share NO tokens and score ~0.
-                    # A < 25 floor sits cleanly in the gap: it fires only on
-                    # near-zero overlap, so it never warns on a legitimate
-                    # name variant. Missing an ambiguous mid-range case is
-                    # the SAFE direction for a compliance tool — a false
-                    # "wrong customer" banner is worse than a missed one.
-                    if ratio < 25:
+                    # CALIBRATED on REAL rapidfuzz token-set ratios — the prod
+                    # metric (rapidfuzz>=3.6 is a hard dependency). RE-MEASURED
+                    # 2026-05-30 with rapidfuzz 3.14.5. The original 2026-05-28
+                    # numbers (wrong≈0, same 33-50) were taken against the Jaccard
+                    # fallback, NOT real rapidfuzz, which made the old `< 25` floor
+                    # effectively DEAD: genuine wrong-customer uploads score 24-46
+                    # under token_set_ratio (char-level noise on disjoint tokens),
+                    # so almost none were ever caught.
+                    #   WRONG customer (share no real tokens):              24-46
+                    #     "Upper Halliford News" vs "Clifton Rest Home"  = 43
+                    #     "Lucy" vs "Curry Express"                      = 24
+                    #     "Crosby Grange" vs "Curry Express"             = 46
+                    #   SAME business (LLM phrasing drift / abbrev / T-A):  72-100
+                    #     "Shah Palace" vs "Charles Palace"              = 72
+                    #     "E On Next" vs "EOn Next Energy"               = 75
+                    #     "The Church" vs "Evangelical Church"           = 75
+                    #     "Charles Palace" vs "Awais … Charles Palace"   = 100
+                    # Clean gap 46 → 72. A `< 55` floor catches every wrong-customer
+                    # case with margin while sitting 17 pts BELOW the same-business
+                    # minimum (72) — the false-positive-safe side the original design
+                    # (rightly) prioritises. A false "wrong customer" banner is worse
+                    # than a missed one, so the floor stays comfortably under the
+                    # same-business cluster; it just no longer sits so low that the
+                    # guardrail never fires.
+                    if ratio < 55:
                         warn = {
                             "code": "customer_name_mismatch",
                             "message": (

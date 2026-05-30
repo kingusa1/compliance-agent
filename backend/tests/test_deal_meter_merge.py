@@ -1040,32 +1040,43 @@ class TestLockSurvivorTimeout:
 
 class TestWave50CustomerMismatchThreshold:
     """Wave-50 — the customer-name-mismatch data-quality warning fires
-    only when the audio-detected BUSINESS name shares essentially NO
-    tokens with the deal's declared business name (token-set ratio < 25).
+    when the audio-detected BUSINESS name diverges strongly from the
+    deal's declared business name (rapidfuzz token-set ratio < FLOOR).
 
-    The threshold was CALIBRATED against real data, not guessed: the LLM
-    emits slightly different business names per transcript for the SAME
-    physical customer ("The Church" vs "Evangelical Church" = 33;
-    "Charles Palace" vs "Awais … Charles Palace" = 40), which cluster at
-    33-50. Genuine wrong-customer uploads share no tokens and score ~0.
-    The < 25 floor sits in the gap so the warning never fires on a
-    legitimate name variant — the exact false-positive trap we designed
-    around. A missed ambiguous mid-range case is the SAFE direction for a
-    compliance tool. Strictly business-vs-business: the
-    person-name-vs-business-name split that exists by design is never
-    compared here."""
+    The FLOOR was RE-CALIBRATED 2026-05-30 against REAL rapidfuzz 3.14.5
+    (the prod metric). The original `< 25` was measured against the
+    Jaccard fallback (rapidfuzz absent) and was effectively dead: under
+    real token_set_ratio, genuine wrong-customer uploads score 24-46
+    (char-level noise on disjoint tokens), NOT ~0, so the old floor
+    caught almost nothing. Same-business phrasing drift / abbreviations
+    / T-A variants score 72-100. Clean gap 46 → 72, so `< 55` catches
+    every wrong-customer case while staying 17 pts below the
+    same-business minimum (72) — the false-positive-safe side. Strictly
+    business-vs-business: the person-name-vs-business-name split that
+    exists by design is never compared here."""
 
-    FLOOR = 25
+    FLOOR = 55
 
     def test_wrong_customer_audio_scores_below_floor(self) -> None:
-        """Totally different business → WARN (score 0 < 25)."""
+        """Totally different business → WARN (real rapidfuzz: 24-46 < 55).
+
+        Includes the HIGHEST measured wrong-customer score ("crosby grange" vs
+        "curry express" = 46) — the pair that defines why the floor must be ≥ 47.
+        If this one ever fails, the threshold was lowered below the wrong-customer
+        ceiling and the guardrail would start missing real mismatches."""
         from app.deal_meter_merge import _name_fuzz_ratio
         assert _name_fuzz_ratio("upper halliford news", "clifton rest home") < self.FLOOR
         assert _name_fuzz_ratio("lucy", "curry express") < self.FLOOR
+        assert _name_fuzz_ratio("crosby grange", "curry express") < self.FLOOR  # =46, the max
 
     def test_same_business_variants_stay_above_floor(self) -> None:
-        """Same business, LLM phrasing drift → NO warn (>= 25). This is the
-        false-positive case the floor must never trip."""
+        """Same business, LLM phrasing drift → NO warn (real rapidfuzz: 72-100
+        >= 55). This is the false-positive case the floor must never trip.
+
+        Includes the LOWEST measured same-business score ("shah palace" vs
+        "charles palace" = 72, a hard transcription-drift case) — the pair that
+        defines the safe ceiling. If this fails, the floor was raised into the
+        same-business cluster and would start firing false "wrong customer" banners."""
         from app.deal_meter_merge import _name_fuzz_ratio
         assert _name_fuzz_ratio("the church", "evangelical church") >= self.FLOOR
         assert (
@@ -1074,6 +1085,8 @@ class TestWave50CustomerMismatchThreshold:
             )
             >= self.FLOOR
         )
+        assert _name_fuzz_ratio("shah palace", "charles palace") >= self.FLOOR  # =72, the min
+        assert _name_fuzz_ratio("e on next", "eon next energy") >= self.FLOOR  # =75
 
     def test_identical_names_score_max(self) -> None:
         from app.deal_meter_merge import _name_fuzz_ratio
